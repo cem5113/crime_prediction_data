@@ -12,14 +12,12 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
 
-    # NaN sütunlarını tek bir string olarak oluştur
     if not nan_cols.empty:
         nan_parts = [f"- {col}: {count}" for col, count in nan_cols.items()]
         nan_text = " ".join(nan_parts)
     else:
         nan_text = "Yok"
 
-    # PDF'e tek satırda özet yaz
     summary = (
         f"- Tarih/Saat: {timestamp}; "
         f"Dosya: {file_name} ; "
@@ -38,20 +36,25 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     pdf.output(output_name)
     return output_name
 
+# ✅ GitHub Release URL (örnek)
+DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_crime.csv"
+
 # 📥 İndirme
 if st.button("📥 sf_crime.csv dosyasini indir"):
-    url = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime.csv"
-    response = requests.get(url)
-    if response.status_code == 200:
-        with open("sf_crime.csv", "wb") as f:
-            f.write(response.content)
-        st.success("sf_crime.csv basariyla indirildi.")
-    else:
-        st.error("Indirme basarisiz.")
+    try:
+        response = requests.get(DOWNLOAD_URL)
+        if response.status_code == 200:
+            with open("sf_crime.csv", "wb") as f:
+                f.write(response.content)
+            st.success("✅ sf_crime.csv başarıyla indirildi.")
+        else:
+            st.error(f"❌ Indirme hatası: {response.status_code}")
+    except Exception as e:
+        st.error(f"❌ Hata oluştu: {e}")
 
 # 🧹 Temizlik ve Gösterim
 if os.path.exists("sf_crime.csv"):
-    df = pd.read_csv("sf_crime.csv")
+    df = pd.read_csv("sf_crime.csv", low_memory=False)
     original_row_count = len(df)
 
     if "GEOID" in df.columns:
@@ -69,7 +72,6 @@ if os.path.exists("sf_crime.csv"):
         st.dataframe(nan_cols.rename("NaN Sayisi"))
         st.write(f"NaN iceren sutun sayisi: {len(nan_cols)}")
         st.write(f"NaN iceren toplam satir sayisi: {df.isna().any(axis=1).sum()}")
-
         df = df.dropna()
     else:
         st.success("Hicbir sutunda NaN yok.")
