@@ -51,8 +51,9 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
-                
+
                 # 911 verisini indir
+                df_911 = None  # ön tanım
                 try:
                     response_911 = requests.get(DOWNLOAD_911_URL)
                     if response_911.status_code == 200:
@@ -74,17 +75,16 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
 
-                # Örnek: NaN sütunları bul ve rapor hazırla (bu satırları işlem sonrası yerleştir)
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
-                removed_rows = 0  # Henüz işlem yapılmadığı için başlangıçta sıfır
+                removed_rows = 0
 
-                # 📄 PDF rapor oluştur ve indirme butonu ekle
                 report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
                 with open(report_path, "rb") as f:
                     st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
             else:
-                st.error(f"❌ Indirme hatası: {response.status_code}")
+                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
+                return  # işlem başarısız, çık
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
             
