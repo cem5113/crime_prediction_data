@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -127,9 +126,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.stop()  # Hatalı indirme varsa durdur
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
-            st.stop() 
 
-        if data_ready:
             # Enrichment
             df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
             df = df.dropna(subset=["datetime"])
@@ -151,7 +148,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             df["is_business_hour"] = df.apply(lambda x: 1 if (9 <= x["event_hour"] < 18 and x["day_of_week"] < 5) else 0, axis=1)
             season_map = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall", 10: "Fall", 11: "Fall"}
             df["season"] = df["month"].map(season_map)
-    
+
             # 911 verilerini yükle ve birleştir
             if os.path.exists("sf_911_last_5_year.csv"):
                 df_911 = pd.read_csv("sf_911_last_5_year.csv")
@@ -184,14 +181,13 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     # Merge öncesi tip düzeltmeleri
                     df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
                     df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                    df["hour_range"] = df["hour_range"].astype(str)
-                    df_311["hour_range"] = df_311["hour_range"].astype(str)
                     df["date"] = pd.to_datetime(df["date"]).dt.date
                     df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                    df["hour_range"] = df["hour_range"].astype(str)
+                    df_311["hour_range"] = df_311["hour_range"].astype(str)
                 
                     # Aggregate: saat aralığı başına toplam çağrı
                     agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
-                    agg_311["GEOID"] = agg_311["GEOID"].astype(str).str.zfill(11) 
                     df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
                     df["311_request_count"] = df["311_request_count"].fillna(0)
                 
@@ -209,7 +205,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                     for col in cols_311:
                         df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
-                            
+                        
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
                 df[col] = 0
