@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 import itertools
+import os
 
 # 1. Veriyi oku
 input_path = "sf_crime_49.csv"
@@ -57,17 +58,16 @@ seasons = ["Winter", "Spring", "Summer", "Fall"]
 days = list(range(7))
 hours = list(range(24))
 
-full_grid = pd.DataFrame(
+expected_grid = pd.DataFrame(
     itertools.product(geoids, seasons, days, hours),
     columns=["GEOID", "season", "day_of_week", "event_hour"]
 )
 
-df_final = full_grid.merge(grouped, on=group_cols, how="left")
+df_final = expected_grid.merge(grouped, on=group_cols, how="left")
 df_final["crime_count"] = df_final["crime_count"].fillna(0).astype(int)
 df_final["Y_label"] = df_final["Y_label"].fillna(0).astype(int)
 
 # 5. Etiketleri tekrar üret
-
 df_final["is_weekend"] = df_final["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
 df_final["is_night"] = df_final["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
 df_final["is_school_hour"] = df_final.apply(
@@ -89,25 +89,25 @@ df_final = df_final.dropna(subset=columns_with_nan)
 after_rows = df_final.shape[0]
 print(f"🧹 {before_rows - after_rows} satır silindi (NaN içeriyor)")
 
-# 7. Kaydet (sf_crime_50)
-df_final.to_csv("sf_crime_50.csv", index=False)
-print("✅ sf_crime_50.csv kaydedildi.")
-
-# 8. Eksik kombinasyonlar
-expected_grid = pd.DataFrame(itertools.product(geoids, seasons, days, hours),
-                             columns=["GEOID", "season", "day_of_week", "event_hour"])
+# 7. Eksik kombinasyonları tamamla
 existing_combinations = df_final[["GEOID", "season", "day_of_week", "event_hour"]]
-
 missing = expected_grid.merge(existing_combinations.drop_duplicates(),
                               on=["GEOID", "season", "day_of_week", "event_hour"],
                               how="left", indicator=True)
-
 missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
 missing["crime_count"] = 0
 missing["Y_label"] = 0
 
+# 8. Birleştir ve kaydet
 df_full_52 = pd.concat([df_final, missing], ignore_index=True)
-df_full_52.to_csv("sf_crime_52.csv", index=False)
 
-print("✅ sf_crime_52.csv kaydedildi.")
+output_dir = os.getcwd()
+path_50 = os.path.join(output_dir, "sf_crime_50.csv")
+path_52 = os.path.join(output_dir, "sf_crime_52.csv")
+
+df_final.to_csv(path_50, index=False)
+print(f"✅ sf_crime_50.csv kaydedildi → {path_50}")
+
+df_full_52.to_csv(path_52, index=False)
+print(f"✅ sf_crime_52.csv kaydedildi → {path_52}")
 print(f"Toplam kombinasyon: {expected_grid.shape[0]}, Eksik olanlar: {missing.shape[0]}")
