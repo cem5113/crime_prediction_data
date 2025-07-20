@@ -13,6 +13,7 @@ st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Verisi İşleme ve Özetleme Paneli")
 
 DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_crime.csv"
+DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -50,7 +51,19 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
-
+                
+                # 911 verisini indir
+                try:
+                    response_911 = requests.get(DOWNLOAD_911_URL)
+                    if response_911.status_code == 200:
+                        with open("sf_911_last_5_year.csv", "wb") as f:
+                            f.write(response_911.content)
+                        st.success("✅ sf_911_last_5_year.csv başarıyla indirildi.")
+                    else:
+                        st.warning(f"⚠️ sf_911_last_5_year.csv indirilemedi: {response_911.status_code}")
+                except Exception as e:
+                    st.error(f"❌ 911 verisi indirilemedi: {e}")
+                    
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
 
@@ -101,6 +114,14 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             df["is_business_hour"] = df.apply(lambda x: 1 if (9 <= x["event_hour"] < 18 and x["day_of_week"] < 5) else 0, axis=1)
             season_map = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall", 10: "Fall", 11: "Fall"}
             df["season"] = df["month"].map(season_map)
+
+            # 911 verilerini yükle ve birleştir
+            if os.path.exists("sf_911_last_5_year.csv"):
+                df_911 = pd.read_csv("sf_911_last_5_year.csv")
+                df_911["date"] = pd.to_datetime(df_911["date"]).dt.date
+                df["hour_range"] = (df["event_hour"] // 3) * 3
+                df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["event_hour"] // 3 * 3 + 3).astype(str)
+                df = pd.merge(df, df_911, on=["GEOID", "date", "hour_range"], how="left")
 
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
@@ -175,5 +196,25 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ Tüm dosyalar başarıyla kaydedildi: sf_crime.csv, sf_crime_50.csv, sf_crime_52.csv")
 
+                # NaN raporu ve PDF
+                nan_summary = df.isna().sum()
+                nan_cols = nan_summary[nan_summary > 0]
+                report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
+                with open(report_path, "rb") as f:
+                    st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
+
+                # İlk 5 satır, sütunlar, NaN sayıları
+                st.write("### 📈 sf_crime.csv İlk 5 Satır")
+                st.dataframe(df.head())
+                st.write("### 🔢 Sütunlar")
+                st.write(df.columns.tolist())
+                st.write("### 🔔 NaN Sayıları")
+                st.write(nan_cols)
+
+                df.to_csv("sf_crime.csv", index=False)
+                st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
+            else:
+                st.error(f"❌ Indirme hatası: {response.status_code}")
+                
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
