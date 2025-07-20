@@ -88,3 +88,15 @@ if os.path.exists("sf_crime.csv"):
         report_file = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
         with open(report_file, "rb") as f:
             st.download_button("📎 Raporu Indir", data=f, file_name=report_file, mime="application/pdf")
+
+# 🔄 sf_crime_49.csv üretimi 
+st.subheader("🔄 sf_crime_49.csv üretimi")
+if st.button("49'u üret"):
+    os.system("python scripts/enrich_sf_crime_49.py")
+    st.success("✅ sf_crime_49.csv üretildi.")
+
+# 🧠 sf_crime_52.csv üretimi 
+st.subheader("🧠 sf_crime_52.csv üretimi")
+if st.button("52'yi üret"):
+    os.system("python scripts/generate_sf_crime_52.py")
+    st.success("✅ sf_crime_52.csv üretildi.")
