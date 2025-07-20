@@ -59,11 +59,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         with open("sf_911_last_5_year.csv", "wb") as f:
                             f.write(response_911.content)
                         st.success("✅ sf_911_last_5_year.csv başarıyla indirildi.")
+                        
+                        # 👁‍🗨 İçeriği göster
+                        df_911 = pd.read_csv("sf_911_last_5_year.csv")
+                        st.write("📟 911 Verisi İlk 5 Satır")
+                        st.dataframe(df_911.head())
+                        st.write("📌 911 Sütunları:")
+                        st.write(df_911.columns.tolist())
                     else:
                         st.warning(f"⚠️ sf_911_last_5_year.csv indirilemedi: {response_911.status_code}")
                 except Exception as e:
                     st.error(f"❌ 911 verisi indirilemedi: {e}")
-                    
+
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
 
@@ -121,7 +128,21 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 df_911["date"] = pd.to_datetime(df_911["date"]).dt.date
                 df["hour_range"] = (df["event_hour"] // 3) * 3
                 df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["event_hour"] // 3 * 3 + 3).astype(str)
+                
+                # Birleştir
                 df = pd.merge(df, df_911, on=["GEOID", "date", "hour_range"], how="left")
+                
+                # Yeni sütunları gözlemle
+                cols_911 = [col for col in df.columns if "911" in col or "request" in col]
+                st.write("🔍 911 Sütunları:")
+                st.write(cols_911)
+                st.write("🧯 911 NaN Sayıları:")
+                st.write(df[cols_911].isna().sum())
+            
+                # Eksik olanları 0 yap
+                for col in cols_911:
+                    df[col] = df[col].fillna(0)
+
 
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
@@ -151,6 +172,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             group_cols = ["GEOID", "season", "day_of_week", "event_hour"]
             mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
             mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
+            mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
 
             def safe_mode(x):
                 try: return x.mode().iloc[0]
@@ -210,6 +232,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.write(df.columns.tolist())
                 st.write("### 🔔 NaN Sayıları")
                 st.write(nan_cols)
+                st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
+                st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
 
                 df.to_csv("sf_crime.csv", index=False)
                 st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
