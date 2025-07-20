@@ -43,12 +43,16 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     return output_name
 
 if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
+    with st.spinner("⏳ İşlem devam ediyor... Lütfen bekleyin. Bu birkaç dakika sürebilir."):
     try:
         response = requests.get(DOWNLOAD_URL)
         if response.status_code == 200:
             with open("sf_crime.csv", "wb") as f:
                 f.write(response.content)
             st.success("✅ sf_crime.csv başarıyla indirildi.")
+            report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
+            with open(report_path, "rb") as f:
+                st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
             df = pd.read_csv("sf_crime.csv", low_memory=False)
             original_row_count = len(df)
 
