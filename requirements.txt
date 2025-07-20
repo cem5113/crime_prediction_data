@@ -6,3 +6,7 @@ numpy
 geopandas
 folium
 joblib
+matplotlib
+scikit-learn
+geopandas
+holidays
