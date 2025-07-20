@@ -12,14 +12,12 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
 
-    # NaN sütunlarını tek bir string olarak oluştur
     if not nan_cols.empty:
         nan_parts = [f"- {col}: {count}" for col, count in nan_cols.items()]
         nan_text = " ".join(nan_parts)
     else:
         nan_text = "Yok"
 
-    # PDF'e tek satırda özet yaz
     summary = (
         f"- Tarih/Saat: {timestamp}; "
         f"Dosya: {file_name} ; "
@@ -38,16 +36,26 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     pdf.output(output_name)
     return output_name
 
-# 📥 İndirme
-if st.button("📥 sf_crime.csv dosyasini indir"):
+# 📥 İndirme ve Otomatik Üretim
+if st.button("📥 sf_crime.csv indir + 49 & 52 üret"):
     url = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime.csv"
     response = requests.get(url)
     if response.status_code == 200:
         with open("sf_crime.csv", "wb") as f:
             f.write(response.content)
-        st.success("sf_crime.csv basariyla indirildi.")
+        st.success("✅ sf_crime.csv başarıyla indirildi.")
+
+        # 🔄 Otomatik üretim: sf_crime_49.csv
+        with st.spinner("🔄 sf_crime_49.csv üretiliyor..."):
+            os.system("python scripts/enrich_sf_crime_49.py")
+        st.success("✅ sf_crime_49.csv üretildi.")
+
+        # 🧠 Otomatik üretim: sf_crime_52.csv
+        with st.spinner("🧠 sf_crime_52.csv üretiliyor..."):
+            os.system("python scripts/generate_sf_crime_52.py")
+        st.success("✅ sf_crime_52.csv üretildi.")
     else:
-        st.error("Indirme basarisiz.")
+        st.error("❌ İndirme başarısız.")
 
 # 🧹 Temizlik ve Gösterim
 if os.path.exists("sf_crime.csv"):
@@ -69,34 +77,21 @@ if os.path.exists("sf_crime.csv"):
         st.dataframe(nan_cols.rename("NaN Sayisi"))
         st.write(f"NaN iceren sutun sayisi: {len(nan_cols)}")
         st.write(f"NaN iceren toplam satir sayisi: {df.isna().any(axis=1).sum()}")
-
         df = df.dropna()
     else:
         st.success("Hicbir sutunda NaN yok.")
 
-    # 🔁 Yalnızca son 5 yıla ait veriler
+    # 🔁 Son 5 yıl filtresi
     removed_rows = 0
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        five_years_ago = datetime.now() - timedelta(days=5*365)
+        five_years_ago = datetime.now() - timedelta(days=5 * 365)
         before_filter = len(df)
         df = df[df["date"] >= five_years_ago]
         removed_rows = before_filter - len(df)
 
-    # 📄 PDF Oluştur
+    # 📄 PDF Rapor
     if st.button("📄 PDF Rapor Olustur"):
         report_file = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
         with open(report_file, "rb") as f:
             st.download_button("📎 Raporu Indir", data=f, file_name=report_file, mime="application/pdf")
-
-# 🔄 sf_crime_49.csv üretimi 
-st.subheader("🔄 sf_crime_49.csv üretimi")
-if st.button("49'u üret"):
-    os.system("python scripts/enrich_sf_crime_49.py")
-    st.success("✅ sf_crime_49.csv üretildi.")
-
-# 🧠 sf_crime_52.csv üretimi 
-st.subheader("🧠 sf_crime_52.csv üretimi")
-if st.button("52'yi üret"):
-    os.system("python scripts/generate_sf_crime_52.py")
-    st.success("✅ sf_crime_52.csv üretildi.")
