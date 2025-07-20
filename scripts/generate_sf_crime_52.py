@@ -1,4 +1,4 @@
-# scripts/generate_sf_crime_52.py
+# Zaman-Mekân Kombinasyonlarına Göre Suç Verisi Özetleme ve Y_label Etiketleme
 
 import pandas as pd
 import numpy as np
