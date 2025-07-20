@@ -14,6 +14,7 @@ st.title("📦 Günlük Suç Verisi İşleme ve Özetleme Paneli")
 
 DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_crime.csv"
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
+DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -71,6 +72,22 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         st.warning(f"⚠️ sf_911_last_5_year.csv indirilemedi: {response_911.status_code}")
                 except Exception as e:
                     st.error(f"❌ 911 verisi indirilemedi: {e}")
+
+                # 311 verisini oku 
+                df_311 = None
+                if os.path.exists(DOWNLOAD_311_PATH):
+                    try:
+                        df_311 = pd.read_csv(DOWNLOAD_311_PATH)
+                        st.success("✅ 311 verisi yüklendi.")
+                        st.write("📟 311 Verisi İlk 5 Satır")
+                        st.dataframe(df_311.head())
+                        st.write("📌 311 Sütunları:")
+                        st.write(df_311.columns.tolist())
+                    except Exception as e:
+                        st.warning(f"⚠️ 311 verisi yüklenemedi: {e}")
+                else:
+                    st.warning("⚠️ 311_requests_range.csv bulunamadı.")
+
 
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
@@ -134,7 +151,20 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 # Eksik olanları 0 yap
                 for col in cols_911:
                     df[col] = df[col].fillna(0)
-
+                
+                # 311 verisini birleştir
+                if df_311 is not None:
+                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                    df = pd.merge(df, df_311, on=["GEOID", "date", "hour_range"], how="left")
+                
+                    cols_311 = [col for col in df.columns if "311" in col]
+                    st.write("🔍 311 Sütunları:")
+                    st.write(cols_311)
+                    st.write("🧯 311 NaN Sayıları:")
+                    st.write(df[cols_311].isna().sum())
+                
+                    for col in cols_311:
+                        df[col] = df[col].fillna(0)
 
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
@@ -165,6 +195,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
             mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
             mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
+            mean_cols.extend([col for col in df.columns if "311" in col])
 
             def safe_mode(x):
                 try: return x.mode().iloc[0]
