@@ -44,18 +44,30 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
 
 if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
     with st.spinner("⏳ İşlem devam ediyor... Lütfen bekleyin. Bu birkaç dakika sürebilir."):
-    try:
-        response = requests.get(DOWNLOAD_URL)
-        if response.status_code == 200:
-            with open("sf_crime.csv", "wb") as f:
-                f.write(response.content)
-            st.success("✅ sf_crime.csv başarıyla indirildi.")
-            report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
-            with open(report_path, "rb") as f:
-                st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
-            df = pd.read_csv("sf_crime.csv", low_memory=False)
-            original_row_count = len(df)
+        try:
+            response = requests.get(DOWNLOAD_URL)
+            if response.status_code == 200:
+                with open("sf_crime.csv", "wb") as f:
+                    f.write(response.content)
+                st.success("✅ sf_crime.csv başarıyla indirildi.")
 
+                df = pd.read_csv("sf_crime.csv", low_memory=False)
+                original_row_count = len(df)
+
+                # Örnek: NaN sütunları bul ve rapor hazırla (bu satırları işlem sonrası yerleştir)
+                nan_summary = df.isna().sum()
+                nan_cols = nan_summary[nan_summary > 0]
+                removed_rows = 0  # Henüz işlem yapılmadığı için başlangıçta sıfır
+
+                # 📄 PDF rapor oluştur ve indirme butonu ekle
+                report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
+                with open(report_path, "rb") as f:
+                    st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
+            else:
+                st.error(f"❌ Indirme hatası: {response.status_code}")
+        except Exception as e:
+            st.error(f"❌ Hata oluştu: {e}")
+            
             df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
             nan_summary = df.isna().sum()
             nan_cols = nan_summary[nan_summary > 0]
