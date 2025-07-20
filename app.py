@@ -12,26 +12,27 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
 
+    # NaN sütunlarını tek bir string olarak oluştur
+    if not nan_cols.empty:
+        nan_parts = [f"- {col}: {count}" for col, count in nan_cols.items()]
+        nan_text = " ".join(nan_parts)
+    else:
+        nan_text = "Yok"
+
+    # PDF'e tek satırda özet yaz
+    summary = (
+        f"- Tarih/Saat: {timestamp}; "
+        f"Dosya: {file_name} ; "
+        f"Toplam satir sayisi: {row_count_before:,}; "
+        f"NaN iceren sutunlar: {nan_text}; "
+        f"Revize satir sayisi: {row_count_after:,}; "
+        f"Silinen eski tarihli satir sayisi: {removed_rows}"
+    )
+
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-
-    summary = (
-        f"Tarih/Saat: {timestamp}; Dosya: {file_name} ; "
-        f"Toplam satir sayisi: {row_count_before:,}; "
-        f"NaN iceren sutun sayisi: {len(nan_cols)}"
-    )
-    pdf.cell(200, 10, txt=summary.encode("latin1", "replace").decode("latin1"), ln=True, align='L')
-
-    if not nan_cols.empty:
-        pdf.cell(200, 10, txt="NaN iceren sutunlar:", ln=True, align='L')
-        for col, count in nan_cols.items():
-            line = f"- {col}: {count}"
-            safe_line = line.encode("latin1", "replace").decode("latin1")
-            pdf.cell(200, 10, txt=safe_line, ln=True, align='L')
-
-    pdf.cell(200, 10, txt=f"Revize satir sayisi: {row_count_after:,}", ln=True, align='L')
-    pdf.cell(200, 10, txt=f"Silinen eski tarihli satir sayisi: {removed_rows:,}", ln=True, align='L')
+    pdf.multi_cell(0, 10, txt=summary.encode("latin1", "replace").decode("latin1"))
 
     output_name = f"report_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(output_name)
