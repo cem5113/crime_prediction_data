@@ -72,33 +72,25 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ 911 verisi indirilemedi: {e}")
 
+                # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
 
+                # NaN özetle
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
-                removed_rows = 0
+                removed_rows = 0  # Henüz satır silinmedi
 
+                # PDF rapor oluştur
                 report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
                 with open(report_path, "rb") as f:
                     st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
+
             else:
                 st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
-                return  # işlem başarısız, çık
+                st.stop()  # Hatalı indirme varsa durdur
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
-            
-            df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-            nan_summary = df.isna().sum()
-            nan_cols = nan_summary[nan_summary > 0]
-            df = df.dropna()
-
-            removed_rows = 0
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            five_years_ago = datetime.now() - timedelta(days=5*365)
-            before_filter = len(df)
-            df = df[df["date"] >= five_years_ago]
-            removed_rows = before_filter - len(df)
 
             # Enrichment
             df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
