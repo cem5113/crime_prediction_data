@@ -15,6 +15,7 @@ st.title("📦 Günlük Suç Verisi İşleme ve Özetleme Paneli")
 DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_crime.csv"
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
+POPULATION_PATH = "sf_population.csv"
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -98,6 +99,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
+                
+                # Nüfus verisini oku
+                if os.path.exists(POPULATION_PATH):
+                    df_pop = pd.read_csv(POPULATION_PATH)
+                    df_pop["GEOID"] = df_pop["GEOID"].astype(str).str.zfill(11)
+                    df = pd.merge(df, df_pop, on="GEOID", how="left")
+                    df["population"] = df["population"].fillna(0).astype(int)
+                    st.success("✅ Nüfus verisi eklendi.")
+                    st.write("👥 Nüfus örnek verisi:")
+                    st.dataframe(df[["GEOID", "population"]].drop_duplicates().head())
+                else:
+                    st.warning("⚠️ Nüfus verisi (sf_population.csv) bulunamadı.")
 
                 # NaN özetle
                 nan_summary = df.isna().sum()
@@ -202,7 +215,9 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
             mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
             mean_cols.extend([col for col in df.columns if "311" in col])
-
+            if "population" in df.columns:
+                mean_cols.append("population")
+                
             def safe_mode(x):
                 try: return x.mode().iloc[0]
                 except: return np.nan
