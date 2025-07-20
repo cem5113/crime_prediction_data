@@ -180,8 +180,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
                 
                     # Merge öncesi tip düzeltmeleri
-                    df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-                    df_311["GEOID"] = df_311["GEOID"].astype(str).str.zfill(11)
+                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                    df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
                     df["date"] = pd.to_datetime(df["date"]).dt.date
                     df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
                     df["hour_range"] = df["hour_range"].astype(str)
