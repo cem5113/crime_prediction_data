@@ -3,10 +3,14 @@
 import pandas as pd
 import numpy as np
 import holidays
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 
-# === 1. Veri Yükleme ===
-df = pd.read_csv("sf_crime.csv", parse_dates=["date"])
+# === 1. Dosya yolu ve veri yükleme ===
+input_path = "sf_crime.csv"
+output_path = "sf_crime_49.csv"
+
+df = pd.read_csv(input_path, parse_dates=["date"])
 print(f"🔹 Yüklenen veri boyutu: {df.shape}")
 
 # === 2. GEOID Temizleme ===
@@ -31,8 +35,8 @@ df["day_of_week"] = df["datetime"].dt.dayofweek
 df["is_night"] = df["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
 df["is_weekend"] = df["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
 
-# === 5. Resmi Tatil & Durumsal Etiketler ===
-years = df["year"].unique()
+# === 5. Tatil ve Durumsal Etiketler ===
+years = df["year"].dropna().astype(int).unique()
 us_holidays = pd.to_datetime(list(holidays.US(years=years).keys()))
 df["is_holiday"] = df["date"].isin(us_holidays).astype(int)
 df["latlon"] = df["latitude"].round(5).astype(str) + "_" + df["longitude"].round(5).astype(str)
@@ -60,36 +64,31 @@ df["prev_crime_1h"] = 0
 df["prev_crime_2h"] = 0
 df["prev_crime_3h"] = 0
 
+print("⏳ Kriminal yoğunluk hesaplanıyor...")
 for geoid, group in df.groupby("GEOID"):
     times = pd.to_datetime(group["datetime"]).values.astype("datetime64[ns]")
     event_hours = group["event_hour"].values
     idx = group.index
-    time_deltas = times[:, None] - times[None, :]
+    deltas = times[:, None] - times[None, :]
 
-    df.loc[idx, "past_7d_crimes"] = ((time_deltas > np.timedelta64(0, 'ns')) & (time_deltas <= np.timedelta64(7, 'D'))).sum(axis=1)
-    df.loc[idx, "crime_count_past_24h"] = ((time_deltas > np.timedelta64(0, 'ns')) & (time_deltas <= np.timedelta64(1, 'D'))).sum(axis=1)
-    df.loc[idx, "crime_count_past_48h"] = ((time_deltas > np.timedelta64(0, 'ns')) & (time_deltas <= np.timedelta64(2, 'D'))).sum(axis=1)
+    df.loc[idx, "past_7d_crimes"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(7, 'D'))).sum(axis=1)
+    df.loc[idx, "crime_count_past_24h"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(1, 'D'))).sum(axis=1)
+    df.loc[idx, "crime_count_past_48h"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(2, 'D'))).sum(axis=1)
 
-    # Trend skoru: aynı saatte geçmiş 7 günde kaç olay olmuş?
-    trend_score = []
-    for i in range(len(times)):
-        current_time = times[i]
-        current_hour = event_hours[i]
-        mask = (times < current_time) & (times >= current_time - np.timedelta64(7, 'D')) & (event_hours == current_hour)
-        trend_score.append(mask.sum())
-    df.loc[idx, "crime_trend_score"] = trend_score
+    # Trend score: son 7 gün içinde aynı saatte kaç kez olmuş?
+    df.loc[idx, "crime_trend_score"] = [
+        ((times[:i] >= t - np.timedelta64(7, 'D')) & (event_hours[:i] == h)).sum()
+        for i, (t, h) in enumerate(zip(times, event_hours))
+    ]
 
     # Önceki saatlerde olay var mı?
     for lag in [1, 2, 3]:
         lag_col = f"prev_crime_{lag}h"
-        has_prev = []
-        for i in range(len(times)):
-            current_time = times[i]
-            mask = (times < current_time) & (times >= current_time - np.timedelta64(lag, 'h'))
-            has_prev.append(1 if mask.sum() > 0 else 0)
-        df.loc[idx, lag_col] = has_prev
+        df.loc[idx, lag_col] = [
+            1 if ((times[:i] >= t - np.timedelta64(lag, 'h')) & (times[:i] < t)).sum() > 0 else 0
+            for i, t in enumerate(times)
+        ]
 
 # === 8. Kaydet ===
-output_path = "sf_crime_49.csv"
 df.to_csv(output_path, index=False)
-print(f"✅ Zenginleştirilmiş veri kaydedildi: {output_path}")
+print(f"✅ Zenginleştirilmiş veri kaydedildi: {os.path.abspath(output_path)}")
