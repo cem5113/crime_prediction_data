@@ -229,5 +229,3 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
     
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
-        else:
-            st.error(f"❌ Indirme hatası: {response.status_code}")
