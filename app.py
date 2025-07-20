@@ -5,10 +5,10 @@ import os
 from fpdf import FPDF
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Veri Guncelleme", layout="wide")
-st.title("📦 Veri Guncelleme ve Kontrol Arayuzu")
+st.set_page_config(page_title="Veri Güncelleme", layout="wide")
+st.title("📦 Veri Güncelleme ve Kontrol Arayüzü")
 
-def create_pdf_report(file_name, original_count, revised_count, nan_cols):
+def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
 
@@ -16,23 +16,28 @@ def create_pdf_report(file_name, original_count, revised_count, nan_cols):
     pdf.add_page()
     pdf.set_font("Arial", size=12)
 
-    # Tek satırda özet
-    line = f"Tarih/Saat: {timestamp}; Dosya: {file_name} ; Toplam satir sayisi: {original_count:,}; NaN iceren sutun sayisi: {len(nan_cols)}"
-    
-    if not nan_cols.empty:
-        for col, count in nan_cols.items():
-            line += f"; - {col}: {count}"
-    
-    line += f"; Revize satir sayisi: {revised_count:,}"
+    summary = (
+        f"Tarih/Saat: {timestamp}; Dosya: {file_name} ; "
+        f"Toplam satir sayisi: {row_count_before:,}; "
+        f"NaN iceren sutun sayisi: {len(nan_cols)}"
+    )
+    pdf.cell(200, 10, txt=summary.encode("latin1", "replace").decode("latin1"), ln=True, align='L')
 
-    safe_line = line.encode("latin1", "replace").decode("latin1")
-    pdf.multi_cell(0, 10, txt=safe_line)
+    if not nan_cols.empty:
+        pdf.cell(200, 10, txt="NaN iceren sutunlar:", ln=True, align='L')
+        for col, count in nan_cols.items():
+            line = f"- {col}: {count}"
+            safe_line = line.encode("latin1", "replace").decode("latin1")
+            pdf.cell(200, 10, txt=safe_line, ln=True, align='L')
+
+    pdf.cell(200, 10, txt=f"Revize satir sayisi: {row_count_after:,}", ln=True, align='L')
+    pdf.cell(200, 10, txt=f"Silinen eski tarihli satir sayisi: {removed_rows:,}", ln=True, align='L')
 
     output_name = f"report_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(output_name)
     return output_name
 
-# --- Dosya indir ---
+# 📥 İndirme
 if st.button("📥 sf_crime.csv dosyasini indir"):
     url = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime.csv"
     response = requests.get(url)
@@ -43,16 +48,18 @@ if st.button("📥 sf_crime.csv dosyasini indir"):
     else:
         st.error("Indirme basarisiz.")
 
-# --- Veriyi isleme ve rapor ---
+# 🧹 Temizlik ve Gösterim
 if os.path.exists("sf_crime.csv"):
     df = pd.read_csv("sf_crime.csv")
-    original_count = len(df)
+    original_row_count = len(df)
 
-    # GEOID temizle
     if "GEOID" in df.columns:
-        df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\\d+)")[0].str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
 
-    # NaN analiz
+    st.subheader("📋 Ilk 5 Satir")
+    st.dataframe(df.head())
+    st.info(f"Toplam satir sayisi: {original_row_count:,}")
+
     nan_summary = df.isna().sum()
     nan_cols = nan_summary[nan_summary > 0]
 
@@ -61,23 +68,22 @@ if os.path.exists("sf_crime.csv"):
         st.dataframe(nan_cols.rename("NaN Sayisi"))
         st.write(f"NaN iceren sutun sayisi: {len(nan_cols)}")
         st.write(f"NaN iceren toplam satir sayisi: {df.isna().any(axis=1).sum()}")
+
         df = df.dropna()
     else:
         st.success("Hicbir sutunda NaN yok.")
 
-    # 5 yildan eski satirlari filtrele (tarih sütunu varsa)
+    # 🔁 Yalnızca son 5 yıla ait veriler
+    removed_rows = 0
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        cutoff = datetime.today() - timedelta(days=5*365)
-        df = df[df["date"] >= cutoff]
+        five_years_ago = datetime.now() - timedelta(days=5*365)
+        before_filter = len(df)
+        df = df[df["date"] >= five_years_ago]
+        removed_rows = before_filter - len(df)
 
-    revised_count = len(df)
-
-    st.subheader("Ilk 5 Satir")
-    st.dataframe(df.head())
-    st.info(f"Revize satir sayisi: {revised_count:,}")
-
+    # 📄 PDF Oluştur
     if st.button("📄 PDF Rapor Olustur"):
-        report_file = create_pdf_report("sf_crime.csv", original_count, revised_count, nan_cols)
+        report_file = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
         with open(report_file, "rb") as f:
             st.download_button("📎 Raporu Indir", data=f, file_name=report_file, mime="application/pdf")
