@@ -172,18 +172,40 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                 # 311 verisini birleştir
                 if df_311 is not None:
-                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
-                    df = pd.merge(df, df_311, on=["GEOID", "date", "hour_range"], how="left")
+                    if "hour_range" not in df_311.columns and "time" in df_311.columns:
+                        df_311["datetime"] = pd.to_datetime(df_311["date"].astype(str) + " " + df_311["time"].astype(str), errors="coerce")
+                        df_311["hour"] = df_311["datetime"].dt.hour
+                        df_311["hour_range"] = (df_311["hour"] // 3) * 3
+                        df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
                 
-                    cols_311 = [col for col in df.columns if "311" in col]
+                    # Merge öncesi tip düzeltmeleri
+                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                    df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                    df["hour_range"] = df["hour_range"].astype(str)
+                    df_311["hour_range"] = df_311["hour_range"].astype(str)
+                
+                    # Aggregate: saat aralığı başına toplam çağrı
+                    agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
+                    df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
+                    df["311_request_count"] = df["311_request_count"].fillna(0)
+                
+                    # Ek sütunları (örneğin category vs.) merge et (örnek kayıt üzerinden)
+                    meta_cols = ["GEOID", "date", "hour_range", "category", "subcategory"]
+                    df_311_meta = df_311[meta_cols].drop_duplicates()
+                    df = pd.merge(df, df_311_meta, on=["GEOID", "date", "hour_range"], how="left")
+                
+                    # Göstermek için:
+                    cols_311 = [col for col in df.columns if "311" in col or col in ["category", "subcategory"]]
                     st.write("🔍 311 Sütunları:")
                     st.write(cols_311)
                     st.write("🧯 311 NaN Sayıları:")
                     st.write(df[cols_311].isna().sum())
                 
                     for col in cols_311:
-                        df[col] = df[col].fillna(0)
-
+                        df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
+                        
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
                 df[col] = 0
