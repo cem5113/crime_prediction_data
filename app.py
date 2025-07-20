@@ -189,6 +189,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                     # Aggregate: saat aralığı başına toplam çağrı
                     agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
+                    agg_311["GEOID"] = agg_311["GEOID"].astype(str).str.zfill(11) 
                     df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
                     df["311_request_count"] = df["311_request_count"].fillna(0)
                 
