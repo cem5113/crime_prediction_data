@@ -128,87 +128,88 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
             st.stop() 
-            
-        # Enrichment
-        df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
-        df = df.dropna(subset=["datetime"])
-        df["datetime"] = df["datetime"].dt.floor("H")
-        df["event_hour"] = df["datetime"].dt.hour
-        df["date"] = df["datetime"].dt.date
-        df["month"] = df["datetime"].dt.month
-        df["year"] = df["datetime"].dt.year
-        df["day_of_week"] = df["datetime"].dt.dayofweek
-        df["is_night"] = df["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
-        df["is_weekend"] = df["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
-        years = df["year"].dropna().astype(int).unique()
-        us_holidays = pd.to_datetime(list(holidays.US(years=years).keys()))
-        df["is_holiday"] = df["date"].isin(us_holidays).astype(int)
-        df["latlon"] = df["latitude"].round(5).astype(str) + "_" + df["longitude"].round(5).astype(str)
-        df["is_repeat_location"] = df.duplicated("latlon").astype(int)
-        df.drop(columns=["latlon"], inplace=True)
-        df["is_school_hour"] = df["event_hour"].apply(lambda x: 1 if 7 <= x <= 16 else 0)
-        df["is_business_hour"] = df.apply(lambda x: 1 if (9 <= x["event_hour"] < 18 and x["day_of_week"] < 5) else 0, axis=1)
-        season_map = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall", 10: "Fall", 11: "Fall"}
-        df["season"] = df["month"].map(season_map)
 
-        # 911 verilerini yükle ve birleştir
-        if os.path.exists("sf_911_last_5_year.csv"):
-            df_911 = pd.read_csv("sf_911_last_5_year.csv")
-            df_911["date"] = pd.to_datetime(df_911["date"]).dt.date
-            df["hour_range"] = (df["event_hour"] // 3) * 3
-            df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["event_hour"] // 3 * 3 + 3).astype(str)
+        if data_ready:
+            # Enrichment
+            df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
+            df = df.dropna(subset=["datetime"])
+            df["datetime"] = df["datetime"].dt.floor("H")
+            df["event_hour"] = df["datetime"].dt.hour
+            df["date"] = df["datetime"].dt.date
+            df["month"] = df["datetime"].dt.month
+            df["year"] = df["datetime"].dt.year
+            df["day_of_week"] = df["datetime"].dt.dayofweek
+            df["is_night"] = df["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
+            df["is_weekend"] = df["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
+            years = df["year"].dropna().astype(int).unique()
+            us_holidays = pd.to_datetime(list(holidays.US(years=years).keys()))
+            df["is_holiday"] = df["date"].isin(us_holidays).astype(int)
+            df["latlon"] = df["latitude"].round(5).astype(str) + "_" + df["longitude"].round(5).astype(str)
+            df["is_repeat_location"] = df.duplicated("latlon").astype(int)
+            df.drop(columns=["latlon"], inplace=True)
+            df["is_school_hour"] = df["event_hour"].apply(lambda x: 1 if 7 <= x <= 16 else 0)
+            df["is_business_hour"] = df.apply(lambda x: 1 if (9 <= x["event_hour"] < 18 and x["day_of_week"] < 5) else 0, axis=1)
+            season_map = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall", 10: "Fall", 11: "Fall"}
+            df["season"] = df["month"].map(season_map)
+    
+            # 911 verilerini yükle ve birleştir
+            if os.path.exists("sf_911_last_5_year.csv"):
+                df_911 = pd.read_csv("sf_911_last_5_year.csv")
+                df_911["date"] = pd.to_datetime(df_911["date"]).dt.date
+                df["hour_range"] = (df["event_hour"] // 3) * 3
+                df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["event_hour"] // 3 * 3 + 3).astype(str)
+                
+                # Birleştir
+                df = pd.merge(df, df_911, on=["GEOID", "date", "hour_range"], how="left")
+                
+                # Yeni sütunları gözlemle
+                cols_911 = [col for col in df.columns if "911" in col or "request" in col]
+                st.write("🔍 911 Sütunları:")
+                st.write(cols_911)
+                st.write("🧯 911 NaN Sayıları:")
+                st.write(df[cols_911].isna().sum())
             
-            # Birleştir
-            df = pd.merge(df, df_911, on=["GEOID", "date", "hour_range"], how="left")
-            
-            # Yeni sütunları gözlemle
-            cols_911 = [col for col in df.columns if "911" in col or "request" in col]
-            st.write("🔍 911 Sütunları:")
-            st.write(cols_911)
-            st.write("🧯 911 NaN Sayıları:")
-            st.write(df[cols_911].isna().sum())
-        
-            # Eksik olanları 0 yap
-            for col in cols_911:
-                df[col] = df[col].fillna(0)
-            
-            # 311 verisini birleştir
-            if df_311 is not None:
-                if "hour_range" not in df_311.columns and "time" in df_311.columns:
-                    df_311["datetime"] = pd.to_datetime(df_311["date"].astype(str) + " " + df_311["time"].astype(str), errors="coerce")
-                    df_311["hour"] = df_311["datetime"].dt.hour
-                    df_311["hour_range"] = (df_311["hour"] // 3) * 3
-                    df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
-            
-                # Merge öncesi tip düzeltmeleri
-                df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                df["hour_range"] = df["hour_range"].astype(str)
-                df_311["hour_range"] = df_311["hour_range"].astype(str)
-                df["date"] = pd.to_datetime(df["date"]).dt.date
-                df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
-            
-                # Aggregate: saat aralığı başına toplam çağrı
-                agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
-                agg_311["GEOID"] = agg_311["GEOID"].astype(str).str.zfill(11) 
-                df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
-                df["311_request_count"] = df["311_request_count"].fillna(0)
-            
-                # Ek sütunları (örneğin category vs.) merge et (örnek kayıt üzerinden)
-                meta_cols = ["GEOID", "date", "hour_range", "category", "subcategory"]
-                df_311_meta = df_311[meta_cols].drop_duplicates()
-                df = pd.merge(df, df_311_meta, on=["GEOID", "date", "hour_range"], how="left")
-            
-                # Göstermek için:
-                cols_311 = [col for col in df.columns if "311" in col or col in ["category", "subcategory"]]
-                st.write("🔍 311 Sütunları:")
-                st.write(cols_311)
-                st.write("🧯 311 NaN Sayıları:")
-                st.write(df[cols_311].isna().sum())
-            
-                for col in cols_311:
-                    df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
-                        
+                # Eksik olanları 0 yap
+                for col in cols_911:
+                    df[col] = df[col].fillna(0)
+                
+                # 311 verisini birleştir
+                if df_311 is not None:
+                    if "hour_range" not in df_311.columns and "time" in df_311.columns:
+                        df_311["datetime"] = pd.to_datetime(df_311["date"].astype(str) + " " + df_311["time"].astype(str), errors="coerce")
+                        df_311["hour"] = df_311["datetime"].dt.hour
+                        df_311["hour_range"] = (df_311["hour"] // 3) * 3
+                        df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
+                
+                    # Merge öncesi tip düzeltmeleri
+                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                    df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                    df["hour_range"] = df["hour_range"].astype(str)
+                    df_311["hour_range"] = df_311["hour_range"].astype(str)
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                
+                    # Aggregate: saat aralığı başına toplam çağrı
+                    agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
+                    agg_311["GEOID"] = agg_311["GEOID"].astype(str).str.zfill(11) 
+                    df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
+                    df["311_request_count"] = df["311_request_count"].fillna(0)
+                
+                    # Ek sütunları (örneğin category vs.) merge et (örnek kayıt üzerinden)
+                    meta_cols = ["GEOID", "date", "hour_range", "category", "subcategory"]
+                    df_311_meta = df_311[meta_cols].drop_duplicates()
+                    df = pd.merge(df, df_311_meta, on=["GEOID", "date", "hour_range"], how="left")
+                
+                    # Göstermek için:
+                    cols_311 = [col for col in df.columns if "311" in col or col in ["category", "subcategory"]]
+                    st.write("🔍 311 Sütunları:")
+                    st.write(cols_311)
+                    st.write("🧯 311 NaN Sayıları:")
+                    st.write(df[cols_311].isna().sum())
+                
+                    for col in cols_311:
+                        df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
+                            
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
                 df[col] = 0
