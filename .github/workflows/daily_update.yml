@@ -2,7 +2,7 @@ name: Daily Crime Data Update
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # UTC 02:00 = 19:00 San Francisco time (PDT)
+    - cron: '0 2 * * *'  # San Francisco saatiyle her gün 19:00 (UTC+0 = 02:00)
   workflow_dispatch:
 
 jobs:
@@ -27,17 +27,21 @@ jobs:
         run: |
           python scripts/update_sf_crime.py
 
-      - name: 📑 sf_crime_49.csv verisini zenginleştir (senin kodun)
+      - name: 📑 sf_crime_49.csv verisini zenginleştir
         run: |
           python scripts/enrich_sf_crime_49.py
+
+      - name: 🧠 sf_crime_52.csv üret (kombinasyon + Y_label)
+        run: |
+          python scripts/generate_sf_crime_52.py
 
       - name: 📤 Değişiklikleri commit et
         run: |
           git config user.name "cem5113"
           git config user.email "cem5113@hotmail.com"
-          git add sf_crime.csv sf_crime_49.csv
-          git commit -m "Automated daily update"
+          git add sf_crime.csv sf_crime_49.csv sf_crime_50.csv sf_crime_52.csv
+          git commit -m "🔄 Günlük otomatik veri güncellemesi"
           git push origin main
 
       - name: ✅ Tamamlandı
-        run: echo "Veri güncellemesi tamamlandı."
+        run: echo "Tüm günlük veri güncelleme ve etiketleme işlemleri tamamlandı."
