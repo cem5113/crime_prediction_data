@@ -1,0 +1,43 @@
+name: Daily Crime Data Update
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # UTC 02:00 = 19:00 San Francisco time (PDT)
+  workflow_dispatch:
+
+jobs:
+  update-crime-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📆 Repo'yu klonla
+        uses: actions/checkout@v3
+
+      - name: 🔧 Python ortamını kur
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Gereklilikleri yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ⬆️ sf_crime.csv verisini güncelle (senin kodun)
+        run: |
+          python scripts/update_sf_crime.py
+
+      - name: 📑 sf_crime_49.csv verisini zenginleştir (senin kodun)
+        run: |
+          python scripts/enrich_sf_crime_49.py
+
+      - name: 📤 Değişiklikleri commit et
+        run: |
+          git config user.name "cem5113"
+          git config user.email "cem5113@hotmail.com"
+          git add sf_crime.csv sf_crime_49.csv
+          git commit -m "Automated daily update"
+          git push origin main
+
+      - name: ✅ Tamamlandı
+        run: echo "Veri güncellemesi tamamlandı."
