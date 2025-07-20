@@ -90,13 +90,32 @@ if os.path.exists("sf_crime.csv"):
         report_file = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
         with open(report_file, "rb") as f:
             st.download_button("📎 Raporu Indir", data=f, file_name=report_file, mime="application/pdf")
+def show_csv_summary(file_path):
+    if os.path.exists(file_path):
+        df = pd.read_csv(file_path)
+        total_rows = df.shape[0]
+        total_cols = df.shape[1]
+        nan_summary = df.isna().sum()
+        nan_columns = nan_summary[nan_summary > 0]
+        total_nan_cells = df.isna().sum().sum()
+
+        st.info(f"📊 **{os.path.basename(file_path)} Özeti**")
+        st.write(f"• Satır sayısı: {total_rows:,}")
+        st.write(f"• Sütun sayısı: {total_cols}")
+        st.write(f"• NaN içeren sütun sayısı: {len(nan_columns)}")
+        st.write(f"• Toplam eksik hücre (NaN) sayısı: {total_nan_cells:,}")
+    else:
+        st.warning(f"⚠️ {file_path} bulunamadı.")
 
 st.subheader("🔄 sf_crime_49.csv üretimi (opsiyonel)")
 if st.button("49'u üret"):
     os.system("python scripts/enrich_sf_crime_49.py")
     st.success("✅ sf_crime_49.csv üretildi.")
-
+    st.success("✅ sf_crime_49.csv üretildi.")
+    show_csv_summary("sf_crime_49.csv")
 st.subheader("🧠 sf_crime_52.csv üretimi (opsiyonel)")
 if st.button("52'yi üret"):
     os.system("python scripts/generate_sf_crime_52.py")
     st.success("✅ sf_crime_52.csv üretildi.")
+    st.success("✅ sf_crime_52.csv üretildi.")
+    show_csv_summary("sf_crime_52.csv")
