@@ -239,6 +239,3 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
         else:
             st.error(f"❌ Indirme hatası: {response.status_code}")
-            
-except Exception as e:
-    st.error(f"❌ Hata oluştu: {e}")
