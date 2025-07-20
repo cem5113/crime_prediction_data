@@ -175,5 +175,5 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ Tüm dosyalar başarıyla kaydedildi: sf_crime.csv, sf_crime_50.csv, sf_crime_52.csv")
 
-    except Exception as e:
-        st.error(f"❌ Hata oluştu: {e}")
+        except Exception as e:
+            st.error(f"❌ Hata oluştu: {e}")
