@@ -15,7 +15,6 @@ st.title("📦 Günlük Suç Verisi İşleme ve Özetleme Paneli")
 DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_crime.csv"
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
-DOWNLOAD_311_PATH = "311_requests_range.csv"
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -76,20 +75,26 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                 # 311 verisini oku 
                 df_311 = None
-                if os.path.exists(DOWNLOAD_311_PATH):
-                    try:
-                        df_311 = pd.read_csv(DOWNLOAD_311_PATH)
-                        st.success("✅ 311 verisi yüklendi.")
+                try:
+                    response_311 = requests.get(DOWNLOAD_311_URL)
+                    if response_311.status_code == 200:
+                        with open("sf_311_last_5_years.csv", "wb") as f:
+                            f.write(response_311.content)
+                        st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
+                
+                        df_311 = pd.read_csv("sf_311_last_5_years.csv")
+                        df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                
                         st.write("📟 311 Verisi İlk 5 Satır")
                         st.dataframe(df_311.head())
                         st.write("📌 311 Sütunları:")
                         st.write(df_311.columns.tolist())
-                    except Exception as e:
-                        st.warning(f"⚠️ 311 verisi yüklenemedi: {e}")
-                else:
-                    st.warning("⚠️ 311_requests_range.csv bulunamadı.")
-
-
+                
+                    else:
+                        st.warning(f"⚠️ sf_311_last_5_years.csv indirilemedi: {response_311.status_code}")
+                except Exception as e:
+                    st.error(f"❌ 311 verisi yüklenemedi: {e}")
+                    
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
