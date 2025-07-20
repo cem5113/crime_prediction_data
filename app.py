@@ -127,7 +127,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.stop()  # Hatalı indirme varsa durdur
         except Exception as e:
             st.error(f"❌ Hata oluştu: {e}")
-
+            st.stop() 
+            
             # Enrichment
             df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
             df = df.dropna(subset=["datetime"])
@@ -182,10 +183,10 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     # Merge öncesi tip düzeltmeleri
                     df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
                     df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                    df["date"] = pd.to_datetime(df["date"]).dt.date
-                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
                     df["hour_range"] = df["hour_range"].astype(str)
                     df_311["hour_range"] = df_311["hour_range"].astype(str)
+                    df["date"] = pd.to_datetime(df["date"]).dt.date
+                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
                 
                     # Aggregate: saat aralığı başına toplam çağrı
                     agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
