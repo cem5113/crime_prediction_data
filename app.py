@@ -18,6 +18,65 @@ POPULATION_PATH = "sf_population.csv"
 DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv"
 DOWNLOAD_TRAIN_URL = "https://transitfeeds.com/p/bart/58/latest/download"
 
+def update_bus_data_if_needed():
+    import geopandas as gpd
+    from shapely.geometry import Point
+    import os
+
+    api_url = "https://data.sfgov.org/resource/i28k-bkz6.json"
+    timestamp_file = "bus_stops_last_update.txt"
+
+    def is_month_passed(file):
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                last = f.read().strip()
+            try:
+                last_date = datetime.strptime(last, "%Y-%m-%d")
+                return (datetime.today() - last_date).days >= 30
+            except:
+                return True
+        return True
+
+    if is_month_passed(timestamp_file):
+        try:
+            response = requests.get(api_url)
+            if response.status_code == 200:
+                bus_data = response.json()
+                df = pd.DataFrame(bus_data)
+
+                # latitude / longitude sütunlarını float olarak al
+                df = df.dropna(subset=["latitude", "longitude"])
+                df["stop_lat"] = df["latitude"].astype(float)
+                df["stop_lon"] = df["longitude"].astype(float)
+
+                # GeoDataFrame'e çevir
+                gdf_stops = gpd.GeoDataFrame(
+                    df,
+                    geometry=gpd.points_from_xy(df["stop_lon"], df["stop_lat"]),
+                    crs="EPSG:4326"
+                )
+
+                # Census bloklarını oku
+                census_path = "/content/drive/MyDrive/crime_data/sf_census_blocks_with_population.geojson"
+                gdf_blocks = gpd.read_file(census_path)[["GEOID", "geometry"]].to_crs("EPSG:4326")
+
+                # Spatial join
+                gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks, how="left", predicate="within")
+                gdf_joined["GEOID"] = gdf_joined["GEOID"].astype(str).str.zfill(11)
+                gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore").to_csv("sf_bus_stops_with_geoid.csv", index=False)
+
+                # Tarih kaydet
+                with open(timestamp_file, "w") as f:
+                    f.write(datetime.today().strftime("%Y-%m-%d"))
+
+                st.success("🚌 Otobüs durakları Socrata API'den indirildi ve GEOID ile eşleştirildi.")
+            else:
+                st.warning(f"⚠️ Otobüs verisi indirilemedi: {response.status_code}")
+        except Exception as e:
+            st.error(f"❌ Otobüs verisi güncellenemedi: {e}")
+    else:
+        st.info("📅 Otobüs verisi bu ay zaten güncellendi.")
+
 def update_train_data_if_needed():
     import zipfile
     import geopandas as gpd
@@ -114,7 +173,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
 
                 update_train_data_if_needed()
-
+                update_bus_data_if_needed() 
+                
                 # 911 verisini indir
                 df_911 = None  # ön tanım
                 try:
