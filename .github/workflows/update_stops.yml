@@ -1,0 +1,33 @@
+name: Update Transit Stops Monthly
+
+on:
+  schedule:
+    - cron: '0 8 1 * *'  # Her ayın 1'inde UTC 08:00'de çalışır
+  workflow_dispatch:
+
+jobs:
+  update-stops:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo'yu klonla
+        uses: actions/checkout@v3
+
+      - name: Python kur
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Gerekli Python paketlerini yükle
+        run: |
+          pip install pandas geopandas requests shapely
+
+      - name: Bus ve Train verilerini güncelle
+        run: python scripts/update_stops.py
+
+      - name: Güncellenen dosyaları commit et
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add sf_bus_stops_with_geoid.csv sf_train_stops_with_geoid.csv
+          git commit -m "🚏 Monthly update: bus & train stops" || echo "No changes"
+          git push
