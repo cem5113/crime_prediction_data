@@ -16,6 +16,65 @@ DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/do
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
 POPULATION_PATH = "sf_population.csv"
 DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv"
+DOWNLOAD_TRAIN_URL = "https://transitfeeds.com/p/bart/58/latest/download"
+
+def update_train_data_if_needed():
+    import zipfile
+    import geopandas as gpd
+    import pandas as pd
+    import os
+    from datetime import datetime
+
+    zip_path = "bart_gtfs.zip"
+    timestamp_file = "train_stops_last_update.txt"
+
+    def is_month_passed(file):
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                last = f.read().strip()
+            try:
+                last_date = datetime.strptime(last, "%Y-%m-%d")
+                return (datetime.today() - last_date).days >= 30
+            except:
+                return True
+        return True
+
+    if is_month_passed(timestamp_file):
+        try:
+            response = requests.get(DOWNLOAD_TRAIN_URL)
+            if response.status_code == 200:
+                with open(zip_path, "wb") as f:
+                    f.write(response.content)
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extract("stops.txt", ".")
+                os.rename("stops.txt", "sf_train_stops.csv")
+                with open(timestamp_file, "w") as f:
+                    f.write(datetime.today().strftime("%Y-%m-%d"))
+                st.success("🚆 BART tren durakları güncellendi (sf_train_stops.csv)")
+
+                # === GEOID EŞLEME ===
+                train_df = pd.read_csv("sf_train_stops.csv")
+                gdf_stops = gpd.GeoDataFrame(
+                    train_df,
+                    geometry=gpd.points_from_xy(train_df["stop_lon"], train_df["stop_lat"]),
+                    crs="EPSG:4326"
+                )
+
+                census_path = "/content/drive/MyDrive/crime_data/sf_census_blocks_with_population.geojson"
+                gdf_blocks = gpd.read_file(census_path)[["GEOID", "geometry"]].to_crs("EPSG:4326")
+
+                gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks, how="left", predicate="within")
+                gdf_joined["GEOID"] = gdf_joined["GEOID"].astype(str).str.zfill(11)
+                gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore").to_csv("sf_train_stops_with_geoid.csv", index=False)
+
+                st.success("📌 GEOID ile eşleştirilmiş tren durakları oluşturuldu (sf_train_stops_with_geoid.csv)")
+
+            else:
+                st.warning(f"⚠️ Tren verisi indirilemedi: {response.status_code}")
+        except Exception as e:
+            st.error(f"❌ Tren verisi indirme hatası: {e}")
+    else:
+        st.info("📅 Tren verisi bu ay zaten güncellenmiş.")
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -53,6 +112,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
+
+                update_train_data_if_needed()
 
                 # 911 verisini indir
                 df_911 = None  # ön tanım
@@ -264,6 +325,48 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     st.write(df[["GEOID", "distance_to_bus", "bus_stop_count"]].head())
                 except Exception as e:
                     st.error(f"❌ Otobüs entegrasyon hatası: {e}")
+
+                # === 🚆 En Yakın Tren Durağı ve Durağa Uzaklık ===
+                try:
+                    import geopandas as gpd
+                    from shapely.geometry import Point
+                    from scipy.spatial import cKDTree
+                    import numpy as np
+                
+                    # 1. Suç verisini GeoDataFrame'e çevir
+                    gdf_crime = gpd.GeoDataFrame(
+                        df,
+                        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
+                        crs="EPSG:4326"
+                    ).to_crs(epsg=3857)
+                
+                    # 2. Tren duraklarını oku ve GeoDataFrame'e çevir
+                    if os.path.exists("sf_train_stops_with_geoid.csv"):
+                        df_train = pd.read_csv("sf_train_stops_with_geoid.csv").dropna(subset=["stop_lat", "stop_lon"])
+                        gdf_train = gpd.GeoDataFrame(
+                            df_train,
+                            geometry=gpd.points_from_xy(df_train["stop_lon"], df_train["stop_lat"]),
+                            crs="EPSG:4326"
+                        ).to_crs(epsg=3857)
+                
+                        # 3. KDTree ile mesafe hesapla
+                        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+                        train_coords = np.vstack([gdf_train.geometry.x, gdf_train.geometry.y]).T
+                        tree = cKDTree(train_coords)
+                        distances, _ = tree.query(crime_coords, k=1)
+                        df["distance_to_train"] = distances
+                
+                        # 4. Belirli bir yarıçapta (örn. 500m) tren durağı sayısını hesapla
+                        radius = 500  # metre
+                        df["train_stop_count"] = gdf_crime.geometry.apply(lambda pt: gdf_train.distance(pt).lt(radius).sum())
+                
+                        st.success("🚆 Tren mesafesi ve durak sayısı eklendi.")
+                        st.write(df[["GEOID", "distance_to_train", "train_stop_count"]].head())
+                    else:
+                        st.warning("⚠️ sf_train_stops_with_geoid.csv bulunamadı. Tren durakları eklenmedi.")
+                
+                except Exception as e:
+                    st.error(f"❌ Tren entegrasyon hatası: {e}")
 
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
                 df[col] = 0
