@@ -15,7 +15,7 @@ DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/downlo
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
 POPULATION_PATH = "sf_population.csv"
-DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv
+DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv"
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
