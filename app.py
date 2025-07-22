@@ -57,7 +57,7 @@ def update_bus_data_if_needed():
                 )
 
                 # Census bloklarını oku
-                census_path = "/content/drive/MyDrive/crime_data/sf_census_blocks_with_population.geojson"
+                census_path = "sf_census_blocks_with_population.geojson"
                 gdf_blocks = gpd.read_file(census_path)[["GEOID", "geometry"]].to_crs("EPSG:4326")
 
                 # Spatial join
