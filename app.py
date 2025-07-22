@@ -15,6 +15,7 @@ DOWNLOAD_URL = "https://github.com/cem5113/crime_prediction_data/releases/downlo
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
 POPULATION_PATH = "sf_population.csv"
+DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -111,6 +112,22 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     st.dataframe(df[["GEOID", "population"]].drop_duplicates().head())
                 else:
                     st.warning("⚠️ Nüfus verisi (sf_population.csv) bulunamadı.")
+
+                # Otobüs durak verisini indir
+                df_bus = None
+                try:
+                    response_bus = requests.get(DOWNLOAD_BUS_URL)
+                    if response_bus.status_code == 200:
+                        with open("sf_bus_stops.csv", "wb") as f:
+                            f.write(response_bus.content)
+                        st.success("✅ sf_bus_stops.csv başarıyla indirildi.")
+                        df_bus = pd.read_csv("sf_bus_stops.csv").dropna(subset=["stop_lat", "stop_lon"])
+                        st.write("🚌 Otobüs Verisi İlk 5 Satır:")
+                        st.dataframe(df_bus.head())
+                    else:
+                        st.warning(f"⚠️ sf_bus_stops.csv indirilemedi: {response_bus.status_code}")
+                except Exception as e:
+                    st.error(f"❌ Otobüs verisi indirilemedi: {e}")
 
                 # NaN özetle
                 nan_summary = df.isna().sum()
@@ -210,6 +227,44 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
                         
             df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
+
+            # En yakın otobüs durağına mesafe ve durak sayısı
+            if df_bus is not None:
+                try:
+                    import geopandas as gpd
+                    from shapely.geometry import Point
+                    from scipy.spatial import cKDTree
+                    import numpy as np
+            
+                    gdf_crime = gpd.GeoDataFrame(
+                        df,
+                        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
+                        crs="EPSG:4326"
+                    ).to_crs(epsg=3857)
+            
+                    gdf_bus = gpd.GeoDataFrame(
+                        df_bus,
+                        geometry=gpd.points_from_xy(df_bus["stop_lon"], df_bus["stop_lat"]),
+                        crs="EPSG:4326"
+                    ).to_crs(epsg=3857)
+            
+                    crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+                    bus_coords = np.vstack([gdf_bus.geometry.x, gdf_bus.geometry.y]).T
+                    tree = cKDTree(bus_coords)
+                    distances, _ = tree.query(crime_coords, k=1)
+                    df["distance_to_bus"] = distances
+            
+                    dynamic_radius = np.percentile(distances, 75)
+                    def count_stops(pt):
+                        return gdf_bus.distance(pt).lt(dynamic_radius).sum()
+            
+                    df["bus_stop_count"] = gdf_crime.geometry.apply(count_stops)
+            
+                    st.success("✅ Otobüs mesafesi ve durak sayısı eklendi.")
+                    st.write(df[["GEOID", "distance_to_bus", "bus_stop_count"]].head())
+                except Exception as e:
+                    st.error(f"❌ Otobüs entegrasyon hatası: {e}")
+
             for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
                 df[col] = 0
 
@@ -239,6 +294,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
             mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
             mean_cols.extend([col for col in df.columns if "311" in col])
+            mean_cols.extend(["distance_to_bus", "bus_stop_count"])
+
             if "population" in df.columns:
                 mean_cols.append("population")
                 
