@@ -102,6 +102,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 # Nüfus verisini oku
                 if os.path.exists(POPULATION_PATH):
                     df_pop = pd.read_csv(POPULATION_PATH)
+                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r'(\d+)')[0].str.zfill(11)
                     df_pop["GEOID"] = df_pop["GEOID"].astype(str).str.zfill(11)
                     df = pd.merge(df, df_pop, on="GEOID", how="left")
                     df["population"] = df["population"].fillna(0).astype(int)
@@ -117,6 +118,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 removed_rows = 0  # Henüz satır silinmedi
 
                 # PDF rapor oluştur
+                removed_rows = original_row_count - len(df)
                 report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
                 with open(report_path, "rb") as f:
                     st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
@@ -130,7 +132,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             # Enrichment
             df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
             df = df.dropna(subset=["datetime"])
-            df["datetime"] = df["datetime"].dt.floor("H")
+            df["datetime"] = df["datetime"].dt.floor("h")
             df["event_hour"] = df["datetime"].dt.hour
             df["date"] = df["datetime"].dt.date
             df["month"] = df["datetime"].dt.month
@@ -179,6 +181,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
                 
                     # Merge öncesi tip düzeltmeleri
+                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
                     df["GEOID"] = df["GEOID"].apply(lambda x: str(int(x)).zfill(11) if pd.notna(x) else None)
                     df_311["GEOID"] = df_311["GEOID"].apply(lambda x: str(int(float(x))).zfill(11) if pd.notna(x) else None)
                     df["date"] = pd.to_datetime(df["date"]).dt.date
