@@ -216,6 +216,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                 update_train_data_if_needed()
                 update_bus_data_if_needed() 
+                update_pois_if_needed()
                 
                 # 911 verisini indir
                 df_911 = None  # ön tanım
