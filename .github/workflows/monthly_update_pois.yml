@@ -17,11 +17,27 @@ jobs:
         with:
           python-version: 3.10
 
-      - name: Install dependencies
-        run: pip install geopandas pandas scikit-learn shapely
+      - name: Install system dependencies (GDAL, Fiona, pyproj için)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev python3-dev
+
+      - name: Install Python packages
+        run: |
+          pip install --upgrade pip
+          pip install pandas geopandas scikit-learn numpy shapely fiona pyproj requests
+
+      - name: Show current directory and files
+        run: |
+          echo "📍 Current working directory:"
+          pwd
+          echo "📁 Available files:"
+          ls -lh
+          echo "📁 scripts klasörü varsa göster:"
+          ls -lh scripts || true
 
       - name: Run POI update script
-        run: python update_pois.py
+        run: python scripts/update_pois.py
 
       - name: Commit and push updates
         run: |
