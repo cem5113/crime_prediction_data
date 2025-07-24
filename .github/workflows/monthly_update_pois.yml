@@ -2,8 +2,8 @@ name: Monthly POI Update
 
 on:
   schedule:
-    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00 (SF saati = UTC-7)
-  workflow_dispatch:     # Manuel çalıştırma opsiyonu
+    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
+  workflow_dispatch:
 
 jobs:
   update-pois:
@@ -30,9 +30,7 @@ jobs:
 
       - name: 📁 Show current directory and files
         run: |
-          echo "📍 Current working directory:"
           pwd
-          echo "📄 Files:"
           ls -lh
 
       - name: ⚙️ Run POI update script
