@@ -3,11 +3,12 @@ name: Monthly POI Update
 on:
   schedule:
     - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
-  workflow_dispatch:     # Manuel çalıştırma opsiyonu
+  workflow_dispatch:
 
 jobs:
   update-pois:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -17,7 +18,7 @@ jobs:
         with:
           python-version: 3.10
 
-      - name: Install system dependencies (GDAL, Fiona, pyproj için)
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gdal-bin libgdal-dev python3-dev
@@ -31,10 +32,8 @@ jobs:
         run: |
           echo "📍 Current working directory:"
           pwd
-          echo "📁 Available files:"
+          echo "📁 Files:"
           ls -lh
-          echo "📁 scripts klasörü varsa göster:"
-          ls -lh scripts || true
 
       - name: Run POI update script
         run: python update_pois.py
