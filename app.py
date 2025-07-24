@@ -143,6 +143,7 @@ def update_train_data_if_needed():
 
 def update_pois_if_needed():
     import os
+    import pandas as pd
     import subprocess
     from datetime import datetime
     import streamlit as st
