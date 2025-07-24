@@ -2,7 +2,7 @@ name: Monthly POI Update
 
 on:
   schedule:
-    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00 (SF saati)
+    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
   workflow_dispatch:
 
 jobs:
@@ -23,14 +23,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gdal-bin libgdal-dev python3-dev
 
-      - name: Install Python packages (geçici)
+      - name: Install Python packages
         run: |
           pip install --upgrade pip
           pip install pandas numpy geopandas scikit-learn shapely fiona pyproj requests
 
       - name: Show working directory and files
         run: |
+          echo "📍 Working Directory:"
           pwd
+          echo "📁 Tüm Dosyalar:"
           ls -lh
           echo "📁 scripts klasörü:"
           ls -lh scripts || true
@@ -42,6 +44,6 @@ jobs:
         run: |
           git config --global user.name "cem5113"
           git config --global user.email "cem5113@hotmail.com"
-          git add .
-          git commit -m "🔄 Monthly POI data updated"
-          git push
+          git add sf_pois_cleaned_with_geoid.csv risky_pois_dynamic.json || true
+          git commit -m "🔄 Monthly POI data updated" || echo "No changes to commit"
+          git push || echo "Nothing to push"
