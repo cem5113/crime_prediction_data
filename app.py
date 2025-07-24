@@ -217,7 +217,16 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 update_train_data_if_needed()
                 update_bus_data_if_needed() 
                 update_pois_if_needed()
-                
+                if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
+                    st.success("✅ POI CSV dosyası başarıyla oluşturuldu.")
+                else:
+                    st.error("❌ POI CSV dosyası eksik!")
+            
+                if os.path.exists("risky_pois_dynamic.json"):
+                    st.success("✅ POI risk skoru dosyası oluşturuldu.")
+                else:
+                    st.error("❌ Risk skoru JSON dosyası bulunamadı.")
+
                 # 911 verisini indir
                 df_911 = None  # ön tanım
                 try:
