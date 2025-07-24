@@ -7,6 +7,10 @@ import holidays
 import itertools
 from datetime import datetime, timedelta
 from fpdf import FPDF
+import subprocess
+import geopandas as gpd
+from shapely.geometry import Point
+from scipy.spatial import cKDTree
 
 st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Verisi İşleme ve Özetleme Paneli")
@@ -17,6 +21,8 @@ DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/do
 POPULATION_PATH = "sf_population.csv"
 DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops.csv"
 DOWNLOAD_TRAIN_URL = "https://transitfeeds.com/p/bart/58/latest/download"
+DOWNLOAD_POIS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson"
+RISKY_POIS_JSON_PATH = "risky_pois_dynamic.json"
 
 def update_bus_data_if_needed():
     import geopandas as gpd
@@ -135,6 +141,42 @@ def update_train_data_if_needed():
     else:
         st.info("📅 Tren verisi bu ay zaten güncellenmiş.")
 
+def update_pois_if_needed():
+    import os
+    import subprocess
+    from datetime import datetime
+    import streamlit as st
+
+    timestamp_file = "poi_last_update.txt"
+
+    def is_month_passed(file):
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                last = f.read().strip()
+            try:
+                last_date = datetime.strptime(last, "%Y-%m-%d")
+                return (datetime.today() - last_date).days >= 30
+            except:
+                return True
+        return True
+
+    if is_month_passed(timestamp_file):
+        try:
+            st.info("📥 POI verisi güncelleniyor...")
+            result = subprocess.run(["python3", "update_pois.py"], capture_output=True, text=True)
+            if result.returncode == 0:
+                with open(timestamp_file, "w") as f:
+                    f.write(datetime.today().strftime("%Y-%m-%d"))
+                st.success("✅ POI verisi başarıyla güncellendi.")
+                st.code(result.stdout)
+            else:
+                st.error("❌ POI güncelleme hatası:")
+                st.code(result.stderr)
+        except Exception as e:
+            st.error(f"🚫 Güncelleme işlemi başarısız oldu: {e}")
+    else:
+        st.info("📅 POI verisi bu ay zaten güncellendi.")
+
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
@@ -220,7 +262,66 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
+
+                # Suç verisini oku
+                df = pd.read_csv("sf_crime.csv", low_memory=False)
+                original_row_count = len(df)
+
+                # 🔁 POI Risk ve Yoğunluk Özelliklerini Ekle
+                try:
+                    df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                    with open("risky_pois_dynamic.json") as f:
+                        risk_dict = json.load(f)
+                    
+                    df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+
+                    poi_features = df_poi.groupby("GEOID").agg(
+                        poi_total_count=("id", "count"),
+                        risky_poi_score=("risk_score", "mean")
+                    ).reset_index()
+
+                    df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+                    poi_features["GEOID"] = poi_features["GEOID"].astype(str).str.zfill(11)
+                    df = df.merge(poi_features, on="GEOID", how="left")
+
+                    st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
+                    st.write("📍 Örnek POI verisi:")
+                    st.dataframe(df[["GEOID", "poi_total_count", "risky_poi_score"]].drop_duplicates().head())
+
+                except Exception as e:
+                    st.warning(f"⚠️ POI verisi eklenemedi: {e}")
                 
+                try:
+                    df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                    df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+                    
+                    gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+                    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
+                
+                    # Genel POI mesafesi
+                    poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
+                    crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+                    poi_tree = cKDTree(poi_coords)
+                    df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
+                
+                    # Riskli POI’lere mesafe
+                    risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
+                    if not risky_poi.empty:
+                        risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
+                        risky_tree = cKDTree(risky_coords)
+                        df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
+                    else:
+                        df["distance_to_high_risk_poi"] = np.nan
+                
+                    # POI Risk yoğunluğu (GEOID bazlı)
+                    risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
+                    df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+                    df = df.merge(risk_density, on="GEOID", how="left")
+                
+                    st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
+                except Exception as e:
+                    st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
+
                 # Nüfus verisini oku
                 if os.path.exists(POPULATION_PATH):
                     df_pop = pd.read_csv(POPULATION_PATH)
@@ -456,9 +557,16 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
             mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
             mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
-            mean_cols.extend([col for col in df.columns if "311" in col])
             mean_cols.extend(["distance_to_bus", "bus_stop_count"])
-
+            mean_cols.extend([col for col in df.columns if "311" in col])
+            mean_cols.extend([
+                "poi_total_count",               # Bir GEOID içindeki toplam POI sayısı
+                "risky_poi_score",              # risky_pois_dynamic.json içindeki risk skorlarının ortalaması
+                "distance_to_high_risk_poi",    # En yakın riskli POI'ye uzaklık (örn. bar, shelter, liquor_store vs.)
+                "distance_to_poi",              # Genel olarak en yakın POI’ye uzaklık
+                "poi_risk_density",             # GEOID başına düşen ortalama POI riski
+            ])
+            
             if "population" in df.columns:
                 mean_cols.append("population")
                 
