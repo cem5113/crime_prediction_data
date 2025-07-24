@@ -1,3 +1,5 @@
+# update_pois.py
+
 import os
 import pandas as pd
 import numpy as np
@@ -15,9 +17,9 @@ CLEANED_POI_PATH = os.path.join(BASE_PATH, "sf_pois_cleaned_with_geoid.csv")
 CRIME_PATH = os.path.join(BASE_PATH, "sf_crime.csv")
 DYNAMIC_JSON_PATH = os.path.join(BASE_PATH, "risky_pois_dynamic.json")
 
-# === 1. POI Ayrıştır ve GEOID Ekle ===
+# === 1. POI Verisini Ayrıştır ve GEOID Ekle ===
 def process_pois():
-    print("🔹 POI verisi indiriliyor ve ayrıştırılıyor...")
+    print("🔹 POI verisi indiriliyor ve işleniyor...")
     gdf = gpd.read_file(GEOJSON_POI_PATH)
 
     def extract_poi_fields(tags):
@@ -47,9 +49,9 @@ def process_pois():
     df_cleaned.to_csv(CLEANED_POI_PATH, index=False)
     print(f"✅ POI verisi kaydedildi: {CLEANED_POI_PATH}")
 
-# === 2. Dinamik POI Risk Skoru Hesaplama ===
+# === 2. Risk Skoru Hesapla ===
 def calculate_dynamic_risk():
-    print("🔹 Risk hesaplaması başlatıldı...")
+    print("🔹 Risk skoru hesaplanıyor...")
     df_crime = pd.read_csv(CRIME_PATH)
     gdf_crime = gpd.GeoDataFrame(
         df_crime,
@@ -64,11 +66,13 @@ def calculate_dynamic_risk():
         crs="EPSG:4326"
     )
 
+    # Polis istasyonlarını hariç tut
     gdf_poi = gdf_poi[~gdf_poi["poi_subcategory"].isin(["police", "ranger_station"])]
+
     poi_rad = np.radians(gdf_poi[["lat", "lon"]].values)
     crime_rad = np.radians(gdf_crime[["latitude", "longitude"]].values)
     tree = BallTree(crime_rad, metric="haversine")
-    radius = 300 / 6371000
+    radius = 300 / 6371000  # 300 metre
 
     poi_types = gdf_poi["poi_subcategory"].fillna("")
     poi_crime_counts = []
@@ -103,11 +107,11 @@ def calculate_dynamic_risk():
 
 # === MAIN ===
 if __name__ == "__main__":
-    print("📦 POI güncelleme işlemi başlatıldı...")
+    print("📦 POI güncelleme başlatıldı...")
     process_pois()
     calculate_dynamic_risk()
 
-    print("\n📂 Çıktı dosyaları kontrol ediliyor...")
+    print("\n📁 Kontrol ediliyor...")
     if os.path.exists(CLEANED_POI_PATH):
         print(f"✅ {CLEANED_POI_PATH}")
     if os.path.exists(DYNAMIC_JSON_PATH):
@@ -115,7 +119,7 @@ if __name__ == "__main__":
 
     try:
         df_preview = pd.read_csv(CLEANED_POI_PATH)
-        print("\n📌 Örnek POI verisi:")
+        print("\n📌 Örnek POI kayıtları:")
         print(df_preview[["poi_category", "poi_subcategory", "GEOID"]].dropna().head(3))
     except Exception as e:
-        print(f"⚠️ Örnek veri okunamadı: {e}")
+        print(f"⚠️ Örnek POI verisi gösterilemedi: {e}")
