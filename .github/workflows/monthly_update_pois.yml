@@ -2,43 +2,43 @@ name: Monthly POI Update
 
 on:
   schedule:
-    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
-  workflow_dispatch:
+    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00 (SF saati = UTC-7)
+  workflow_dispatch:     # Manuel çalıştırma opsiyonu
 
 jobs:
   update-pois:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.10
 
-      - name: Install system dependencies
+      - name: 🧱 Install system dependencies (GDAL, Fiona, pyproj için)
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdal-bin libgdal-dev python3-dev
+          sudo apt-get install -y gdal-bin libgdal-dev python3-dev python3-pip
 
-      - name: Install Python packages
+      - name: 📦 Install Python packages from requirements.txt
         run: |
           pip install --upgrade pip
-          pip install pandas geopandas scikit-learn numpy shapely fiona pyproj requests
+          pip install -r requirements.txt
 
-      - name: Show current directory and files
+      - name: 📁 Show current directory and files
         run: |
           echo "📍 Current working directory:"
           pwd
-          echo "📁 Files:"
+          echo "📄 Files:"
           ls -lh
 
-      - name: Run POI update script
+      - name: ⚙️ Run POI update script
         run: python update_pois.py
 
-      - name: Commit and push updates
+      - name: 🚀 Commit and push updates
         run: |
           git config --global user.name "cem5113"
           git config --global user.email "cem5113@hotmail.com"
