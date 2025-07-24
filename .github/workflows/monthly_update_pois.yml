@@ -23,10 +23,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gdal-bin libgdal-dev python3-dev
 
-      - name: Install Python packages from requirements.txt
+      - name: Install Python packages (geçici)
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas numpy geopandas scikit-learn shapely fiona pyproj requests
 
       - name: Show working directory and files
         run: |
