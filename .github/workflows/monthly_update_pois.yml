@@ -1,0 +1,32 @@
+name: Monthly POI Update
+
+on:
+  schedule:
+    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
+  workflow_dispatch:     # Manuel çalıştırma opsiyonu
+
+jobs:
+  update-pois:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.10
+
+      - name: Install dependencies
+        run: pip install geopandas pandas scikit-learn shapely
+
+      - name: Run POI update script
+        run: python update_pois.py
+
+      - name: Commit and push updates
+        run: |
+          git config --global user.name "cem5113"
+          git config --global user.email "cem5113@hotmail.com"
+          git add .
+          git commit -m "🔄 Monthly POI data updated"
+          git push
