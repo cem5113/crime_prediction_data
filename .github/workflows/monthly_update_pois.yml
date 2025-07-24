@@ -2,7 +2,7 @@ name: Monthly POI Update
 
 on:
   schedule:
-    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00
+    - cron: '0 4 1 * *'  # Her ayın 1’i SF saatiyle 04:00 (SF saati)
   workflow_dispatch:
 
 jobs:
