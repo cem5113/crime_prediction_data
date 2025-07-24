@@ -10,3 +10,7 @@ matplotlib
 scikit-learn
 geopandas
 holidays
+shapely
+fiona
+pyproj
+requests
