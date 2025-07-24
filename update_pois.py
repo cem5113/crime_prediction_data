@@ -111,3 +111,15 @@ if __name__ == "__main__":
     process_pois()
     calculate_dynamic_risk()
     print("🎯 Tüm POI risk hesaplamaları tamamlandı. Diğer adımlar ayrı scriptlerle devam edecek.")
+
+    # Ek kontroller
+    check_output_files()
+    
+    try:
+        df_preview = pd.read_csv(CLEANED_POI_PATH)
+        print("📌 İlk 3 POI:")
+        print(df_preview[["poi_category", "poi_subcategory", "GEOID"]].dropna().head(3))
+    except Exception as e:
+        print(f"⚠️ POI örnek verisi gösterilemedi: {e}")
+
+    
