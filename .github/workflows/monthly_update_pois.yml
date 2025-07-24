@@ -37,7 +37,7 @@ jobs:
           ls -lh scripts || true
 
       - name: Run POI update script
-        run: python scripts/update_pois.py
+        run: python update_pois.py
 
       - name: Commit and push updates
         run: |
