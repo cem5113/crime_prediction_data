@@ -10,33 +10,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repo
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: 🐍 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.10
 
-      - name: 🧱 Install system dependencies (GDAL, Fiona, pyproj için)
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdal-bin libgdal-dev python3-dev python3-pip
+          sudo apt-get install -y gdal-bin libgdal-dev python3-dev
 
-      - name: 📦 Install Python packages from requirements.txt
+      - name: Install Python packages from requirements.txt
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📁 Show current directory and files
+      - name: Show working directory and files
         run: |
           pwd
           ls -lh
+          echo "📁 scripts klasörü:"
+          ls -lh scripts || true
 
-      - name: ⚙️ Run POI update script
-        run: python update_pois.py
+      - name: Run POI update script
+        run: python scripts/update_pois.py
 
-      - name: 🚀 Commit and push updates
+      - name: Commit and push updates
         run: |
           git config --global user.name "cem5113"
           git config --global user.email "cem5113@hotmail.com"
