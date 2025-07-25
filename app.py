@@ -179,15 +179,16 @@ def update_pois_if_needed():
     else:
         st.info("📅 POI verisi bu ay zaten güncellendi.")
 
-def update_police_gov_data_if_needed():
+def update_police_and_gov_buildings_if_needed():
     import requests
     import geopandas as gpd
     import pandas as pd
-    from shapely.geometry import Point
-    from datetime import datetime
     import os
+    from datetime import datetime
+    from shapely.geometry import Point
 
     timestamp_file = "police_gov_last_update.txt"
+    overpass_url = "http://overpass-api.de/api/interpreter"
 
     def is_month_passed(file):
         if os.path.exists(file):
@@ -202,8 +203,9 @@ def update_police_gov_data_if_needed():
 
     if is_month_passed(timestamp_file):
         try:
-            OVERPASS_URL = "http://overpass-api.de/api/interpreter"
+            st.write("🌐 Overpass API'den veri çekiliyor...")
 
+            # === Overpass Sorguları ===
             queries = {
                 "police": """
                 [out:json][timeout:60];
@@ -224,9 +226,9 @@ def update_police_gov_data_if_needed():
             }
 
             def fetch_pois(name, query):
-                st.info(f"🔎 {name} verisi indiriliyor...")
-                response = requests.post(OVERPASS_URL, data={"data": query})
+                response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
+
                 rows = []
                 for el in data:
                     lat = el.get("lat") or el.get("center", {}).get("lat")
@@ -239,27 +241,30 @@ def update_police_gov_data_if_needed():
                             "lon": lon,
                             "name": tags.get("name", ""),
                             "type": tags.get("amenity") or tags.get("office", ""),
-                            "latitude": lat,
-                            "longitude": lon
                         })
+
                 df = pd.DataFrame(rows)
-                return df
+                df["latitude"] = df["lat"]
+                df["longitude"] = df["lon"]
+                df = df.drop(columns=["lat", "lon"])
+                gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
+                return gdf
 
-            df_police = fetch_pois("Polis", queries["police"])
-            df_gov = fetch_pois("Hükümet Binası", queries["government"])
+            gdf_police = fetch_pois("police", queries["police"])
+            gdf_police.to_csv("sf_police_stations.csv", index=False)
+            st.success("✅ sf_police_stations.csv indirildi ve kaydedildi.")
 
-            df_police.to_csv("sf_police_stations.csv", index=False)
-            df_gov.to_csv("sf_government_buildings.csv", index=False)
+            gdf_gov = fetch_pois("government", queries["government"])
+            gdf_gov.to_csv("sf_government_buildings.csv", index=False)
+            st.success("✅ sf_government_buildings.csv indirildi ve kaydedildi.")
 
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
-            st.success("✅ Polis ve hükümet verileri başarıyla güncellendi.")
-
         except Exception as e:
-            st.error(f"❌ Polis/hükümet veri indirme hatası: {e}")
+            st.error(f"❌ Polis/kamu binası güncelleme hatası: {e}")
     else:
-        st.info("📅 Polis ve hükümet verisi bu ay zaten güncellenmiş.")
+        st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
