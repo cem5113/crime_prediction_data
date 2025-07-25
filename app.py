@@ -799,6 +799,26 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             st.dataframe(df.head())
 
 if st.button("🧪 Veriyi Göster (Test)"):
-    df = pd.read_csv("sf_crime.csv")  # Yeniden yükle
-    st.dataframe(df.head())
-    st.write(df.columns.tolist())
+    with st.spinner("⏳ Veri zenginleştiriliyor..."):
+        df = pd.read_csv("sf_crime.csv")
+
+        # Enrichment adımları
+        df = enrich_with_poi(df)
+        df = enrich_with_911(df)
+        df = enrich_with_311(df)
+        df = enrich_with_weather(df)
+        df = enrich_with_police_and_gov(df)
+
+        # Kaydet
+        df.to_csv("sf_crime.csv", index=False)
+
+        # Bilgi mesajları
+        st.success("✅ sf_crime.csv başarıyla zenginleştirildi ve kaydedildi.")
+        st.write("📌 Toplam sütun sayısı:", len(df.columns))
+        st.write("📌 Sütun isimleri:")
+        st.code(df.columns.tolist())
+        
+        # İlk 5 satır
+        st.subheader("📄 İlk 5 Satır")
+        st.dataframe(df.head())
+
