@@ -790,6 +790,13 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             st.write(nan_cols)
             st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
             st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
+
+            st.subheader("📊 Zenginleştirilmiş Suç Verisi (Örnek)")
+            st.write("🧩 Sütunlar:")
+            st.write(df.columns.tolist())
+            
+            st.write("🔍 İlk 5 Satır:")
+            st.dataframe(df.head())
     
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
