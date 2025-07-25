@@ -10,6 +10,8 @@ from fpdf import FPDF
 import subprocess
 import geopandas as gpd
 import json
+import requests
+import io
 from shapely.geometry import Point
 from scipy.spatial import cKDTree
 
@@ -268,70 +270,44 @@ def update_police_and_gov_buildings_if_needed():
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
 
 def update_weather_data():
-    import pandas as pd
-    import datetime
-    import requests
-    import io
-    import os
+    st.info("🌦️ Hava durumu verisi kontrol ediliyor...")
+    try:
+        save_path = "sf_weather_5years.csv"
+        station_id = "USW00023234"
+        end_date = datetime.today().date()
+        start_date = end_date - pd.Timedelta(days=5*365)
 
-    st.markdown("☁️ Hava durumu verisi güncelleniyor...")
+        url = (
+            "https://www.ncei.noaa.gov/access/services/data/v1"
+            f"?dataset=daily-summaries"
+            f"&stations={station_id}"
+            f"&startDate={start_date}"
+            f"&endDate={end_date}"
+            f"&dataTypes=TMAX,TMIN,PRCP"
+            f"&format=csv"
+        )
 
-    save_path = "sf_weather_5years.csv"
-    timestamp_file = "weather_last_update.txt"
-    station_id = "USW00023234"  # San Francisco International Airport
+        response = requests.get(url)
+        if response.status_code == 200:
+            df_new = pd.read_csv(io.StringIO(response.text))
+            df_new["DATE"] = pd.to_datetime(df_new["DATE"])
 
-    def is_day_passed(file):
-        if os.path.exists(file):
-            with open(file, "r") as f:
-                last = f.read().strip()
-            try:
-                last_date = datetime.datetime.strptime(last, "%Y-%m-%d").date()
-                return (datetime.date.today() - last_date).days >= 1
-            except:
-                return True
-        return True
-
-    if is_day_passed(timestamp_file):
-        try:
-            end_date = datetime.date.today()
-            start_date = end_date - datetime.timedelta(days=5*365)
-
-            url = (
-                "https://www.ncei.noaa.gov/access/services/data/v1"
-                f"?dataset=daily-summaries"
-                f"&stations={station_id}"
-                f"&startDate={start_date}"
-                f"&endDate={end_date}"
-                f"&dataTypes=TMAX,TMIN,PRCP"
-                f"&format=csv"
-            )
-
-            response = requests.get(url)
-            if response.status_code == 200:
-                df_new = pd.read_csv(io.StringIO(response.text))
-                df_new["DATE"] = pd.to_datetime(df_new["DATE"])
-
-                if os.path.exists(save_path):
-                    df_old = pd.read_csv(save_path)
-                    df_old["DATE"] = pd.to_datetime(df_old["DATE"])
-                    df_combined = pd.concat([df_old, df_new])
-                    df_combined = df_combined.drop_duplicates(subset=["DATE"])
-                else:
-                    df_combined = df_new
-
-                df_filtered = df_combined[df_combined["DATE"] >= pd.to_datetime(start_date)]
-                df_filtered.to_csv(save_path, index=False)
-
-                with open(timestamp_file, "w") as f:
-                    f.write(datetime.date.today().strftime("%Y-%m-%d"))
-
-                st.success("🌤️ Hava durumu verisi güncellendi (sf_weather_5years.csv)")
+            if os.path.exists(save_path):
+                df_old = pd.read_csv(save_path)
+                df_old["DATE"] = pd.to_datetime(df_old["DATE"])
+                df_combined = pd.concat([df_old, df_new])
+                df_combined = df_combined.drop_duplicates(subset=["DATE"])
             else:
-                st.warning(f"⚠️ Hava durumu verisi indirilemedi: {response.status_code}")
-        except Exception as e:
-            st.error(f"❌ Hava durumu güncelleme hatası: {e}")
-    else:
-        st.info("📅 Hava durumu verisi bugün zaten güncellendi.")
+                df_combined = df_new
+
+            df_filtered = df_combined[df_combined["DATE"] >= pd.to_datetime(start_date)]
+            df_filtered.to_csv(save_path, index=False)
+
+            st.success(f"✅ Hava durumu güncellendi: {start_date} → {end_date}")
+        else:
+            st.warning(f"❌ NOAA'dan veri çekilemedi: {response.status_code}")
+    except Exception as e:
+        st.error(f"❌ Hava durumu güncellenemedi: {e}")
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -373,6 +349,9 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 update_train_data_if_needed()
                 update_bus_data_if_needed() 
                 update_pois_if_needed()
+                update_pois_if_needed()
+                update_weather_data()
+                update_police_and_gov_buildings_if_needed()
                 if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
                     st.success("✅ POI CSV dosyası başarıyla oluşturuldu.")
                 else:
