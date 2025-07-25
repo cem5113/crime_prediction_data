@@ -12,6 +12,7 @@ import geopandas as gpd
 import json
 import requests
 import io
+import json
 from shapely.geometry import Point
 from scipy.spatial import cKDTree
 
@@ -798,27 +799,125 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             st.write("🔍 İlk 5 Satır:")
             st.dataframe(df.head())
 
+# === 5 FONKSİYON: Veri zenginleştirme ===
+def enrich_with_poi(df):
+    try:
+        df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+        with open("risky_pois_dynamic.json") as f:
+            risk_dict = json.load(f)
+        df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+
+        poi_features = df_poi.groupby("GEOID").agg(
+            poi_total_count=("id", "count"),
+            risky_poi_score=("risk_score", "mean")
+        ).reset_index()
+
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+        poi_features["GEOID"] = poi_features["GEOID"].astype(str).str.zfill(11)
+        df = df.merge(poi_features, on="GEOID", how="left")
+
+        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
+
+        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
+        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+        poi_tree = cKDTree(poi_coords)
+        df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
+
+        risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
+        if not risky_poi.empty:
+            risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
+            risky_tree = cKDTree(risky_coords)
+            df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
+        else:
+            df["distance_to_high_risk_poi"] = np.nan
+
+        risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
+        risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
+        df = df.merge(risk_density, on="GEOID", how="left")
+
+        return df
+    except Exception as e:
+        st.error(f"POI zenginleştirme hatası: {e}")
+        return df
+
+def enrich_with_911(df):
+    try:
+        df_911 = pd.read_csv("sf_911_last_5_year.csv")
+        df_911["date"] = pd.to_datetime(df_911["date"])
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.merge(df_911, on=["GEOID", "date", "event_hour"], how="left")
+        return df
+    except Exception as e:
+        st.error(f"911 verisi eklenemedi: {e}")
+        return df
+
+def enrich_with_311(df):
+    try:
+        df_311 = pd.read_csv("sf_311_last_5_years.csv")
+        df_311["date"] = pd.to_datetime(df_311["date"])
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.merge(df_311, on=["GEOID", "date", "event_hour"], how="left")
+        return df
+    except Exception as e:
+        st.error(f"311 verisi eklenemedi: {e}")
+        return df
+
+def enrich_with_weather(df):
+    try:
+        df_weather = pd.read_csv("sf_weather_5years.csv")
+        df_weather["DATE"] = pd.to_datetime(df_weather["DATE"])
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.merge(df_weather, left_on="date", right_on="DATE", how="left")
+        df.drop(columns=["DATE"], inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Hava durumu verisi eklenemedi: {e}")
+        return df
+
+def enrich_with_police_and_gov(df):
+    try:
+        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+
+        police_df = pd.read_csv("sf_police_stations.csv")
+        gov_df = pd.read_csv("sf_government_buildings.csv")
+
+        gdf_police = gpd.GeoDataFrame(police_df, geometry=gpd.points_from_xy(police_df["lon"], police_df["lat"]), crs="EPSG:4326").to_crs(3857)
+        gdf_gov = gpd.GeoDataFrame(gov_df, geometry=gpd.points_from_xy(gov_df["lon"], gov_df["lat"]), crs="EPSG:4326").to_crs(3857)
+
+        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+
+        police_tree = cKDTree(np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T)
+        gov_tree = cKDTree(np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T)
+
+        df["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
+        df["distance_to_government_building"], _ = gov_tree.query(crime_coords, k=1)
+
+        df["is_near_police"] = (df["distance_to_police"] < 200).astype(int)
+        df["is_near_government"] = (df["distance_to_government_building"] < 200).astype(int)
+
+        df["distance_to_police_range"] = pd.cut(df["distance_to_police"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100", "100-200", "200-500", "500-1000", ">1000"])
+        df["distance_to_government_building_range"] = pd.cut(df["distance_to_government_building"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100", "100-200", "200-500", "500-1000", ">1000"])
+
+        return df
+    except Exception as e:
+        st.error(f"Polis ve devlet binası hesaplama hatası: {e}")
+        return df
+
+# (app.py'deki ana kodlar burada devam eder)
+
+# Örnek test butonu:
 if st.button("🧪 Veriyi Göster (Test)"):
-    with st.spinner("⏳ Veri zenginleştiriliyor..."):
-        df = pd.read_csv("sf_crime.csv")
+    df = pd.read_csv("sf_crime.csv")
+    df = enrich_with_poi(df)
+    df = enrich_with_911(df)
+    df = enrich_with_311(df)
+    df = enrich_with_weather(df)
+    df = enrich_with_police_and_gov(df)
+    df.to_csv("sf_crime.csv", index=False)
 
-        # Enrichment adımları
-        df = enrich_with_poi(df)
-        df = enrich_with_911(df)
-        df = enrich_with_311(df)
-        df = enrich_with_weather(df)
-        df = enrich_with_police_and_gov(df)
+    st.success("✅ sf_crime.csv başarıyla zenginleştirildi.")
+    st.write("📌 Sütunlar:", df.columns.tolist())
+    st.dataframe(df.head())
 
-        # Kaydet
-        df.to_csv("sf_crime.csv", index=False)
-
-        # Bilgi mesajları
-        st.success("✅ sf_crime.csv başarıyla zenginleştirildi ve kaydedildi.")
-        st.write("📌 Toplam sütun sayısı:", len(df.columns))
-        st.write("📌 Sütun isimleri:")
-        st.code(df.columns.tolist())
-        
-        # İlk 5 satır
-        st.subheader("📄 İlk 5 Satır")
-        st.dataframe(df.head())
 
