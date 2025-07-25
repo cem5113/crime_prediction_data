@@ -10,37 +10,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: 📦 Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: 🐍 Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: 3.10
 
-      - name: Install system dependencies
+      - name: 🧱 Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gdal-bin libgdal-dev python3-dev
 
-      - name: Install Python packages
+      - name: 📂 Show working directory and contents
+        run: |
+          echo "📍 Working Directory:"
+          pwd
+          echo "📁 Files:"
+          ls -lh
+
+      - name: 🧪 Check if requirements.txt exists
+        run: |
+          if [ -f requirements.txt ]; then
+            echo "✅ requirements.txt bulundu"
+            cat requirements.txt
+          else
+            echo "❌ requirements.txt BULUNAMADI"
+            exit 1
+          fi
+
+      - name: 📦 Install Python packages from requirements.txt
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Show working directory and files
+      - name: 🔍 Verify pandas installation
         run: |
-          echo "📍 Working Directory:"
-          pwd
-          echo "📁 Tüm Dosyalar:"
-          ls -lh
-          echo "📁 scripts klasörü:"
-          ls -lh scripts || true
+          python -c "import pandas; print('✅ Pandas version:', pandas.__version__)" || echo "❌ Pandas import FAILED"
 
-      - name: Run POI update script
-        run: python update_pois.py
+      - name: ▶️ Run POI update script
+        run: |
+          python update_pois.py
 
-      - name: Commit and push updates
+      - name: ✅ Commit and push updates
         run: |
           git config --global user.name "cem5113"
           git config --global user.email "cem5113@hotmail.com"
