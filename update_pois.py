@@ -11,7 +11,7 @@ from collections import defaultdict
 
 # === Dosya Yolları ===
 BASE_PATH = os.getcwd()
-GEOJSON_POI_PATH = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois.geojson"
+GEOJSON_POI_PATH = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson"
 BLOCK_PATH = os.path.join(BASE_PATH, "sf_census_blocks_with_population.geojson")
 CLEANED_POI_PATH = os.path.join(BASE_PATH, "sf_pois_cleaned_with_geoid.csv")
 CRIME_PATH = os.path.join(BASE_PATH, "sf_crime.csv")
