@@ -26,7 +26,7 @@ jobs:
       - name: Install Python packages
         run: |
           pip install --upgrade pip
-          pip install pandas numpy geopandas scikit-learn shapely fiona pyproj requests
+          pip install -r requirements.txt
 
       - name: Show working directory and files
         run: |
@@ -38,7 +38,7 @@ jobs:
           ls -lh scripts || true
 
       - name: Run POI update script
-        run: python scripts/update_pois.py
+        run: python update_pois.py
 
       - name: Commit and push updates
         run: |
