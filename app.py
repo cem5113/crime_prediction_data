@@ -800,3 +800,10 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
     
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
+
+            st.subheader("📊 Zenginleştirilmiş Verinin Özeti")
+            st.write("🧩 Sütunlar:")
+            st.write(df.columns.tolist())
+
+            st.write("🔢 İlk 5 Satır:")
+            st.dataframe(df.head())
