@@ -125,7 +125,7 @@ def update_train_data_if_needed():
                     crs="EPSG:4326"
                 )
 
-                census_path = "/content/drive/MyDrive/crime_data/sf_census_blocks_with_population.geojson"
+                census_path = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson"
                 gdf_blocks = gpd.read_file(census_path)[["GEOID", "geometry"]].to_crs("EPSG:4326")
 
                 gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks, how="left", predicate="within")
