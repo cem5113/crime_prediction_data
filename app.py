@@ -797,13 +797,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             
             st.write("🔍 İlk 5 Satır:")
             st.dataframe(df.head())
-    
-            df.to_csv("sf_crime.csv", index=False)
-            st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
 
-            st.subheader("📊 Zenginleştirilmiş Verinin Özeti")
-            st.write("🧩 Sütunlar:")
-            st.write(df.columns.tolist())
-
-            st.write("🔢 İlk 5 Satır:")
-            st.dataframe(df.head())
+if st.button("🧪 Veriyi Göster (Test)"):
+    df = pd.read_csv("sf_crime.csv")  # Yeniden yükle
+    st.dataframe(df.head())
+    st.write(df.columns.tolist())
