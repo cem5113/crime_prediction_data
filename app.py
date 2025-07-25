@@ -774,29 +774,26 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             df.to_csv("sf_crime.csv", index=False)
             st.success("✅ Tüm dosyalar başarıyla kaydedildi: sf_crime.csv, sf_crime_50.csv, sf_crime_52.csv")
 
-            # NaN raporu ve PDF
+            # NaN özetle
             nan_summary = df.isna().sum()
             nan_cols = nan_summary[nan_summary > 0]
+            removed_rows = original_row_count - len(df)
+
+            # PDF raporu oluştur
             report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
             with open(report_path, "rb") as f:
                 st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
-    
-            # İlk 5 satır, sütunlar, NaN sayıları
-            st.write("### 📈 sf_crime.csv İlk 5 Satır")
-            st.dataframe(df.head())
-            st.write("### 🔢 Sütunlar")
-            st.write(df.columns.tolist())
-            st.write("### 🔔 NaN Sayıları")
-            st.write(nan_cols)
-            st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
-            st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
 
-            st.subheader("📊 Zenginleştirilmiş Suç Verisi (Örnek)")
+            # 🔽 Zenginleştirilmiş veriyi indir
+            df.to_csv("sf_crime_enriched.csv", index=False)
+            with open("sf_crime_enriched.csv", "rb") as f:
+                st.download_button("⬇️ Zenginleştirilmiş CSV İndir", f, file_name="sf_crime_enriched.csv", mime="text/csv")
+
+            # ✅ Sütunlar ve son 20 satırı göster
+            st.subheader("📊 Zenginleştirilmiş Verinin Son 20 Satırı")
             st.write("🧩 Sütunlar:")
             st.write(df.columns.tolist())
-            
-            st.write("🔍 İlk 5 Satır:")
-            st.dataframe(df.head())
-    
-            df.to_csv("sf_crime.csv", index=False)
-            st.success("✅ sf_crime.csv dosyası zenginleştirildi ve kaydedildi.")
+            st.dataframe(df.tail(20))
+
+    except Exception as e:
+        st.error(f"❌ Hata oluştu: {e}")
