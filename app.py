@@ -327,7 +327,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     # POI Risk yoğunluğu (GEOID bazlı)
                     risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
                     df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-                    df = df.merge(risk_density, on="GEOID", how="left")
+                    risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
                 
                     st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
                 except Exception as e:
