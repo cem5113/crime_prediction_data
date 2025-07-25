@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from fpdf import FPDF
 import subprocess
 import geopandas as gpd
+import json
 from shapely.geometry import Point
 from scipy.spatial import cKDTree
 
@@ -279,6 +280,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 # 🔁 POI Risk ve Yoğunluk Özelliklerini Ekle
                 try:
                     df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                    
                     with open("risky_pois_dynamic.json") as f:
                         risk_dict = json.load(f)
                     
