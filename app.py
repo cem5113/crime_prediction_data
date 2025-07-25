@@ -24,6 +24,8 @@ DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf
 DOWNLOAD_TRAIN_URL = "https://transitfeeds.com/p/bart/58/latest/download"
 DOWNLOAD_POIS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson"
 RISKY_POIS_JSON_PATH = "risky_pois_dynamic.json"
+DOWNLOAD_POLICE_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_police_stations.csv"
+DOWNLOAD_GOV_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_government_buildings.csv"
 
 def update_bus_data_if_needed():
     import geopandas as gpd
@@ -176,6 +178,88 @@ def update_pois_if_needed():
             st.error(f"❌ POI güncelleme hatası: {e}")
     else:
         st.info("📅 POI verisi bu ay zaten güncellendi.")
+
+def update_police_gov_data_if_needed():
+    import requests
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import Point
+    from datetime import datetime
+    import os
+
+    timestamp_file = "police_gov_last_update.txt"
+
+    def is_month_passed(file):
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                last = f.read().strip()
+            try:
+                last_date = datetime.strptime(last, "%Y-%m-%d")
+                return (datetime.today() - last_date).days >= 30
+            except:
+                return True
+        return True
+
+    if is_month_passed(timestamp_file):
+        try:
+            OVERPASS_URL = "http://overpass-api.de/api/interpreter"
+
+            queries = {
+                "police": """
+                [out:json][timeout:60];
+                (
+                  node["amenity"="police"](37.70,-123.00,37.83,-122.35);
+                  way["amenity"="police"](37.70,-123.00,37.83,-122.35);
+                );
+                out center;
+                """,
+                "government": """
+                [out:json][timeout:60];
+                (
+                  node["amenity"="townhall"](37.70,-123.00,37.83,-122.35);
+                  node["office"="government"](37.70,-123.00,37.83,-122.35);
+                );
+                out center;
+                """
+            }
+
+            def fetch_pois(name, query):
+                st.info(f"🔎 {name} verisi indiriliyor...")
+                response = requests.post(OVERPASS_URL, data={"data": query})
+                data = response.json()["elements"]
+                rows = []
+                for el in data:
+                    lat = el.get("lat") or el.get("center", {}).get("lat")
+                    lon = el.get("lon") or el.get("center", {}).get("lon")
+                    if lat and lon:
+                        tags = el.get("tags", {})
+                        rows.append({
+                            "id": el["id"],
+                            "lat": lat,
+                            "lon": lon,
+                            "name": tags.get("name", ""),
+                            "type": tags.get("amenity") or tags.get("office", ""),
+                            "latitude": lat,
+                            "longitude": lon
+                        })
+                df = pd.DataFrame(rows)
+                return df
+
+            df_police = fetch_pois("Polis", queries["police"])
+            df_gov = fetch_pois("Hükümet Binası", queries["government"])
+
+            df_police.to_csv("sf_police_stations.csv", index=False)
+            df_gov.to_csv("sf_government_buildings.csv", index=False)
+
+            with open(timestamp_file, "w") as f:
+                f.write(datetime.today().strftime("%Y-%m-%d"))
+
+            st.success("✅ Polis ve hükümet verileri başarıyla güncellendi.")
+
+        except Exception as e:
+            st.error(f"❌ Polis/hükümet veri indirme hatası: {e}")
+    else:
+        st.info("📅 Polis ve hükümet verisi bu ay zaten güncellenmiş.")
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -566,18 +650,26 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
             group_cols = ["GEOID", "season", "day_of_week", "event_hour"]
             mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
-            mode_cols = ["is_weekend", "is_night", "is_holiday", "is_repeat_location", "is_school_hour", "is_business_hour", "year", "month"]
-            mean_cols.extend([col for col in df.columns if "911" in col or "request" in col])
-            mean_cols.extend(["distance_to_bus", "bus_stop_count"])
-            mean_cols.extend([col for col in df.columns if "311" in col])
-            mean_cols.extend([
-                "poi_total_count",               # Bir GEOID içindeki toplam POI sayısı
-                "risky_poi_score",              # risky_pois_dynamic.json içindeki risk skorlarının ortalaması
-                "distance_to_high_risk_poi",    # En yakın riskli POI'ye uzaklık (örn. bar, shelter, liquor_store vs.)
-                "distance_to_poi",              # Genel olarak en yakın POI’ye uzaklık
-                "poi_risk_density",             # GEOID başına düşen ortalama POI riski
-            ])
+            mode_cols = [
+                "is_weekend", "is_night", "is_holiday", "is_repeat_location",
+                "is_school_hour", "is_business_hour", "year", "month",
+                "distance_to_police_range", "distance_to_government_building_range",
+                "is_near_police", "is_near_government"
+            ]
             
+            mean_cols.extend([
+                col for col in df.columns if "911" in col or "request" in col
+            ])
+            mean_cols.extend(["distance_to_bus", "bus_stop_count"])
+            mean_cols.extend([
+                col for col in df.columns if "311" in col
+            ])
+            mean_cols.extend([
+                "poi_total_count", "risky_poi_score", "distance_to_high_risk_poi",
+                "distance_to_poi", "poi_risk_density",
+                "distance_to_police", "distance_to_government_building"
+            ])
+
             if "population" in df.columns:
                 mean_cols.append("population")
                 
