@@ -144,9 +144,9 @@ def update_train_data_if_needed():
 def update_pois_if_needed():
     import os
     import pandas as pd
-    import subprocess
-    from datetime import datetime
     import streamlit as st
+    from datetime import datetime
+    import update_pois  # 🔁 SUBPROCESS YERİNE DİREKT MODÜL GİBİ KULLAN
 
     timestamp_file = "poi_last_update.txt"
 
@@ -164,17 +164,15 @@ def update_pois_if_needed():
     if is_month_passed(timestamp_file):
         try:
             st.info("📥 POI verisi güncelleniyor...")
-            result = subprocess.run(["python3", "update_pois.py"], capture_output=True, text=True)
-            if result.returncode == 0:
-                with open(timestamp_file, "w") as f:
-                    f.write(datetime.today().strftime("%Y-%m-%d"))
-                st.success("✅ POI verisi başarıyla güncellendi.")
-                st.code(result.stdout)
-            else:
-                st.error("❌ POI güncelleme hatası:")
-                st.code(result.stderr)
+            update_pois.process_pois()
+            update_pois.calculate_dynamic_risk()
+
+            with open(timestamp_file, "w") as f:
+                f.write(datetime.today().strftime("%Y-%m-%d"))
+
+            st.success("✅ POI verisi başarıyla güncellendi.")
         except Exception as e:
-            st.error(f"🚫 Güncelleme işlemi başarısız oldu: {e}")
+            st.error(f"❌ POI güncelleme hatası: {e}")
     else:
         st.info("📅 POI verisi bu ay zaten güncellendi.")
 
