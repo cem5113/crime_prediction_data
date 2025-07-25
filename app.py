@@ -26,6 +26,7 @@ DOWNLOAD_POIS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/s
 RISKY_POIS_JSON_PATH = "risky_pois_dynamic.json"
 DOWNLOAD_POLICE_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_police_stations.csv"
 DOWNLOAD_GOV_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_government_buildings.csv"
+DOWNLOAD_WEATHER_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_weather_5years.csv"
 
 def update_bus_data_if_needed():
     import geopandas as gpd
@@ -265,6 +266,72 @@ def update_police_and_gov_buildings_if_needed():
             st.error(f"❌ Polis/kamu binası güncelleme hatası: {e}")
     else:
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
+
+def update_weather_data():
+    import pandas as pd
+    import datetime
+    import requests
+    import io
+    import os
+
+    st.markdown("☁️ Hava durumu verisi güncelleniyor...")
+
+    save_path = "sf_weather_5years.csv"
+    timestamp_file = "weather_last_update.txt"
+    station_id = "USW00023234"  # San Francisco International Airport
+
+    def is_day_passed(file):
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                last = f.read().strip()
+            try:
+                last_date = datetime.datetime.strptime(last, "%Y-%m-%d").date()
+                return (datetime.date.today() - last_date).days >= 1
+            except:
+                return True
+        return True
+
+    if is_day_passed(timestamp_file):
+        try:
+            end_date = datetime.date.today()
+            start_date = end_date - datetime.timedelta(days=5*365)
+
+            url = (
+                "https://www.ncei.noaa.gov/access/services/data/v1"
+                f"?dataset=daily-summaries"
+                f"&stations={station_id}"
+                f"&startDate={start_date}"
+                f"&endDate={end_date}"
+                f"&dataTypes=TMAX,TMIN,PRCP"
+                f"&format=csv"
+            )
+
+            response = requests.get(url)
+            if response.status_code == 200:
+                df_new = pd.read_csv(io.StringIO(response.text))
+                df_new["DATE"] = pd.to_datetime(df_new["DATE"])
+
+                if os.path.exists(save_path):
+                    df_old = pd.read_csv(save_path)
+                    df_old["DATE"] = pd.to_datetime(df_old["DATE"])
+                    df_combined = pd.concat([df_old, df_new])
+                    df_combined = df_combined.drop_duplicates(subset=["DATE"])
+                else:
+                    df_combined = df_new
+
+                df_filtered = df_combined[df_combined["DATE"] >= pd.to_datetime(start_date)]
+                df_filtered.to_csv(save_path, index=False)
+
+                with open(timestamp_file, "w") as f:
+                    f.write(datetime.date.today().strftime("%Y-%m-%d"))
+
+                st.success("🌤️ Hava durumu verisi güncellendi (sf_weather_5years.csv)")
+            else:
+                st.warning(f"⚠️ Hava durumu verisi indirilemedi: {response.status_code}")
+        except Exception as e:
+            st.error(f"❌ Hava durumu güncelleme hatası: {e}")
+    else:
+        st.info("📅 Hava durumu verisi bugün zaten güncellendi.")
 
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
@@ -674,7 +741,13 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 "distance_to_poi", "poi_risk_density",
                 "distance_to_police", "distance_to_government_building"
             ])
-
+            mean_cols.extend([
+                "temp_max",               # Maksimum sıcaklık
+                "temp_min",               # Minimum sıcaklık
+                "precipitation_mm",       # Yağış miktarı
+                "temp_range",             # Sıcaklık aralığı
+                "precipitation_range"     # Yağış aralığı (varsa)
+            ])
             if "population" in df.columns:
                 mean_cols.append("population")
                 
