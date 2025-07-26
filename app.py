@@ -908,19 +908,36 @@ def enrich_with_police_and_gov(df):
 
 # Örnek test butonu:
 if st.button("🧪 Veriyi Göster (Test)"):
-    df = pd.read_csv("sf_crime.csv")
-    df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
-    df["event_hour"] = df["datetime"].dt.hour
-    df["date"] = df["datetime"].dt.date
-    df = enrich_with_poi(df)
-    df = enrich_with_911(df)
-    df = enrich_with_311(df)
-    df = enrich_with_weather(df)
-    df = enrich_with_police_and_gov(df)
-    df.to_csv("sf_crime.csv", index=False)
+    try:
+        df = pd.read_csv("sf_crime.csv")
 
-    st.success("✅ sf_crime.csv başarıyla zenginleştirildi.")
-    st.write("📌 Sütunlar:", df.columns.tolist())
-    st.dataframe(df.head())
+        # ✅ Zaman bileşenlerini oluştur (event_hour vs.)
+        df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
+        df["event_hour"] = df["datetime"].dt.hour
+        df["date"] = df["datetime"].dt.date
+
+        # ✅ Zenginleştirme adımları
+        df = enrich_with_poi(df)
+        st.success("✅ POI verisi eklendi")
+
+        df = enrich_with_911(df)
+        st.success("✅ 911 verisi eklendi")
+
+        df = enrich_with_311(df)
+        st.success("✅ 311 verisi eklendi")
+
+        df = enrich_with_weather(df)
+        st.success("✅ Hava durumu verisi eklendi")
+
+        df = enrich_with_police_and_gov(df)
+        st.success("✅ Polis ve devlet binası bilgileri eklendi")
+
+        df.to_csv("sf_crime_enriched.csv", index=False)
+        st.success("✅ Zenginleştirilmiş veri kaydedildi: sf_crime_enriched.csv")
+        st.dataframe(df.head())
+
+    except Exception as e:
+        st.error(f"❌ Hata oluştu: {e}")
+
 
 
