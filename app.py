@@ -685,6 +685,7 @@ def clean_merged_columns(df):
             df.rename(columns={col: col[:-2]}, inplace=True)
         elif col.endswith('_y'):
             df.drop(columns=[col], inplace=True)
+    df = clean_merged_columns(df)
     return df
 
 def check_and_fix_coordinates(df, context=""):
