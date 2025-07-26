@@ -865,8 +865,6 @@ def enrich_with_weather(df):
 
         # 🔗 Sadece tarih üzerinden birleştir
         df = df.merge(weather, on="date", how="left")
-
-        st.success("✅ Hava durumu verisi eklendi")
         return df
 
     except Exception as e:
