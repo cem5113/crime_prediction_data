@@ -873,29 +873,42 @@ def enrich_with_weather(df):
 
 def enrich_with_police(df):
     try:
-        # 🔄 Gerekirse 'lon'/'lat' → 'longitude'/'latitude'
+        # Sütunları yeniden adlandır
         if "longitude" not in df.columns and "lon" in df.columns:
             df = df.rename(columns={"lon": "longitude"})
         if "latitude" not in df.columns and "lat" in df.columns:
             df = df.rename(columns={"lat": "latitude"})
 
+        # Sütun kontrolü
         if "longitude" not in df.columns or "latitude" not in df.columns:
             st.error("❌ Suç verisinde 'longitude' veya 'latitude' sütunu eksik (police).")
             return df
+
+        # Tip düzeltmesi
+        df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+        df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
 
         df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
         if df_valid.empty:
             st.warning("⚠️ Geçerli koordinat içeren satır yok (police).")
             return df
 
-        # 🗺️ Suç GeoDataFrame
-        gdf_crime = gpd.GeoDataFrame(df_valid, geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        # GeoDataFrame dönüşümü
+        gdf_crime = gpd.GeoDataFrame(
+            df_valid,
+            geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(epsg=3857)
 
-        # 🏢 Polis istasyonları
         df_police = pd.read_csv("sf_police_stations.csv")
-        gdf_police = gpd.GeoDataFrame(df_police, geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        df_police["longitude"] = pd.to_numeric(df_police["longitude"], errors="coerce")
+        df_police["latitude"] = pd.to_numeric(df_police["latitude"], errors="coerce")
+        gdf_police = gpd.GeoDataFrame(
+            df_police.dropna(subset=["longitude", "latitude"]),
+            geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(epsg=3857)
 
-        # 📏 KDTree
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
         police_tree = cKDTree(police_coords)
@@ -927,15 +940,29 @@ def enrich_with_government(df):
             st.error("❌ Suç verisinde 'longitude' veya 'latitude' sütunu eksik (government).")
             return df
 
+        df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+        df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+
         df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
         if df_valid.empty:
             st.warning("⚠️ Geçerli koordinat içeren satır yok (government).")
             return df
 
-        gdf_crime = gpd.GeoDataFrame(df_valid, geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        gdf_crime = gpd.GeoDataFrame(
+            df_valid,
+            geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(epsg=3857)
 
         df_gov = pd.read_csv("sf_government_buildings.csv")
-        gdf_gov = gpd.GeoDataFrame(df_gov, geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        df_gov["longitude"] = pd.to_numeric(df_gov["longitude"], errors="coerce")
+        df_gov["latitude"] = pd.to_numeric(df_gov["latitude"], errors="coerce")
+
+        gdf_gov = gpd.GeoDataFrame(
+            df_gov.dropna(subset=["longitude", "latitude"]),
+            geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(epsg=3857)
 
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         gov_coords = np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T
