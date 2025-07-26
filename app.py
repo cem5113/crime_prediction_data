@@ -768,40 +768,46 @@ def enrich_with_poi(df):
 
 def enrich_with_police(df):
     try:
-        if not check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu"):
-            return df 
-        if df.empty:
+        # 1. Suç verisinde koordinatları kontrol et
+        df_checked = check_and_fix_coordinates(df.copy(), "Polis istasyonu entegrasyonu")
+        if df_checked.empty:
+            st.warning("⚠️ Polis: Geçerli suç koordinatı bulunamadı.")
             return df
 
-        # GeoDataFrame oluştur
+        df_valid = df_checked.dropna(subset=["longitude", "latitude"]).copy()
+
+        # 2. Polis verisi dosyasını kontrol et
+        if not os.path.exists("sf_police_stations.csv"):
+            st.error("❌ Polis istasyonu verisi bulunamadı (sf_police_stations.csv)")
+            return df
+
+        df_police = pd.read_csv("sf_police_stations.csv")
+
+        # 3. Polis verisinde koordinatları kontrol et
+        df_police_checked = check_and_fix_coordinates(df_police.copy(), "Polis istasyonu verisi")
+        if df_police_checked.empty:
+            st.warning("⚠️ Polis: Geçerli istasyon koordinatı yok.")
+            return df
+
+        # 4. GeoDataFrame oluştur
         gdf_crime = gpd.GeoDataFrame(
             df_valid,
             geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
-        # Polis verisini yükle
-        if not os.path.exists("sf_police_stations.csv"):
-            st.error("❌ Polis istasyonu verisi bulunamadı (sf_police_stations.csv)")
-            return df
-            
-        df_police = pd.read_csv("sf_police_stations.csv")
-        if not check_and_fix_coordinates(df_police, "Polis istasyonu verisi"):
-            return df
-            
         gdf_police = gpd.GeoDataFrame(
-            df_police.dropna(subset=["longitude", "latitude"]),
-            geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]),
+            df_police_checked,
+            geometry=gpd.points_from_xy(df_police_checked["longitude"], df_police_checked["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
-        # Mesafe hesapla
+        # 5. Mesafe hesapla
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
         police_tree = cKDTree(police_coords)
-        df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
 
-        # Ek sütunlar
+        df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
         df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
         df_valid["distance_to_police_range"] = pd.cut(
             df_valid["distance_to_police"],
@@ -809,7 +815,7 @@ def enrich_with_police(df):
             labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
         )
 
-        # Ana df'e geri ekle
+        # 6. Orijinal df ile güncelle
         df.update(df_valid)
         st.success("✅ Polis istasyonu bilgileri başarıyla eklendi")
         return df
@@ -817,32 +823,32 @@ def enrich_with_police(df):
     except Exception as e:
         st.error(f"❌ Polis istasyonu zenginleştirme hatası: {str(e)}")
         return df
-
+        
 def enrich_with_government(df):
     """Suç verisini devlet binaları verileriyle zenginleştirir"""
     try:
-        # Koordinat kontrolü
-        if not check_and_fix_coordinates(df, "Devlet binaları entegrasyonu"):
-            return df
-            
-        # Geçerli koordinatları filtrele
-        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
-        if df_valid.empty:
-            st.warning("⚠️ Devlet binaları: Geçerli koordinat içeren satır yok")
+        # 1. Suç verisi koordinatlarını kontrol et
+        df_checked = check_and_fix_coordinates(df.copy(), "Devlet binaları entegrasyonu")
+        if df_checked.empty:
+            st.warning("⚠️ Devlet binaları: Geçerli suç koordinatı bulunamadı.")
             return df
 
-        # Devlet binaları verisini yükle
+        df_valid = df_checked.dropna(subset=["longitude", "latitude"]).copy()
+
+        # 2. Devlet binası dosyasını kontrol et
         if not os.path.exists("sf_government_buildings.csv"):
             st.error("❌ Devlet binaları verisi bulunamadı")
             return df
-            
+
         df_gov = pd.read_csv("sf_government_buildings.csv")
-        
-        # Devlet binaları koordinatlarını kontrol et
-        if not check_and_fix_coordinates(df_gov, "Devlet binaları verisi"):
+
+        # 3. Devlet binası koordinatlarını kontrol et
+        df_gov_checked = check_and_fix_coordinates(df_gov.copy(), "Devlet binaları verisi")
+        if df_gov_checked.empty:
+            st.warning("⚠️ Devlet binaları: Geçerli istasyon koordinatı yok.")
             return df
-            
-        # GeoDataFrame dönüşümleri
+
+        # 4. GeoDataFrame dönüşümleri
         gdf_crime = gpd.GeoDataFrame(
             df_valid,
             geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
@@ -850,18 +856,17 @@ def enrich_with_government(df):
         ).to_crs(epsg=3857)
 
         gdf_gov = gpd.GeoDataFrame(
-            df_gov.dropna(subset=["longitude", "latitude"]),
-            geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]),
+            df_gov_checked,
+            geometry=gpd.points_from_xy(df_gov_checked["longitude"], df_gov_checked["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
-        # Mesafe hesapla
+        # 5. Mesafe hesapla
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         gov_coords = np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T
         gov_tree = cKDTree(gov_coords)
-        df_valid["distance_to_government"], _ = gov_tree.query(crime_coords, k=1)
 
-        # Ek sütunlar
+        df_valid["distance_to_government"], _ = gov_tree.query(crime_coords, k=1)
         df_valid["is_near_government"] = (df_valid["distance_to_government"] < 200).astype(int)
         df_valid["distance_to_government_range"] = pd.cut(
             df_valid["distance_to_government"],
@@ -869,7 +874,7 @@ def enrich_with_government(df):
             labels=["0-100m", "100-200m", "200-500m", "500-1000m", ">1000m"]
         )
 
-        # Ana df'e geri ekle
+        # 6. Ana df'e geri yaz
         df.update(df_valid)
         st.success("✅ Devlet binası bilgileri başarıyla eklendi")
         return df
