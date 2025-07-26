@@ -313,6 +313,17 @@ def update_weather_data():
     except Exception as e:
         st.error(f"❌ Hava durumu güncellenemedi: {e}")
 
+def clean_merged_columns(df):
+    """Merge sonrası oluşan _x, _y sütunlarını temizler."""
+    for col in df.columns:
+        if col.endswith('_x') and col[:-2] in df.columns:
+            df.drop(columns=[col], inplace=True)
+        elif col.endswith('_x'):
+            df.rename(columns={col: col[:-2]}, inplace=True)
+        elif col.endswith('_y'):
+            df.drop(columns=[col], inplace=True)
+    return df
+
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
@@ -674,17 +685,6 @@ def enrich_with_government(df):
         return df
 
 # Veri zenginleştirme 
-
-def clean_merged_columns(df):
-    """Merge sonrası oluşan _x, _y sütunlarını temizler."""
-    for col in df.columns:
-        if col.endswith('_x') and col[:-2] in df.columns:
-            df.drop(columns=[col], inplace=True)
-        elif col.endswith('_x'):
-            df.rename(columns={col: col[:-2]}, inplace=True)
-        elif col.endswith('_y'):
-            df.drop(columns=[col], inplace=True)
-    return df
 
 def check_and_fix_coordinates(df, context=""):
     """Koordinat sütunlarını kontrol eder ve gerekirse düzeltir"""
