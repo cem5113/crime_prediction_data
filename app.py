@@ -1023,42 +1023,59 @@ if st.button("🧪 Veriyi Göster (Test)"):
         
         # Veri boyutunu ve sütunları göster
         st.write(f"⏳ Yüklenen veri boyutu: {df.shape}")
-        st.write("📋 Sütunlar:", list(df.columns))
+        st.write("📋 Orijinal Sütunlar:", list(df.columns))
         
-        # 2. Koordinat sütunlarını kontrol et
-        if not {'latitude', 'longitude'}.issubset(df.columns):
-            # Alternatif sütun isimlerini kontrol et
+        # 2. Koordinat sütunlarını standartlaştır
+        def standardize_coordinate_columns(df, suffix=''):
+            # Alternatif sütun isimlerini bul
             lat_col = next((col for col in df.columns if 'lat' in col.lower()), None)
             lon_col = next((col for col in df.columns if 'lon' in col.lower() or 'lng' in col.lower()), None)
             
-            if lat_col and lon_col:
-                df = df.rename(columns={lat_col: 'latitude', lon_col: 'longitude'})
-                st.warning(f"⚠️ Koordinat sütunları yeniden adlandırıldı: {lat_col} → latitude, {lon_col} → longitude")
-            else:
-                st.error("❌ latitude/longitude sütunları bulunamadı!")
-                st.dataframe(df.head(2))  # Verinin bir kısmını göster
-                st.stop()
+            # Eğer standart isimler yoksa alternatifleri kullan
+            if f'latitude{suffix}' not in df.columns and lat_col:
+                df[f'latitude{suffix}'] = df[lat_col]
+            if f'longitude{suffix}' not in df.columns and lon_col:
+                df[f'longitude{suffix}'] = df[lon_col]
+                
+            # Sayısal dönüşüm
+            if f'latitude{suffix}' in df.columns:
+                df[f'latitude{suffix}'] = pd.to_numeric(df[f'latitude{suffix}'], errors='coerce')
+            if f'longitude{suffix}' in df.columns:
+                df[f'longitude{suffix}'] = pd.to_numeric(df[f'longitude{suffix}'], errors='coerce')
+                
+            return df
+
+        df = standardize_coordinate_columns(df)
         
-        # 3. Temel zenginleştirme işlemleri
-        st.write("### Veri Zenginleştirme İşlemleri")
+        # Ana koordinat sütunlarını kontrol et
+        if 'latitude' not in df.columns or 'longitude' not in df.columns:
+            st.error("❌ Temel koordinat sütunları (latitude/longitude) bulunamadı!")
+            st.dataframe(df.head(2))
+            st.stop()
         
-        # Tarih/saat işlemleri
+        # 3. Tarih/saat işlemleri
         if 'date' in df.columns and 'time' in df.columns:
-            df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
-            df["event_hour"] = df["datetime"].dt.hour
-            df["date"] = df["datetime"].dt.date
-            st.success("✅ Tarih/saat bilgileri işlendi")
+            try:
+                df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
+                df["event_hour"] = df["datetime"].dt.hour
+                df["date"] = df["datetime"].dt.date
+                st.success("✅ Tarih/saat bilgileri işlendi")
+            except Exception as e:
+                st.error(f"❌ Tarih/saat dönüşüm hatası: {str(e)}")
         else:
             st.error("❌ Tarih/saat sütunları eksik!")
 
         # 4. POI zenginleştirme
         if os.path.exists("sf_pois_cleaned_with_geoid.csv") and os.path.exists("risky_pois_dynamic.json"):
-            df = enrich_with_poi(df)
-            st.write("📍 POI Örnek Veri:")
-            st.dataframe(
-                df[["GEOID", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
-                .drop_duplicates().head(3)
-            )
+            try:
+                df = enrich_with_poi(df)
+                st.write("📍 POI Örnek Veri:")
+                st.dataframe(
+                    df[["GEOID", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
+                    .drop_duplicates().head(3)
+                )
+            except Exception as e:
+                st.error(f"❌ POI zenginleştirme hatası: {str(e)}")
         else:
             st.warning("⚠️ POI verileri eksik - POI zenginleştirme atlandı")
 
@@ -1073,17 +1090,36 @@ if st.button("🧪 Veriyi Göster (Test)"):
 
         for name, file, func in enrichment_steps:
             if os.path.exists(file):
-                df = func(df)
-                st.success(f"✅ {name} eklendi")
+                try:
+                    # Birleştirmeden önce gereksiz sütunları temizle
+                    cols_before = set(df.columns)
+                    
+                    df = func(df)
+                    
+                    # Birleştirme sonrası oluşan _x, _y sütunlarını temizle
+                    new_cols = set(df.columns) - cols_before
+                    for col in new_cols:
+                        if col.endswith('_x') or col.endswith('_y'):
+                            df.drop(columns=[col], inplace=True, errors='ignore')
+                    
+                    st.success(f"✅ {name} eklendi")
+                except Exception as e:
+                    st.error(f"❌ {name} eklenirken hata: {str(e)}")
             else:
                 st.warning(f"⚠️ {name} dosyası eksik: {file}")
 
         # 6. Sonuçları kaydet ve göster
         enriched_path = "sf_crime_enriched.csv"
+        
+        # Gereksiz sütunları temizle
+        cols_to_keep = [col for col in df.columns if not col.endswith(('_x', '_y'))]
+        df = df[cols_to_keep]
+        
         df.to_csv(enriched_path, index=False)
         
         st.write("### Zenginleştirilmiş Veri Özeti")
         st.write(f"📊 Son veri boyutu: {df.shape}")
+        st.write("🔍 Son Sütunlar:", list(df.columns))
         st.dataframe(df.head(3))
 
         # 7. Git işlemleri (opsiyonel)
@@ -1100,5 +1136,3 @@ if st.button("🧪 Veriyi Göster (Test)"):
     except Exception as e:
         st.error(f"❌ Kritik hata oluştu: {str(e)}")
         st.error("Hata detayı:", exc_info=e)
-
-
