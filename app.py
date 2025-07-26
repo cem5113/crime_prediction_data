@@ -417,7 +417,12 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
 
                     gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
-                    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
+                    df_poi = df_poi.rename(columns={
+                        "lat": "poi_lat",
+                        "lon": "poi_lon"
+                    })
+                    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["poi_lon"], df_poi["poi_lat"]))
+                    df = clean_merged_columns(df)
 
                     poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
                     crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
@@ -659,445 +664,163 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     lag_col = f"prev_crime_{lag}h"
                     df.loc[idx, lag_col] = [1 if ((times[:i] >= t - np.timedelta64(lag, 'h')) & (times[:i] < t)).sum() > 0 else 0 for i, t in enumerate(times)]
 
-            # === Özetleme ===
-            df["event_hour"] = df["event_hour"].astype(int)
-            df["day_of_week"] = df["datetime"].dt.dayofweek
-            df["month"] = df["datetime"].dt.month
-            df["season"] = df["month"].map(season_map)
+ # === Veri Özetleme ve Gruplama İşlemleri ===
+# Zaman bilgilerini işle
+df["event_hour"] = df["event_hour"].astype(int)
+df["day_of_week"] = df["datetime"].dt.dayofweek
+df["month"] = df["datetime"].dt.month
+df["season"] = df["month"].map(season_map)
 
-            group_cols = ["GEOID", "season", "day_of_week", "event_hour"]
-            mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
-            mode_cols = [
-                "is_weekend", "is_night", "is_holiday", "is_repeat_location",
-                "is_school_hour", "is_business_hour", "year", "month",
-                "distance_to_police_range", "distance_to_government_building_range",
-                "is_near_police", "is_near_government"
-            ]
-            
-            mean_cols.extend([
-                col for col in df.columns if "911" in col or "request" in col
-            ])
-            mean_cols.extend(["distance_to_bus", "bus_stop_count"])
-            mean_cols.extend([
-                col for col in df.columns if "311" in col
-            ])
-            mean_cols.extend([
-                "poi_total_count", "risky_poi_score", "distance_to_high_risk_poi",
-                "distance_to_poi", "poi_risk_density",
-                "distance_to_police", "distance_to_government_building"
-            ])
-            mean_cols.extend([
-                "temp_max",               # Maksimum sıcaklık
-                "temp_min",               # Minimum sıcaklık
-                "precipitation_mm",       # Yağış miktarı
-                "temp_range",             # Sıcaklık aralığı
-                "precipitation_range"     # Yağış aralığı (varsa)
-            ])
-            if "population" in df.columns:
-                mean_cols.append("population")
-                
-            def safe_mode(x):
-                try: return x.mode().iloc[0]
-                except: return np.nan
+# Gruplama sütunlarını tanımla
+group_cols = ["GEOID", "season", "day_of_week", "event_hour"]
 
-            agg_dict = {col: "mean" for col in mean_cols}
-            agg_dict.update({col: safe_mode for col in mode_cols})
-            agg_dict.update({"date": "min", "id": "count"})
+# Ortalama alınacak sütunlar
+mean_cols = [
+    "latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", 
+    "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", 
+    "prev_crime_2h", "prev_crime_3h"
+]
 
-            df["id"] = 1
-            grouped = df.groupby(group_cols).agg(agg_dict).reset_index()
-            grouped = grouped.rename(columns={"id": "crime_count"})
-            grouped["Y_label"] = (grouped["crime_count"] >= 2).astype(int)
+# Mod alınacak kategorik sütunlar
+mode_cols = [
+    "is_weekend", "is_night", "is_holiday", "is_repeat_location",
+    "is_school_hour", "is_business_hour", "year", "month",
+    "distance_to_police_range", "distance_to_government_building_range",
+    "is_near_police", "is_near_government"
+]
 
-            geoids = df["GEOID"].unique()
-            seasons = ["Winter", "Spring", "Summer", "Fall"]
-            days = list(range(7))
-            hours = list(range(24))
-            expected_grid = pd.DataFrame(itertools.product(geoids, seasons, days, hours), columns=group_cols)
+# Diğer veri kaynaklarından gelen sütunları ekle
+data_sources = {
+    "911": [col for col in df.columns if "911" in col or "request" in col],
+    "bus": ["distance_to_bus", "bus_stop_count"],
+    "311": [col for col in df.columns if "311" in col],
+    "poi": [
+        "poi_total_count", "risky_poi_score", "distance_to_high_risk_poi",
+        "distance_to_poi", "poi_risk_density", "distance_to_police",
+        "distance_to_government_building"
+    ],
+    "weather": [
+        "temp_max", "temp_min", "precipitation_mm",
+        "temp_range", "precipitation_range"
+    ]
+}
 
-            df_final = expected_grid.merge(grouped, on=group_cols, how="left")
-            df_final["crime_count"] = df_final["crime_count"].fillna(0).astype(int)
-            df_final["Y_label"] = df_final["Y_label"].fillna(0).astype(int)
+for source_cols in data_sources.values():
+    mean_cols.extend(source_cols)
 
-            df_final["is_weekend"] = df_final["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
-            df_final["is_night"] = df_final["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
-            df_final["is_school_hour"] = df_final.apply(lambda x: 1 if (x["day_of_week"] < 5 and 7 <= x["event_hour"] <= 16) else 0, axis=1)
-            df_final["is_business_hour"] = df_final.apply(lambda x: 1 if (x["day_of_week"] < 6 and 9 <= x["event_hour"] < 18) else 0, axis=1)
+# Nüfus bilgisi varsa ekle
+if "population" in df.columns:
+    mean_cols.append("population")
 
-            columns_with_nan = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h", "is_holiday", "is_repeat_location", "year", "month", "date"]
-            df_final = df_final.dropna(subset=columns_with_nan)
+# Mod hesaplama fonksiyonu
+def safe_mode(x):
+    try: 
+        return x.mode().iloc[0]
+    except: 
+        return np.nan
 
-            existing_combinations = df_final[group_cols]
-            missing = expected_grid.merge(existing_combinations.drop_duplicates(), on=group_cols, how="left", indicator=True)
-            missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
-            missing["crime_count"] = 0
-            missing["Y_label"] = 0
+# Toplama sözlüğünü oluştur
+agg_dict = {col: "mean" for col in mean_cols}
+agg_dict.update({col: safe_mode for col in mode_cols})
+agg_dict.update({"date": "min", "id": "count"})  # Ek bilgiler
 
-            df_full_52 = pd.concat([df_final, missing], ignore_index=True)
+# Gruplama işlemi
+df["id"] = 1  # Sayım için geçici sütun
+grouped = df.groupby(group_cols).agg(agg_dict).reset_index()
+grouped = grouped.rename(columns={"id": "crime_count"})
+grouped["Y_label"] = (grouped["crime_count"] >= 2).astype(int)  # Binary hedef değişken
 
-            df_final.to_csv("sf_crime_50.csv", index=False)
-            df_full_52.to_csv("sf_crime_52.csv", index=False)
-            df.to_csv("sf_crime.csv", index=False)
-            st.success("✅ Tüm dosyalar başarıyla kaydedildi: sf_crime.csv, sf_crime_50.csv, sf_crime_52.csv")
+# Tüm olası kombinasyonlar için grid oluştur
+geoids = df["GEOID"].unique()
+seasons = ["Winter", "Spring", "Summer", "Fall"]
+days = list(range(7))
+hours = list(range(24))
+expected_grid = pd.DataFrame(
+    itertools.product(geoids, seasons, days, hours), 
+    columns=group_cols
+)
 
-            # NaN raporu ve PDF
-            nan_summary = df.isna().sum()
-            nan_cols = nan_summary[nan_summary > 0]
-            report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
-            with open(report_path, "rb") as f:
-                st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
-    
-            # İlk 5 satır, sütunlar, NaN sayıları
-            st.write("### 📈 sf_crime.csv İlk 5 Satır")
-            st.dataframe(df.head())
-            st.write("### 🔢 Sütunlar")
-            st.write(df.columns.tolist())
-            st.write("### 🔔 NaN Sayıları")
-            st.write(nan_cols)
-            st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
-            st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
+# Eksiksiz veri setini oluştur
+df_final = expected_grid.merge(grouped, on=group_cols, how="left")
+df_final["crime_count"] = df_final["crime_count"].fillna(0).astype(int)
+df_final["Y_label"] = df_final["Y_label"].fillna(0).astype(int)
 
-            st.subheader("📊 Zenginleştirilmiş Suç Verisi (Örnek)")
-            st.write("🧩 Sütunlar:")
-            st.write(df.columns.tolist())
-            
-            st.write("🔍 İlk 5 Satır:")
-            st.dataframe(df.head())
+# Zaman bazlı özellikleri yeniden hesapla
+time_features = {
+    "is_weekend": lambda x: 1 if x >= 5 else 0,
+    "is_night": lambda x: 1 if (x >= 20 or x < 4) else 0,
+    "is_school_hour": lambda x: 1 if (x["day_of_week"] < 5 and 7 <= x["event_hour"] <= 16) else 0,
+    "is_business_hour": lambda x: 1 if (x["day_of_week"] < 6 and 9 <= x["event_hour"] < 18) else 0
+}
 
-# Veri zenginleştirme 
-def check_and_fix_coordinates(df, context=""):
-    """Koordinat sütunlarını kontrol eder ve gerekirse düzeltir"""
-    # Orijinal sütun isimlerini koru
-    original_cols = df.columns.tolist()
-    
-    # Standart isimlendirmeler
-    coord_map = {
-        'latitude': ['lat', 'latitude', 'enlem'],
-        'longitude': ['lon', 'long', 'lng', 'longitude', 'boylam']
-    }
-    
-    # Her bir koordinat türü için
-    for standard_name, alternatives in coord_map.items():
-        # Standart isim yoksa alternatifleri ara
-        if standard_name not in df.columns:
-            for alt in alternatives:
-                if alt in df.columns:
-                    df[standard_name] = df[alt]
-                    st.warning(f"⚠️ {context}: {alt} → {standard_name} olarak yeniden adlandırıldı")
-                    break
-    
-    # Sayısal dönüşüm
-    if 'latitude' in df.columns:
-        df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
-    if 'longitude' in df.columns:
-        df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-    
-    # Eksikse hata ver
-    missing = []
-    if 'latitude' not in df.columns:
-        missing.append('latitude')
-    if 'longitude' not in df.columns:
-        missing.append('longitude')
-    
-    if missing:
-        st.error(f"❌ {context}: Eksik koordinat sütunları: {missing}. Mevcut sütunlar: {original_cols}")
-        return False
-    
-    return True
+for feature, func in time_features.items():
+    df_final[feature] = df_final.apply(func, axis=1)
 
-def enrich_with_police(df):
-    try:
-        # Koordinat kontrolü - check_coordinate_columns yerine check_and_fix_coordinates kullanıyoruz
-        if not check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu"):
-            return df
-            
-        # Geçerli koordinatları filtrele
-        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
-        if df_valid.empty:
-            st.warning("⚠️ Geçerli koordinat içeren satır yok (police).")
-            return df
+# Eksik veri işleme
+critical_columns = [
+    "latitude", "longitude", "past_7d_crimes", "crime_count_past_24h",
+    "crime_count_past_48h", "crime_trend_score", "prev_crime_1h",
+    "prev_crime_2h", "prev_crime_3h", "is_holiday", "is_repeat_location",
+    "year", "month", "date"
+]
+df_final = df_final.dropna(subset=critical_columns)
 
-        # GeoDataFrame oluştur
-        gdf_crime = gpd.GeoDataFrame(
-            df_valid,
-            geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
-            crs="EPSG:4326"
-        ).to_crs(epsg=3857)
+# Eksik kombinasyonları tamamla
+existing_combinations = df_final[group_cols]
+missing = expected_grid.merge(
+    existing_combinations.drop_duplicates(), 
+    on=group_cols, 
+    how="left", 
+    indicator=True
+)
+missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
+missing["crime_count"] = 0
+missing["Y_label"] = 0
 
-        # Polis verisini yükle
-        if not os.path.exists("sf_police_stations.csv"):
-            st.error("❌ Polis istasyonu verisi bulunamadı (sf_police_stations.csv)")
-            return df
-            
-        df_police = pd.read_csv("sf_police_stations.csv")
-        if not check_and_fix_coordinates(df_police, "Polis istasyonu verisi"):
-            return df
-            
-        gdf_police = gpd.GeoDataFrame(
-            df_police.dropna(subset=["longitude", "latitude"]),
-            geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]),
-            crs="EPSG:4326"
-        ).to_crs(epsg=3857)
+# Nihai veri setlerini oluştur
+df_full_52 = pd.concat([df_final, missing], ignore_index=True)
 
-        # Mesafe hesapla
-        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-        police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
-        police_tree = cKDTree(police_coords)
-        df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
+# Çıktı dosyalarını kaydet
+output_files = {
+    "sf_crime.csv": df,
+    "sf_crime_50.csv": df_final,
+    "sf_crime_52.csv": df_full_52
+}
 
-        # Ek sütunlar
-        df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
-        df_valid["distance_to_police_range"] = pd.cut(
-            df_valid["distance_to_police"],
-            bins=[0, 100, 200, 500, 1000, np.inf],
-            labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
-        )
+for filename, data in output_files.items():
+    data.to_csv(filename, index=False)
+st.success("✅ Tüm dosyalar başarıyla kaydedildi: " + ", ".join(output_files.keys()))
 
-        # Ana df'e geri ekle
-        df.update(df_valid)
-        st.success("✅ Polis istasyonu bilgileri başarıyla eklendi")
-        return df
+# Raporlama ve Analiz
+# NaN analizi
+nan_summary = df.isna().sum()
+nan_cols = nan_summary[nan_summary > 0]
 
-    except Exception as e:
-        st.error(f"❌ Polis istasyonu zenginleştirme hatası: {str(e)}")
-        return df
+# PDF raporu oluştur
+report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
+with open(report_path, "rb") as f:
+    st.download_button(
+        "📄 PDF Raporu İndir", 
+        f, 
+        file_name=report_path, 
+        mime="application/pdf"
+    )
 
-def enrich_with_government(df):
-    """Suç verisini devlet binaları verileriyle zenginleştirir"""
-    try:
-        # Koordinat kontrolü
-        if not check_and_fix_coordinates(df, "Devlet binaları entegrasyonu"):
-            return df
-            
-        # Geçerli koordinatları filtrele
-        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
-        if df_valid.empty:
-            st.warning("⚠️ Devlet binaları: Geçerli koordinat içeren satır yok")
-            return df
+# Veri önizleme
+st.write("### 📈 sf_crime.csv İlk 5 Satır")
+st.dataframe(df.head())
 
-        # Devlet binaları verisini yükle
-        if not os.path.exists("sf_government_buildings.csv"):
-            st.error("❌ Devlet binaları verisi bulunamadı")
-            return df
-            
-        df_gov = pd.read_csv("sf_government_buildings.csv")
-        
-        # Devlet binaları koordinatlarını kontrol et
-        if not check_and_fix_coordinates(df_gov, "Devlet binaları verisi"):
-            return df
-            
-        # GeoDataFrame dönüşümleri
-        gdf_crime = gpd.GeoDataFrame(
-            df_valid,
-            geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
-            crs="EPSG:4326"
-        ).to_crs(epsg=3857)
+st.write("### 🔢 Sütunlar")
+st.write(df.columns.tolist())
 
-        gdf_gov = gpd.GeoDataFrame(
-            df_gov.dropna(subset=["longitude", "latitude"]),
-            geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]),
-            crs="EPSG:4326"
-        ).to_crs(epsg=3857)
+st.write("### 🔔 NaN Sayıları")
+st.write(nan_cols)
 
-        # Mesafe hesapla
-        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-        gov_coords = np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T
-        gov_tree = cKDTree(gov_coords)
-        df_valid["distance_to_government"], _ = gov_tree.query(crime_coords, k=1)
+st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
+st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
 
-        # Ek sütunlar
-        df_valid["is_near_government"] = (df_valid["distance_to_government"] < 200).astype(int)
-        df_valid["distance_to_government_range"] = pd.cut(
-            df_valid["distance_to_government"],
-            bins=[0, 100, 200, 500, 1000, np.inf],
-            labels=["0-100m", "100-200m", "200-500m", "500-1000m", ">1000m"]
-        )
-
-        # Ana df'e geri ekle
-        df.update(df_valid)
-        st.success("✅ Devlet binası bilgileri başarıyla eklendi")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ Devlet binası zenginleştirme hatası: {str(e)}")
-        return df
-
-def enrich_with_poi(df):
-    """
-    Suç verisini POI (Point of Interest) verileriyle zenginleştirir.
-    - En yakın POI'ya ve en yakın riskli POI'ya olan mesafeleri hesaplar.
-    - Her coğrafi bölge (GEOID) için POI risk yoğunluğunu hesaplar.
-    """
-    try:
-        # Gerekli dosyaları yükle
-        df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
-        with open("risky_pois_dynamic.json") as f:
-            risk_dict = json.load(f)
-        
-        # Risk skorunu ata
-        df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
-
-        # GeoDataFrame'leri oluştur ve projeksiyonu ayarla (hesaplama için)
-        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
-        gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
-
-        # KDTree ile en yakın POI mesafesini hesapla
-        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
-        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-        poi_tree = cKDTree(poi_coords)
-        df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
-
-        # Yüksek riskli POI'lar için mesafeyi hesapla
-        risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
-        if not risky_poi.empty:
-            risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
-            risky_tree = cKDTree(risky_coords)
-            df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
-        else:
-            df["distance_to_high_risk_poi"] = np.nan
-        
-        # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
-        risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-        df = df.merge(risk_density, on="GEOID", how="left")
-        
-        st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ POI zenginleştirme sırasında hata oluştu: {e}")
-        return df # Hata durumunda bile orijinal df'i geri döndür
-        
-def enrich_with_911(df):
-    try:
-        df_911 = pd.read_csv("sf_911_last_5_year.csv")
-
-        # GEOID'leri string ve 11 haneli olarak ayarla
-        df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
-        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-
-        # Tarih formatı düzelt
-        df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-        # Merge işlemi
-        df = df.merge(df_911, on=["GEOID", "date", "event_hour"], how="left")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ 911 verisi eklenemedi: {e}")
-        return df
-
-def enrich_with_311(df):
-    try:
-        df_311 = pd.read_csv("sf_311_last_5_years.csv")
-
-        # datetime birleştirme ve saat çıkarımı
-        df_311["datetime"] = pd.to_datetime(df_311["date"] + " " + df_311["time"], errors="coerce")
-        df_311["event_hour"] = df_311["datetime"].dt.hour
-        df_311["hour_range"] = (df_311["event_hour"] // 3) * 3
-        df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
-
-        # tarih formatı düzelt
-        df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-
-        # GEOID tipleri uyuşmalı
-        df_311["GEOID"] = df_311["GEOID"].astype(str).str.zfill(11)
-        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-
-        # saat eşleşmesiyle birleştir
-        df = df.merge(df_311, on=["GEOID", "date", "event_hour"], how="left")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ 311 verisi eklenemedi: {e}")
-        return df
-
-def enrich_with_weather(df):
-    try:
-        if not os.path.exists("sf_weather_5years.csv"):
-            st.warning("⚠️ Hava durumu verisi bulunamadı")
-            return df
-
-        weather = pd.read_csv("sf_weather_5years.csv")
-        weather.columns = weather.columns.str.lower()
-        
-        # Tarih sütununu bulmak için esnek yaklaşım
-        date_col = next((col for col in weather.columns if 'date' in col), None)
-        if not date_col:
-            st.error("❌ Hava durumu verisinde tarih sütunu bulunamadı")
-            return df
-            
-        weather['date'] = pd.to_datetime(weather[date_col]).dt.date
-        
-        # Ana veride tarih sütununu bul
-        main_date_col = 'date' if 'date' in df.columns else \
-                       next((col for col in df.columns if 'date' in col), None)
-        
-        if not main_date_col:
-            st.error("❌ Ana veride tarih sütunu bulunamadı")
-            return df
-            
-        # datetime sütunu yoksa oluştur
-        if 'datetime' not in df.columns and 'date' in df.columns and 'time' in df.columns:
-            try:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
-            except:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str))
-        
-        df['date'] = pd.to_datetime(df[main_date_col]).dt.date
-        
-        # Birleştirme
-        df = df.merge(weather, on='date', how='left')
-        st.success("✅ Hava durumu verisi başarıyla eklendi")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ Hava durumu zenginleştirme hatası: {str(e)}")
-        return df
-        
-if st.button("🧪 Veriyi Göster (Test)"):
-    try:
-        # Veri yükleme
-        if not os.path.exists("sf_crime.csv"):
-            st.error("❌ sf_crime.csv bulunamadı!")
-            st.stop()
-            
-        df = pd.read_csv("sf_crime.csv", low_memory=False)
-        
-        # Koordinat kontrolü
-        if not check_and_fix_coordinates(df, "Ana veri"):
-            st.stop()
-        
-        # Tarih/saat işlemleri
-        if 'date' in df.columns and 'time' in df.columns:
-            try:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
-                df['date'] = df['datetime'].dt.date
-                df['event_hour'] = df['datetime'].dt.hour
-            except Exception as e:
-                st.error(f"❌ Tarih dönüşüm hatası: {str(e)}")
-        
-        # Zenginleştirme adımları
-        enrichment_functions = [
-            ("POI", enrich_with_poi),
-            ("911", enrich_with_911),
-            ("311", enrich_with_311),
-            ("Hava Durumu", enrich_with_weather),
-            ("Polis İstasyonları", enrich_with_police),
-            ("Devlet Binaları", enrich_with_government)
-        ]
-        
-        for name, func in enrichment_functions:
-            try:
-                df = func(df)
-            except Exception as e:
-                st.error(f"❌ {name} zenginleştirme hatası: {str(e)}")
-        
-        # Sonuçları göster
-        st.write("### Sonuçlar")
-        st.dataframe(df.head(3))
-        st.write("Sütunlar:", df.columns.tolist())
-        
-    except Exception as e:
-        st.error(f"❌ Genel hata: {str(e)}")
+st.subheader("📊 Zenginleştirilmiş Suç Verisi (Örnek)")
+st.write("🧩 Sütunlar:")
+st.write(df.columns.tolist())
+st.write("🔍 İlk 5 Satır:")
+st.dataframe(df.head())
