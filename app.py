@@ -439,7 +439,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                     risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
                     df = df.merge(risk_density, on="GEOID", how="left")
-
+                    df = clean_merged_columns(df)
+                    
                     st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
                 except Exception as e:
                     st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
@@ -539,8 +540,9 @@ def enrich_with_911(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_911")
         )
+        df = clean_merged_columns(df)
         return df
-
+        
     except Exception as e:
         st.error(f"❌ 911 verisi eklenemedi: {e}")
         return df
@@ -564,6 +566,7 @@ def enrich_with_311(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_311")
         )
+        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -593,6 +596,7 @@ def enrich_with_weather(df):
             suffixes=("", "_weather")
         ).drop(columns=["weather_date"])
         st.success("✅ Hava durumu verisi başarıyla eklendi")
+        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -871,6 +875,7 @@ def enrich_with_poi(df):
         # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
         risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
         df = df.merge(risk_density, on="GEOID", how="left")
+        df = clean_merged_columns(df)
         
         st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
         return df
@@ -901,6 +906,7 @@ def enrich_with_911(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_911")
         )
+        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -934,6 +940,7 @@ def enrich_with_311(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_311")
         )
+        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -981,6 +988,7 @@ def enrich_with_weather(df):
             right_on="weather_date",
             suffixes=("", "_weather")
         ).drop(columns=["weather_date"])
+        df = clean_merged_columns(df)
         st.success("✅ Hava durumu verisi başarıyla eklendi")
         return df
 
