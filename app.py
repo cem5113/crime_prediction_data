@@ -989,7 +989,7 @@ def enrich_with_government(df):
 
 if st.button("🧪 Veriyi Göster (Test)"):
     try:
-        df = pd.read_csv("sf_crime.csv")
+        # df = pd.read_csv("sf_crime.csv")
 
         # ✅ Zaman bileşenlerini oluştur
         df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
