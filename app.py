@@ -456,18 +456,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     except Exception as e:
                         st.error(f"❌ POI verisi eklenemedi: {e}")
                 
-                try:
-                    df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
-                    df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+                    try:
+                        df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                        df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+                        
+                        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+                        gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
                     
-                    gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
-                    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
-                
-                    # Genel POI mesafesi
-                    poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
-                    crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-                    poi_tree = cKDTree(poi_coords)
-                    df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
+                        # Genel POI mesafesi
+                        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
+                        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+                        poi_tree = cKDTree(poi_coords)
+                        df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
                 
                     # Riskli POI’lere mesafe
                     risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
