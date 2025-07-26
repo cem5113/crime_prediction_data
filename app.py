@@ -451,7 +451,11 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                 except Exception as e:
                     st.error(f"❌ 311 verisi eklenemedi: {e}")
-
+                    
+                # Suç verisini oku
+                df = pd.read_csv("sf_crime.csv", low_memory=False)
+                original_row_count = len(df)
+                
                 # 🔁 POI Risk ve Yoğunluk Özelliklerini Ekle
                 try:
                     df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
