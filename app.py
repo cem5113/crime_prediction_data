@@ -398,7 +398,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ 911 verisi yüklenemedi: {e}")
 
-                # 311 verisini oku 
+                # 311 verisini oku
                 df_311 = None
                 try:
                     response_311 = requests.get(DOWNLOAD_311_URL)
@@ -406,41 +406,51 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         with open("sf_311_last_5_years.csv", "wb") as f:
                             f.write(response_311.content)
                         st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
-                        
+                
                         df_311 = pd.read_csv("sf_311_last_5_years.csv")
                 
-                        # time sütunundan event_hour üret
+                        # 2. event_hour oluştur (varsa time üzerinden)
                         if "event_hour" not in df_311.columns:
                             if "time" in df_311.columns:
                                 df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").dt.hour
                             elif "datetime" in df_311.columns:
                                 df_311["event_hour"] = pd.to_datetime(df_311["datetime"], errors="coerce").dt.hour
                             else:
-                                st.warning("⚠️ 'time' veya 'datetime' sütunu yok, 'event_hour' oluşturulamadı.")
-                                st.stop()
+                                st.warning("⚠️ 311 verisinde 'time' ya da 'datetime' sütunu yok, 'event_hour' oluşturulamadı.")
+                                df_311["event_hour"] = np.nan
                 
-                        # date varsa datetime formatına çevir
-                        if "date" in df_311.columns:
-                            df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce").dt.date
+                        # 3. Tarihi dönüştür
+                        df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce").dt.date
                 
+                        # 4. GEOID tipini düzelt
+                        df_311["GEOID"] = df_311["GEOID"].astype(str).str.zfill(11)
+                
+                        # 5. Birleştir (örnek olarak df ana veri setin olsun)
+                        if "df" in locals():
+                            df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+                            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+                            df["event_hour"] = pd.to_numeric(df["event_hour"], errors="coerce")
+                
+                            df = pd.merge(
+                                df,
+                                df_311,
+                                on=["GEOID", "date", "event_hour"],
+                                how="left",
+                                suffixes=('', '_311')
+                            )
+                            st.success("✅ 311 verisi başarıyla birleştirildi.")
+                        else:
+                            st.warning("⚠️ Ana veri (df) tanımlı değil. 311 verisi ayrı olarak yüklendi.")
+                
+                        # 6. İlk satırları göster
                         st.write("📟 311 Verisi İlk 5 Satır")
                         st.dataframe(df_311.head())
-                        st.write("📌 311 Sütunları:")
-                        st.write(df_311.columns.tolist())
                 
                     else:
-                        st.error("❌ sf_311_last_5_years.csv indirilemedi.")
+                        st.error("❌ sf_311_last_5_years.csv indirilemedi!")
                 
                 except Exception as e:
-                    st.error(f"❌ 311 verisi yüklenemedi: {e}")
-                                    
-                # Suç verisini oku
-                df = pd.read_csv("sf_crime.csv", low_memory=False)
-                original_row_count = len(df)
-
-                # Suç verisini oku
-                df = pd.read_csv("sf_crime.csv", low_memory=False)
-                original_row_count = len(df)
+                    st.error(f"❌ 311 verisi eklenemedi: {e}")
 
                 # 🔁 POI Risk ve Yoğunluk Özelliklerini Ekle
                 try:
