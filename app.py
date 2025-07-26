@@ -932,14 +932,11 @@ def enrich_with_police_and_gov(df):
         st.error(f"Polis ve devlet binası hesaplama hatası: {e}")
         return df
 
-# (app.py'deki ana kodlar burada devam eder)
-
-# Örnek test butonu:
 if st.button("🧪 Veriyi Göster (Test)"):
     try:
         df = pd.read_csv("sf_crime.csv")
 
-        # ✅ Zaman bileşenlerini oluştur (event_hour vs.)
+        # ✅ Zaman bileşenlerini oluştur
         df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
         df["event_hour"] = df["datetime"].dt.hour
         df["date"] = df["datetime"].dt.date
@@ -960,16 +957,21 @@ if st.button("🧪 Veriyi Göster (Test)"):
         df = enrich_with_police_and_gov(df)
         st.success("✅ Polis ve devlet binası bilgileri eklendi")
 
-        df.to_csv("sf_crime_enriched.csv", index=False)
-        st.success("✅ Zenginleştirilmiş veri kaydedildi: sf_crime_enriched.csv")
+        # ✅ Dosyayı kaydet
+        enriched_path = "sf_crime_enriched.csv"
+        df.to_csv(enriched_path, index=False)
+        st.success(f"✅ Zenginleştirilmiş veri kaydedildi: {enriched_path}")
         st.dataframe(df.head())
+
+        # ✅ Git ayarları ve GitHub’a ekleme
+        subprocess.run(["git", "config", "--global", "user.name", "cem5113"])
+        subprocess.run(["git", "config", "--global", "user.email", "cem5113@hotmail.com"])
+        subprocess.run(["git", "add", enriched_path])
+        subprocess.run(["git", "commit", "-m", "✅ Günlük zenginleştirilmiş veri güncellendi"])
+        subprocess.run(["git", "push"])
+        st.success("🚀 Günlük zenginleştirilmiş veri GitHub'a yüklendi.")
 
     except Exception as e:
         st.error(f"❌ Hata oluştu: {e}")
-
-# Günlük zenginleştirilmiş veriyi GitHub'a kaydet
-import subprocess
-subprocess.run(["git", "config", "--global", "user.name", "cem5113"])
-subprocess.run(["git", "config", "--global", "user.email", "cem5113@hotmail.com"])
 
 
