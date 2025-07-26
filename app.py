@@ -393,6 +393,8 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
                 
                         df_311 = pd.read_csv("sf_311_last_5_years.csv")
+                        if "event_hour" not in df_311.columns and "time" in df_311.columns:
+                            df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").dt.hour
                         df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
                 
                         st.write("📟 311 Verisi İlk 5 Satır")
