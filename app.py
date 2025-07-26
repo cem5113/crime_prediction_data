@@ -774,7 +774,8 @@ def enrich_with_poi(df):
 
 def enrich_with_police(df):
     try:
-        df = check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu")
+        if not check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu"):
+            return df 
         if df.empty:
             return df
 
