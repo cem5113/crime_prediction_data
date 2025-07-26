@@ -879,33 +879,43 @@ def enrich_with_police_and_gov(df):
         if "latitude" not in df.columns and "lat" in df.columns:
             df = df.rename(columns={"lat": "latitude"})
 
+        # ❗ Kontrol sonrası yazdır (debug için)
+        # st.write("Sütunlar:", df.columns.tolist())
+
         if "longitude" not in df.columns or "latitude" not in df.columns:
             st.error("❌ Suç verisinde 'longitude' veya 'latitude' sütunu eksik.")
             return df
 
-        # 3. GeoDataFrame dönüşümü
+        # ✅ 2. Geçerli koordinatlara sahip satırları filtrele
+        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
+        if df_valid.empty:
+            st.warning("⚠️ Geçerli koordinat içeren satır yok.")
+            return df
+
+        # ✅ 3. GeoDataFrame dönüşümü
         gdf_crime = gpd.GeoDataFrame(
             df_valid,
             geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
-        gdf_police = gpd.read_file("sf_police_stations.csv")
-        gdf_gov = gpd.read_file("sf_government_buildings.csv")
+        # 🏢 4. Polis ve devlet binaları
+        df_police = pd.read_csv("sf_police_stations.csv")
+        df_gov = pd.read_csv("sf_government_buildings.csv")
 
         gdf_police = gpd.GeoDataFrame(
-            gdf_police,
-            geometry=gpd.points_from_xy(gdf_police["longitude"], gdf_police["latitude"]),
+            df_police,
+            geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
         gdf_gov = gpd.GeoDataFrame(
-            gdf_gov,
-            geometry=gpd.points_from_xy(gdf_gov["longitude"], gdf_gov["latitude"]),
+            df_gov,
+            geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
-        # 4. KDTree ile mesafe hesaplama
+        # 📏 5. KDTree ile mesafe hesapla
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
         gov_coords = np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T
@@ -916,7 +926,7 @@ def enrich_with_police_and_gov(df):
         df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
         df_valid["distance_to_government_building"], _ = gov_tree.query(crime_coords, k=1)
 
-        # 5. Etiketleme
+        # 🧩 6. Yakınlık etiketleri
         df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
         df_valid["is_near_government"] = (df_valid["distance_to_government_building"] < 200).astype(int)
 
@@ -932,9 +942,10 @@ def enrich_with_police_and_gov(df):
             labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
         )
 
-        # 6. Geri aktar
+        # 🔄 7. Geri yaz
         df.update(df_valid)
 
+        st.success("✅ Polis ve devlet binası bilgileri eklendi")
         return df
 
     except Exception as e:
