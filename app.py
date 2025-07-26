@@ -673,8 +673,6 @@ def enrich_with_government(df):
         st.error(f"❌ Devlet binası zenginleştirme hatası: {str(e)}")
         return df
 
-
-
 # Veri zenginleştirme 
 
 def clean_merged_columns(df):
@@ -727,6 +725,52 @@ def check_and_fix_coordinates(df, context=""):
         return False
     
     return True
+
+def enrich_with_poi(df):
+    """
+    Suç verisini POI (Point of Interest) verileriyle zenginleştirir.
+    - En yakın POI'ya ve en yakın riskli POI'ya olan mesafeleri hesaplar.
+    - Her coğrafi bölge (GEOID) için POI risk yoğunluğunu hesaplar.
+    """
+    try:
+        # Gerekli dosyaları yükle
+        df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+        with open("risky_pois_dynamic.json") as f:
+            risk_dict = json.load(f)
+        
+        # Risk skorunu ata
+        df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+
+        # GeoDataFrame'leri oluştur ve projeksiyonu ayarla (hesaplama için)
+        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
+
+        # KDTree ile en yakın POI mesafesini hesapla
+        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
+        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+        poi_tree = cKDTree(poi_coords)
+        df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
+
+        # Yüksek riskli POI'lar için mesafeyi hesapla
+        risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
+        if not risky_poi.empty:
+            risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
+            risky_tree = cKDTree(risky_coords)
+            df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
+        else:
+            df["distance_to_high_risk_poi"] = np.nan
+        
+        # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
+        risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
+        df = df.merge(risk_density, on="GEOID", how="left")
+        df = clean_merged_columns(df)
+        
+        st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
+        return df
+
+    except Exception as e:
+        st.error(f"❌ POI zenginleştirme sırasında hata oluştu: {e}")
+        return df # Hata durumunda bile orijinal df'i geri döndür
 
 def enrich_with_police(df):
     try:
@@ -839,52 +883,6 @@ def enrich_with_government(df):
         st.error(f"❌ Devlet binası zenginleştirme hatası: {str(e)}")
         return df
 
-def enrich_with_poi(df):
-    """
-    Suç verisini POI (Point of Interest) verileriyle zenginleştirir.
-    - En yakın POI'ya ve en yakın riskli POI'ya olan mesafeleri hesaplar.
-    - Her coğrafi bölge (GEOID) için POI risk yoğunluğunu hesaplar.
-    """
-    try:
-        # Gerekli dosyaları yükle
-        df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
-        with open("risky_pois_dynamic.json") as f:
-            risk_dict = json.load(f)
-        
-        # Risk skorunu ata
-        df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
-
-        # GeoDataFrame'leri oluştur ve projeksiyonu ayarla (hesaplama için)
-        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
-        gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
-
-        # KDTree ile en yakın POI mesafesini hesapla
-        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
-        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-        poi_tree = cKDTree(poi_coords)
-        df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
-
-        # Yüksek riskli POI'lar için mesafeyi hesapla
-        risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
-        if not risky_poi.empty:
-            risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
-            risky_tree = cKDTree(risky_coords)
-            df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
-        else:
-            df["distance_to_high_risk_poi"] = np.nan
-        
-        # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
-        risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-        df = df.merge(risk_density, on="GEOID", how="left")
-        df = clean_merged_columns(df)
-        
-        st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
-        return df
-
-    except Exception as e:
-        st.error(f"❌ POI zenginleştirme sırasında hata oluştu: {e}")
-        return df # Hata durumunda bile orijinal df'i geri döndür
-        
 def enrich_with_911(df):
     try:
         df_911 = pd.read_csv("sf_911_last_5_year.csv")
