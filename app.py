@@ -413,7 +413,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.stop()
 
         except Exception as e:
-if st.button("\U0001F4E5 sf_crime.csv indir, zenginleştir ve özetle"):
+if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
     with st.spinner("⏳ İşlem devam ediyor..."):
         try:
             response = requests.get(DOWNLOAD_URL)
