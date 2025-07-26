@@ -374,8 +374,9 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                         df_911 = pd.read_csv("sf_911_last_5_year.csv")
                 
-                        # GEOID tipini string olarak düzelt
-                        df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
+                        # GEOID tipini string olarak düzelt ve 11 hane yap
+                        if "GEOID" in df_911.columns:
+                            df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
                 
                         # event_hour oluşturulmamışsa oluştur
                         if "event_hour" not in df_911.columns:
@@ -391,14 +392,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         if "date" in df_911.columns:
                             df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce").dt.date
                 
-                        # GÖSTER
+                        # 📌 VERİYİ GÖSTER
                         st.write("🚔 911 Verisi İlk 5 Satır")
                         st.dataframe(df_911.head())
                         st.write("📌 911 Sütunları:", df_911.columns.tolist())
+                        st.write("📌 911 GEOID dtype:", df_911["GEOID"].dtype)
+                
+                    else:
+                        st.warning(f"⚠️ sf_911_last_5_year.csv indirilemedi: {response_911.status_code}")
                 except Exception as e:
                     st.error(f"❌ 911 verisi yüklenemedi: {e}")
 
-                # 311 verisini oku 
+                # 311 verisini oku ve işleyerek saat bilgisini ekle
                 df_311 = None
                 try:
                     response_311 = requests.get(DOWNLOAD_311_URL)
@@ -408,7 +413,14 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
                 
                         df_311 = pd.read_csv("sf_311_last_5_years.csv")
-                        df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+                
+                        # date ve time sütunlarını datetime formatına çevir
+                        df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce").dt.date
+                        df_311["time"] = pd.to_datetime(df_311["time"], errors="coerce").dt.time
+                
+                        # event_hour ve hour_range üret
+                        df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").apply(lambda x: x.hour if pd.notnull(x) else None)
+                        df_311["hour_range"] = df_311["event_hour"].apply(lambda x: f"{int(x//3*3)}-{int(x//3*3 + 3)}" if pd.notnull(x) else None)
                 
                         st.write("📟 311 Verisi İlk 5 Satır")
                         st.dataframe(df_311.head())
@@ -419,6 +431,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         st.warning(f"⚠️ sf_311_last_5_years.csv indirilemedi: {response_311.status_code}")
                 except Exception as e:
                     st.error(f"❌ 311 verisi yüklenemedi: {e}")
+
                     
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
