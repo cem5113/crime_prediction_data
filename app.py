@@ -882,8 +882,8 @@ def enrich_with_police_and_gov(df):
         police_df = pd.read_csv("sf_police_stations.csv")
         gov_df = pd.read_csv("sf_government_buildings.csv")
 
-        gdf_police = gpd.GeoDataFrame(police_df, geometry=gpd.points_from_xy(police_df["lon"], police_df["lat"]), crs="EPSG:4326").to_crs(3857)
-        gdf_gov = gpd.GeoDataFrame(gov_df, geometry=gpd.points_from_xy(gov_df["lon"], gov_df["lat"]), crs="EPSG:4326").to_crs(3857)
+        gdf_police = gpd.GeoDataFrame(police_df, geometry=gpd.points_from_xy(police_df["longitude"], police_df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        gdf_gov = gpd.GeoDataFrame(gov_df, geometry=gpd.points_from_xy(gov_df["longitude"], gov_df["latitude"]), crs="EPSG:4326").to_crs(3857)
 
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
 
@@ -909,6 +909,9 @@ def enrich_with_police_and_gov(df):
 # Örnek test butonu:
 if st.button("🧪 Veriyi Göster (Test)"):
     df = pd.read_csv("sf_crime.csv")
+    df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
+    df["event_hour"] = df["datetime"].dt.hour
+    df["date"] = df["datetime"].dt.date
     df = enrich_with_poi(df)
     df = enrich_with_911(df)
     df = enrich_with_311(df)
