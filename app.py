@@ -873,15 +873,14 @@ def enrich_with_weather(df):
 
 def enrich_with_police_and_gov(df):
     try:
-        # 1. Gerekli sütunlar mevcut mu?
-        if "longitude" not in df.columns or "latitude" not in df.columns:
-            st.error("❌ 'longitude' veya 'latitude' sütunu eksik.")
-            return df
+        # 🔄 Gerekirse 'lon'/'lat' → 'longitude'/'latitude'
+        if "longitude" not in df.columns and "lon" in df.columns:
+            df = df.rename(columns={"lon": "longitude"})
+        if "latitude" not in df.columns and "lat" in df.columns:
+            df = df.rename(columns={"lat": "latitude"})
 
-        # 2. Geçerli koordinatlara sahip satırları al
-        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
-        if df_valid.empty:
-            st.warning("⚠️ Geçerli koordinat içeren satır yok.")
+        if "longitude" not in df.columns or "latitude" not in df.columns:
+            st.error("❌ Suç verisinde 'longitude' veya 'latitude' sütunu eksik.")
             return df
 
         # 3. GeoDataFrame dönüşümü
