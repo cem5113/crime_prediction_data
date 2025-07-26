@@ -445,7 +445,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                     st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
                     st.write("📍 Örnek POI verisi:")
-                    st.dataframe(df[["GEOID", "poi_total_count", "risky_poi_score"]].drop_duplicates().head())
+                    st.dataframe(df[["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]].drop_duplicates().head())
 
                 except Exception as e:
                     st.warning(f"⚠️ POI verisi eklenemedi: {e}")
@@ -480,6 +480,11 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
                 except Exception as e:
                     st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
+
+                print(df_poi.columns)
+                print(df_poi["poi_subcategory"].unique())
+                print(df_poi["GEOID"].head())
+                print(df["GEOID"].head())
 
                 # Nüfus verisini oku
                 if os.path.exists(POPULATION_PATH):
@@ -811,31 +816,49 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
             st.write("🔍 İlk 5 Satır:")
             st.dataframe(df.head())
 
-# === 5 FONKSİYON: Veri zenginleştirme ===
+# Veri zenginleştirme 
 def enrich_with_poi(df):
     try:
+        # 1. POI verisini oku
         df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+
+        # 2. Risk skorlarını yükle
         with open("risky_pois_dynamic.json") as f:
             risk_dict = json.load(f)
+
+        # 3. GEOID'leri düzelt
+        df_poi["GEOID"] = df_poi["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+
+        # 4. Eksik id varsa üret
+        if "id" not in df_poi.columns:
+            df_poi["id"] = df_poi.index
+
+        # 5. Risk skorunu ata
+        if "poi_subcategory" not in df_poi.columns:
+            st.warning("⚠️ 'poi_subcategory' sütunu POI dosyasında yok.")
+            return df
+
         df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
 
+        # 6. GEOID bazlı özetle
         poi_features = df_poi.groupby("GEOID").agg(
             poi_total_count=("id", "count"),
             risky_poi_score=("risk_score", "mean")
         ).reset_index()
 
-        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-        poi_features["GEOID"] = poi_features["GEOID"].astype(str).str.zfill(11)
         df = df.merge(poi_features, on="GEOID", how="left")
 
+        # 7. Mekânsal analiz: mesafeler
         gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
         gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
 
-        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+        poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
         poi_tree = cKDTree(poi_coords)
         df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
 
+        # 8. Riskli POI mesafesi
         risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
         if not risky_poi.empty:
             risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
@@ -844,13 +867,15 @@ def enrich_with_poi(df):
         else:
             df["distance_to_high_risk_poi"] = np.nan
 
+        # 9. Risk yoğunluğu
         risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-        risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
         df = df.merge(risk_density, on="GEOID", how="left")
 
+        # 10. Geri dön
         return df
+
     except Exception as e:
-        st.error(f"POI zenginleştirme hatası: {e}")
+        st.error(f"❌ POI zenginleştirme hatası: {e}")
         return df
 
 def enrich_with_911(df):
