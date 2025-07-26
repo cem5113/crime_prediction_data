@@ -413,38 +413,78 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 st.stop()
 
         except Exception as e:
-            st.error(f"❌ Genel hata oluştu: {e}")
+if st.button("\U0001F4E5 sf_crime.csv indir, zenginleştir ve özetle"):
+    with st.spinner("⏳ İşlem devam ediyor..."):
+        try:
+            response = requests.get(DOWNLOAD_URL)
+            if response.status_code == 200:
+                with open("sf_crime.csv", "wb") as f:
+                    f.write(response.content)
+                st.success("✅ sf_crime.csv başarıyla indirildi.")
 
-            # Suç verisini oku
-            df = pd.read_csv("sf_crime.csv", low_memory=False)
-            original_row_count = len(df)
+                update_train_data_if_needed()
+                update_bus_data_if_needed()
+                update_pois_if_needed()
+                update_weather_data()
+                update_police_and_gov_buildings_if_needed()
 
-            # Suç verisini oku
-            df = pd.read_csv("sf_crime.csv", low_memory=False)
-            original_row_count = len(df)
-            
-            # 🔁 POI Risk ve Yoğunluk Özelliklerini Ekle
-            try:
-                df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
-                
-                with open("risky_pois_dynamic.json") as f:
-                    risk_dict = json.load(f)
-                
-                df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
+                if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
+                    st.success("✅ POI CSV dosyası mevcut.")
+                else:
+                    st.error("❌ POI CSV dosyası eksik!")
 
-                poi_features = df_poi.groupby("GEOID").agg(
-                    poi_total_count=("id", "count"),
-                    risky_poi_score=("risk_score", "mean")
-                ).reset_index()
+                if os.path.exists("risky_pois_dynamic.json"):
+                    st.success("✅ Risk skoru dosyası mevcut.")
+                else:
+                    st.error("❌ Risk skoru JSON dosyası eksik!")
 
-                df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-                poi_features["GEOID"] = poi_features["GEOID"].astype(str).str.zfill(11)
-                df = df.merge(poi_features, on="GEOID", how="left")
+                try:
+                    df_911 = None
+                    response_911 = requests.get(DOWNLOAD_911_URL)
+                    if response_911.status_code == 200:
+                        with open("sf_911_last_5_year.csv", "wb") as f:
+                            f.write(response_911.content)
+                        st.success("✅ 911 verisi indirildi.")
+                        df_911 = pd.read_csv("sf_911_last_5_year.csv")
+
+                        if "GEOID" in df_911.columns:
+                            df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
+
+                        if "event_hour" not in df_911.columns:
+                            if "time" in df_911.columns:
+                                df_911["event_hour"] = pd.to_datetime(df_911["time"], errors="coerce").dt.hour
+                            elif "datetime" in df_911.columns:
+                                df_911["event_hour"] = pd.to_datetime(df_911["datetime"], errors="coerce").dt.hour
+                            else:
+                                st.warning("⚠️ 'event_hour' üretilemedi.")
+
+                        if "date" in df_911.columns:
+                            df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce").dt.date
+
+                        st.dataframe(df_911.head())
+                    else:
+                        st.warning(f"⚠️ 911 verisi indirilemedi: {response_911.status_code}")
+                except Exception as e:
+                    st.error(f"❌ 911 verisi işlenemedi: {e}")
+
+                try:
+                    df_311 = None
+                    response_311 = requests.get(DOWNLOAD_311_URL)
+                    if response_311.status_code == 200:
+                        with open("sf_311_last_5_years.csv", "wb") as f:
+                            f.write(response_311.content)
+                        st.success("✅ 311 verisi indirildi.")
+                    else:
+                        st.warning(f"⚠️ 311 verisi indirilemedi: {response_311.status_code}")
+                except Exception as e:
+                    st.error(f"❌ 311 verisi işlenemedi: {e}")
+
+                df = pd.read_csv("sf_crime.csv", low_memory=False)
+                original_row_count = len(df)
 
                 try:
                     df = enrich_with_poi(df)
                     st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
-                
                     st.write("📍 Örnek POI verisi:")
                     st.dataframe(
                         df[["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
@@ -453,21 +493,21 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     )
                 except Exception as e:
                     st.error(f"❌ POI verisi eklenemedi: {e}")
-            
+
                 try:
                     df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                    with open("risky_pois_dynamic.json") as f:
+                        risk_dict = json.load(f)
                     df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
-                    
+
                     gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
                     gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
-                
-                    # Genel POI mesafesi
+
                     poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
                     crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
                     poi_tree = cKDTree(poi_coords)
                     df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
-            
-                    # Riskli POI’lere mesafe
+
                     risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
                     if not risky_poi.empty:
                         risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
@@ -475,22 +515,14 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
                     else:
                         df["distance_to_high_risk_poi"] = np.nan
-                
-                    # POI Risk yoğunluğu (GEOID bazlı)
+
                     risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-                    df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-                    risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
-                
+                    df = df.merge(risk_density, on="GEOID", how="left")
+
                     st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
                 except Exception as e:
                     st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
 
-                print(df_poi.columns)
-                print(df_poi["poi_subcategory"].unique())
-                print(df_poi["GEOID"].head())
-                print(df["GEOID"].head())
-
-                # Nüfus verisini oku
                 if os.path.exists(POPULATION_PATH):
                     df_pop = pd.read_csv(POPULATION_PATH)
                     df["GEOID"] = df["GEOID"].astype(str).str.extract(r'(\d+)')[0].str.zfill(11)
@@ -503,8 +535,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 else:
                     st.warning("⚠️ Nüfus verisi (sf_population.csv) bulunamadı.")
 
-                # Otobüs durak verisini indir
-                df_bus = None
                 try:
                     response_bus = requests.get(DOWNLOAD_BUS_URL)
                     if response_bus.status_code == 200:
@@ -519,19 +549,21 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ Otobüs verisi indirilemedi: {e}")
 
-                # NaN özetle
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
-                removed_rows = 0  # Henüz satır silinmedi
-
-                # PDF rapor oluştur
+                removed_rows = 0
                 removed_rows = original_row_count - len(df)
                 report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
                 with open(report_path, "rb") as f:
                     st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
-except Exception as e:
-    st.error(f"❌ Hata oluştu: {e}")
 
+            else:
+                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
+                st.stop()
+
+        except Exception as e:
+            st.error(f"❌ Genel hata oluştu: {e}")
+            
             # Enrichment
             df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
             df = df.dropna(subset=["datetime"])
