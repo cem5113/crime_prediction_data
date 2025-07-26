@@ -342,26 +342,36 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
     with st.spinner("⏳ İşlem devam ediyor... Lütfen bekleyin. Bu birkaç dakika sürebilir."):
         try:
             response = requests.get(DOWNLOAD_URL)
+
             if response.status_code == 200:
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
 
+                # Güncelleme adımları
                 update_train_data_if_needed()
-                update_bus_data_if_needed() 
-                update_pois_if_needed()
+                update_bus_data_if_needed()
                 update_pois_if_needed()
                 update_weather_data()
                 update_police_and_gov_buildings_if_needed()
+
+                # POI dosyaları kontrolü
                 if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
                     st.success("✅ POI CSV dosyası başarıyla oluşturuldu.")
                 else:
                     st.error("❌ POI CSV dosyası eksik!")
-            
+
                 if os.path.exists("risky_pois_dynamic.json"):
                     st.success("✅ POI risk skoru dosyası oluşturuldu.")
                 else:
                     st.error("❌ Risk skoru JSON dosyası bulunamadı.")
+
+            else:
+                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
+                st.stop()
+
+        except Exception as e:
+            st.error(f"❌ Hata oluştu: {e}")
 
                 # 911 verisini indir
                 df_911 = None
