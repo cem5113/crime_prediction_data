@@ -1,14 +1,4 @@
-fiona
-folium
-fpdf
-geopandas
-holidays
-joblib
-matplotlib
-numpy
 pandas
-pyproj
 requests
-scikit-learn
-shapely
 streamlit
+fpdf
