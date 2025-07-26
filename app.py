@@ -469,28 +469,28 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         poi_tree = cKDTree(poi_coords)
                         df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
                 
-                    # Riskli POI’lere mesafe
-                    risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
-                    if not risky_poi.empty:
-                        risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
-                        risky_tree = cKDTree(risky_coords)
-                        df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
-                    else:
-                        df["distance_to_high_risk_poi"] = np.nan
-                
-                    # POI Risk yoğunluğu (GEOID bazlı)
-                    risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-                    df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-                    risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
-                
-                    st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
-                except Exception as e:
-                    st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
+                        # Riskli POI’lere mesafe
+                        risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
+                        if not risky_poi.empty:
+                            risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
+                            risky_tree = cKDTree(risky_coords)
+                            df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
+                        else:
+                            df["distance_to_high_risk_poi"] = np.nan
+                    
+                        # POI Risk yoğunluğu (GEOID bazlı)
+                        risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
+                        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+                        risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
+                    
+                        st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
+                    except Exception as e:
+                        st.error(f"❌ POI mesafe/risk hesaplama hatası: {e}")
 
-                print(df_poi.columns)
-                print(df_poi["poi_subcategory"].unique())
-                print(df_poi["GEOID"].head())
-                print(df["GEOID"].head())
+                    print(df_poi.columns)
+                    print(df_poi["poi_subcategory"].unique())
+                    print(df_poi["GEOID"].head())
+                    print(df["GEOID"].head())
 
                 # Nüfus verisini oku
                 if os.path.exists(POPULATION_PATH):
