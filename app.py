@@ -872,23 +872,42 @@ def enrich_with_poi(df):
 def enrich_with_911(df):
     try:
         df_911 = pd.read_csv("sf_911_last_5_year.csv")
-        df_911["date"] = pd.to_datetime(df_911["date"])
-        df["date"] = pd.to_datetime(df["date"])
+
+        # GEOID'leri string ve 11 haneli olarak ayarla
+        df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+
+        # Tarih formatı düzelt
+        df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+        # Merge işlemi
         df = df.merge(df_911, on=["GEOID", "date", "event_hour"], how="left")
         return df
+
     except Exception as e:
-        st.error(f"911 verisi eklenemedi: {e}")
+        st.error(f"❌ 911 verisi eklenemedi: {e}")
         return df
 
 def enrich_with_311(df):
     try:
         df_311 = pd.read_csv("sf_311_last_5_years.csv")
-        df_311["date"] = pd.to_datetime(df_311["date"])
-        df["date"] = pd.to_datetime(df["date"])
+        
+        # Tarih ve saatten event_hour çıkar
+        df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce")
+        df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").dt.hour
+
+        # Ana veride de aynı dönüşüm sağlanmalı
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "event_hour" not in df.columns:
+            df["event_hour"] = pd.to_datetime(df["time"], errors="coerce").dt.hour
+
+        # Merge işlemi
         df = df.merge(df_311, on=["GEOID", "date", "event_hour"], how="left")
         return df
+
     except Exception as e:
-        st.error(f"311 verisi eklenemedi: {e}")
+        st.error(f"❌ 311 verisi eklenemedi: {e}")
         return df
 
 def enrich_with_weather(df):
