@@ -484,290 +484,192 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
         except Exception as e:
             st.error(f"❌ Genel hata oluştu: {e}")
-            
-            # Enrichment
-            df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
-            df = df.dropna(subset=["datetime"])
-            df["datetime"] = df["datetime"].dt.floor("h")
-            df["event_hour"] = df["datetime"].dt.hour
-            df["date"] = df["datetime"].dt.date
-            df["month"] = df["datetime"].dt.month
-            df["year"] = df["datetime"].dt.year
-            df["day_of_week"] = df["datetime"].dt.dayofweek
-            df["is_night"] = df["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
-            df["is_weekend"] = df["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
-            years = df["year"].dropna().astype(int).unique()
-            us_holidays = pd.to_datetime(list(holidays.US(years=years).keys()))
-            df["is_holiday"] = df["date"].isin(us_holidays).astype(int)
-            df["latlon"] = df["latitude"].round(5).astype(str) + "_" + df["longitude"].round(5).astype(str)
-            df["is_repeat_location"] = df.duplicated("latlon").astype(int)
-            df.drop(columns=["latlon"], inplace=True)
-            df["is_school_hour"] = df["event_hour"].apply(lambda x: 1 if 7 <= x <= 16 else 0)
-            df["is_business_hour"] = df.apply(lambda x: 1 if (9 <= x["event_hour"] < 18 and x["day_of_week"] < 5) else 0, axis=1)
-            season_map = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall", 10: "Fall", 11: "Fall"}
-            df["season"] = df["month"].map(season_map)
 
-            # 911 verilerini yükle ve birleştir
-            if os.path.exists("sf_911_last_5_year.csv"):
-                df_911 = pd.read_csv("sf_911_last_5_year.csv")
-                df_911["date"] = pd.to_datetime(df_911["date"]).dt.date
-                df["hour_range"] = (df["event_hour"] // 3) * 3
-                df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["event_hour"] // 3 * 3 + 3).astype(str)
-                
-                # Birleştir
-                df = pd.merge(df, df_911, on=["GEOID", "date", "hour_range"], how="left")
-                
-                # Yeni sütunları gözlemle
-                cols_911 = [col for col in df.columns if "911" in col or "request" in col]
-                st.write("🔍 911 Sütunları:")
-                st.write(cols_911)
-                st.write("🧯 911 NaN Sayıları:")
-                st.write(df[cols_911].isna().sum())
-            
-                # Eksik olanları 0 yap
-                for col in cols_911:
-                    df[col] = df[col].fillna(0)
-                
-                # 311 verisini birleştir
-                if df_311 is not None:
-                    if "hour_range" not in df_311.columns and "time" in df_311.columns:
-                        df_311["datetime"] = pd.to_datetime(df_311["date"].astype(str) + " " + df_311["time"].astype(str), errors="coerce")
-                        df_311["hour"] = df_311["datetime"].dt.hour
-                        df_311["hour_range"] = (df_311["hour"] // 3) * 3
-                        df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
-                
-                    # Merge öncesi tip düzeltmeleri
-                    df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                    df["GEOID"] = df["GEOID"].apply(lambda x: str(int(x)).zfill(11) if pd.notna(x) else None)
-                    df_311["GEOID"] = df_311["GEOID"].apply(lambda x: str(int(float(x))).zfill(11) if pd.notna(x) else None)
-                    df["date"] = pd.to_datetime(df["date"]).dt.date
-                    df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
-                    df["hour_range"] = df["hour_range"].astype(str)
-                    df_311["hour_range"] = df_311["hour_range"].astype(str)
-                
-                    # Aggregate: saat aralığı başına toplam çağrı
-                    agg_311 = df_311.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
-                    df = pd.merge(df, agg_311, on=["GEOID", "date", "hour_range"], how="left")
-                    df["311_request_count"] = df["311_request_count"].fillna(0)
-                
-                    # Ek sütunları (örneğin category vs.) merge et (örnek kayıt üzerinden)
-                    meta_cols = ["GEOID", "date", "hour_range", "category", "subcategory"]
-                    df_311_meta = df_311[meta_cols].drop_duplicates()
-                    df = pd.merge(df, df_311_meta, on=["GEOID", "date", "hour_range"], how="left")
-                
-                    # Göstermek için:
-                    cols_311 = [col for col in df.columns if "311" in col or col in ["category", "subcategory"]]
-                    st.write("🔍 311 Sütunları:")
-                    st.write(cols_311)
-                    st.write("🧯 311 NaN Sayıları:")
-                    st.write(df[cols_311].isna().sum())
-                
-                    for col in cols_311:
-                        df[col] = df[col].fillna(0) if df[col].dtype != 'object' else df[col].fillna("Unknown")
-                        
-            df = df.sort_values(by=["GEOID", "datetime"]).reset_index(drop=True)
+# === Yardimci Fonksiyonlar ===
+def check_and_fix_coordinates(df, context=""):
+    """Koordinat sütunlarını kontrol eder, dönüştürür ve geçersiz değerleri temizler"""
+    rename_map = {}
+    if "latitude" not in df.columns:
+        for alt in ["lat", "enlem"]:
+            if alt in df.columns:
+                rename_map[alt] = "latitude"
+    if "longitude" not in df.columns:
+        for alt in ["lon", "long", "lng", "boylam"]:
+            if alt in df.columns:
+                rename_map[alt] = "longitude"
 
-            # En yakın otobüs durağına mesafe ve durak sayısı
-            if df_bus is not None:
-                try:
-                    import geopandas as gpd
-                    from shapely.geometry import Point
-                    from scipy.spatial import cKDTree
-                    import numpy as np
-            
-                    gdf_crime = gpd.GeoDataFrame(
-                        df,
-                        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
-                        crs="EPSG:4326"
-                    ).to_crs(epsg=3857)
-            
-                    gdf_bus = gpd.GeoDataFrame(
-                        df_bus,
-                        geometry=gpd.points_from_xy(df_bus["stop_lon"], df_bus["stop_lat"]),
-                        crs="EPSG:4326"
-                    ).to_crs(epsg=3857)
-            
-                    crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-                    bus_coords = np.vstack([gdf_bus.geometry.x, gdf_bus.geometry.y]).T
-                    tree = cKDTree(bus_coords)
-                    distances, _ = tree.query(crime_coords, k=1)
-                    df["distance_to_bus"] = distances
-            
-                    dynamic_radius = np.percentile(distances, 75)
-                    def count_stops(pt):
-                        return gdf_bus.distance(pt).lt(dynamic_radius).sum()
-            
-                    df["bus_stop_count"] = gdf_crime.geometry.apply(count_stops)
-            
-                    st.success("✅ Otobüs mesafesi ve durak sayısı eklendi.")
-                    st.write(df[["GEOID", "distance_to_bus", "bus_stop_count"]].head())
-                except Exception as e:
-                    st.error(f"❌ Otobüs entegrasyon hatası: {e}")
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+        st.warning(f"⚠️ {context}: {rename_map} olarak yeniden adlandırıldı.")
 
-                # === 🚆 En Yakın Tren Durağı ve Durağa Uzaklık ===
-                try:
-                    import geopandas as gpd
-                    from shapely.geometry import Point
-                    from scipy.spatial import cKDTree
-                    import numpy as np
-                
-                    # 1. Suç verisini GeoDataFrame'e çevir
-                    gdf_crime = gpd.GeoDataFrame(
-                        df,
-                        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
-                        crs="EPSG:4326"
-                    ).to_crs(epsg=3857)
-                
-                    # 2. Tren duraklarını oku ve GeoDataFrame'e çevir
-                    if os.path.exists("sf_train_stops_with_geoid.csv"):
-                        df_train = pd.read_csv("sf_train_stops_with_geoid.csv").dropna(subset=["stop_lat", "stop_lon"])
-                        gdf_train = gpd.GeoDataFrame(
-                            df_train,
-                            geometry=gpd.points_from_xy(df_train["stop_lon"], df_train["stop_lat"]),
-                            crs="EPSG:4326"
-                        ).to_crs(epsg=3857)
-                
-                        # 3. KDTree ile mesafe hesapla
-                        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-                        train_coords = np.vstack([gdf_train.geometry.x, gdf_train.geometry.y]).T
-                        tree = cKDTree(train_coords)
-                        distances, _ = tree.query(crime_coords, k=1)
-                        df["distance_to_train"] = distances
-                
-                        # 4. Belirli bir yarıçapta (örn. 500m) tren durağı sayısını hesapla
-                        radius = 500  # metre
-                        df["train_stop_count"] = gdf_crime.geometry.apply(lambda pt: gdf_train.distance(pt).lt(radius).sum())
-                
-                        st.success("🚆 Tren mesafesi ve durak sayısı eklendi.")
-                        st.write(df[["GEOID", "distance_to_train", "train_stop_count"]].head())
-                    else:
-                        st.warning("⚠️ sf_train_stops_with_geoid.csv bulunamadı. Tren durakları eklenmedi.")
-                
-                except Exception as e:
-                    st.error(f"❌ Tren entegrasyon hatası: {e}")
+    # Eksik sütun varsa durdur
+    if "latitude" not in df.columns or "longitude" not in df.columns:
+        st.error(f"❌ {context}: 'latitude' veya 'longitude' eksik.")
+        return df.iloc[0:0]  # Boş DataFrame
 
-            for col in ["past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]:
-                df[col] = 0
+    # Sayısal dönüşüm + filtre
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
 
-            for geoid, group in df.groupby("GEOID"):
-                times = pd.to_datetime(group["datetime"]).values.astype("datetime64[ns]")
-                event_hours = group["event_hour"].values
-                idx = group.index
-                deltas = times[:, None] - times[None, :]
+    # Geçersiz koordinatları at (örneğin: lat < 30, long > -100 gibi)
+    df = df.dropna(subset=["latitude", "longitude"])
+    df = df[
+        (df["latitude"].between(37.5, 37.9)) & 
+        (df["longitude"].between(-123, -122))
+    ].copy()
 
-                df.loc[idx, "past_7d_crimes"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(7, 'D'))).sum(axis=1)
-                df.loc[idx, "crime_count_past_24h"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(1, 'D'))).sum(axis=1)
-                df.loc[idx, "crime_count_past_48h"] = ((deltas > np.timedelta64(0, 'ns')) & (deltas <= np.timedelta64(2, 'D'))).sum(axis=1)
-                df.loc[idx, "crime_trend_score"] = [((times[:i] >= t - np.timedelta64(7, 'D')) & (event_hours[:i] == h)).sum() for i, (t, h) in enumerate(zip(times, event_hours))]
-
-                for lag in [1, 2, 3]:
-                    lag_col = f"prev_crime_{lag}h"
-                    df.loc[idx, lag_col] = [1 if ((times[:i] >= t - np.timedelta64(lag, 'h')) & (times[:i] < t)).sum() > 0 else 0 for i, t in enumerate(times)]
-
-            # === Özetleme ===
-            df["event_hour"] = df["event_hour"].astype(int)
-            df["day_of_week"] = df["datetime"].dt.dayofweek
-            df["month"] = df["datetime"].dt.month
-            df["season"] = df["month"].map(season_map)
-
-            group_cols = ["GEOID", "season", "day_of_week", "event_hour"]
-            mean_cols = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h"]
-            mode_cols = [
-                "is_weekend", "is_night", "is_holiday", "is_repeat_location",
-                "is_school_hour", "is_business_hour", "year", "month",
-                "distance_to_police_range", "distance_to_government_building_range",
-                "is_near_police", "is_near_government"
-            ]
-            
-            mean_cols.extend([
-                col for col in df.columns if "911" in col or "request" in col
-            ])
-            mean_cols.extend(["distance_to_bus", "bus_stop_count"])
-            mean_cols.extend([
-                col for col in df.columns if "311" in col
-            ])
-            mean_cols.extend([
-                "poi_total_count", "risky_poi_score", "distance_to_high_risk_poi",
-                "distance_to_poi", "poi_risk_density",
-                "distance_to_police", "distance_to_government_building"
-            ])
-            mean_cols.extend([
-                "temp_max",               # Maksimum sıcaklık
-                "temp_min",               # Minimum sıcaklık
-                "precipitation_mm",       # Yağış miktarı
-                "temp_range",             # Sıcaklık aralığı
-                "precipitation_range"     # Yağış aralığı (varsa)
-            ])
-            if "population" in df.columns:
-                mean_cols.append("population")
-                
-            def safe_mode(x):
-                try: return x.mode().iloc[0]
-                except: return np.nan
-
-            agg_dict = {col: "mean" for col in mean_cols}
-            agg_dict.update({col: safe_mode for col in mode_cols})
-            agg_dict.update({"date": "min", "id": "count"})
-
-            df["id"] = 1
-            grouped = df.groupby(group_cols).agg(agg_dict).reset_index()
-            grouped = grouped.rename(columns={"id": "crime_count"})
-            grouped["Y_label"] = (grouped["crime_count"] >= 2).astype(int)
-
-            geoids = df["GEOID"].unique()
-            seasons = ["Winter", "Spring", "Summer", "Fall"]
-            days = list(range(7))
-            hours = list(range(24))
-            expected_grid = pd.DataFrame(itertools.product(geoids, seasons, days, hours), columns=group_cols)
-
-            df_final = expected_grid.merge(grouped, on=group_cols, how="left")
-            df_final["crime_count"] = df_final["crime_count"].fillna(0).astype(int)
-            df_final["Y_label"] = df_final["Y_label"].fillna(0).astype(int)
-
-            df_final["is_weekend"] = df_final["day_of_week"].apply(lambda x: 1 if x >= 5 else 0)
-            df_final["is_night"] = df_final["event_hour"].apply(lambda x: 1 if (x >= 20 or x < 4) else 0)
-            df_final["is_school_hour"] = df_final.apply(lambda x: 1 if (x["day_of_week"] < 5 and 7 <= x["event_hour"] <= 16) else 0, axis=1)
-            df_final["is_business_hour"] = df_final.apply(lambda x: 1 if (x["day_of_week"] < 6 and 9 <= x["event_hour"] < 18) else 0, axis=1)
-
-            columns_with_nan = ["latitude", "longitude", "past_7d_crimes", "crime_count_past_24h", "crime_count_past_48h", "crime_trend_score", "prev_crime_1h", "prev_crime_2h", "prev_crime_3h", "is_holiday", "is_repeat_location", "year", "month", "date"]
-            df_final = df_final.dropna(subset=columns_with_nan)
-
-            existing_combinations = df_final[group_cols]
-            missing = expected_grid.merge(existing_combinations.drop_duplicates(), on=group_cols, how="left", indicator=True)
-            missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
-            missing["crime_count"] = 0
-            missing["Y_label"] = 0
-
-            df_full_52 = pd.concat([df_final, missing], ignore_index=True)
-
-            df_final.to_csv("sf_crime_50.csv", index=False)
-            df_full_52.to_csv("sf_crime_52.csv", index=False)
-            df.to_csv("sf_crime.csv", index=False)
-            st.success("✅ Tüm dosyalar başarıyla kaydedildi: sf_crime.csv, sf_crime_50.csv, sf_crime_52.csv")
-
-            # NaN raporu ve PDF
-            nan_summary = df.isna().sum()
-            nan_cols = nan_summary[nan_summary > 0]
-            report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
-            with open(report_path, "rb") as f:
-                st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
+    if df.empty:
+        st.warning(f"⚠️ {context}: Geçerli koordinat içeren satır yok.")
+    return df
     
-            # İlk 5 satır, sütunlar, NaN sayıları
-            st.write("### 📈 sf_crime.csv İlk 5 Satır")
-            st.dataframe(df.head())
-            st.write("### 🔢 Sütunlar")
-            st.write(df.columns.tolist())
-            st.write("### 🔔 NaN Sayıları")
-            st.write(nan_cols)
-            st.write("📦 sf_crime.csv Dosyasındaki 911 Sütunları ve İlk Satırlar:")
-            st.dataframe(df[cols_911 + ["GEOID", "datetime"]].head())
+def enrich_with_911(df):
+    try:
+        df_911 = pd.read_csv("sf_911_last_5_year.csv")
+        df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+        df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-            st.subheader("📊 Zenginleştirilmiş Suç Verisi (Örnek)")
-            st.write("🧩 Sütunlar:")
-            st.write(df.columns.tolist())
-            
-            st.write("🔍 İlk 5 Satır:")
-            st.dataframe(df.head())
+        df = df.merge(
+            df_911.rename(columns={
+                "time": "call_time",
+                "latitude": "call_lat",
+                "longitude": "call_lon"
+            }),
+            on=["GEOID", "date", "event_hour"],
+            suffixes=("", "_911")
+        )
+        return df
+
+    except Exception as e:
+        st.error(f"❌ 911 verisi eklenemedi: {e}")
+        return df
+
+def enrich_with_311(df):
+    try:
+        df_311 = pd.read_csv("sf_311_last_5_years.csv")
+        df_311["datetime"] = pd.to_datetime(df_311["date"] + " " + df_311["time"], errors="coerce")
+        df_311["event_hour"] = df_311["datetime"].dt.hour
+        df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+
+        df_311["GEOID"] = df_311["GEOID"].astype(str).str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+
+        df = df.merge(
+            df_311.rename(columns={
+                "time": "request_time",
+                "category": "service_category"
+            }),
+            on=["GEOID", "date", "event_hour"],
+            suffixes=("", "_311")
+        )
+        return df
+
+    except Exception as e:
+        st.error(f"❌ 311 verisi eklenemedi: {e}")
+        return df
+
+def enrich_with_weather(df):
+    try:
+        if not os.path.exists("sf_weather_5years.csv"):
+            st.warning("⚠️ Hava durumu verisi bulunamadı")
+            return df
+
+        weather = pd.read_csv("sf_weather_5years.csv")
+        weather.columns = weather.columns.str.lower()
+        date_col = next((col for col in weather.columns if 'date' in col), None)
+        if not date_col:
+            st.error("❌ Hava durumu verisinde tarih sütunu bulunamadı")
+            return df
+
+        weather['date'] = pd.to_datetime(weather[date_col]).dt.date
+        df['date'] = pd.to_datetime(df['date']).dt.date
+
+        df = df.merge(
+            weather.rename(columns={"date": "weather_date"}),
+            left_on="date",
+            right_on="weather_date",
+            suffixes=("", "_weather")
+        ).drop(columns=["weather_date"])
+        st.success("✅ Hava durumu verisi başarıyla eklendi")
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Hava durumu zenginleştirme hatası: {str(e)}")
+        return df
+
+def enrich_with_police(df):
+    try:
+        if not check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu"):
+            return df
+
+        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
+        if df_valid.empty:
+            st.warning("⚠️ Geçerli koordinat içeren satır yok (police).")
+            return df
+
+        if not os.path.exists("sf_police_stations.csv"):
+            st.error("❌ Polis istasyonu verisi bulunamadı (sf_police_stations.csv)")
+            return df
+
+        df_police = pd.read_csv("sf_police_stations.csv")
+        if not check_and_fix_coordinates(df_police, "Polis istasyonu verisi"):
+            return df
+
+        gdf_crime = gpd.GeoDataFrame(df_valid, geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        gdf_police = gpd.GeoDataFrame(df_police.dropna(subset=["longitude", "latitude"]), geometry=gpd.points_from_xy(df_police["longitude"], df_police["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+
+        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+        police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
+        police_tree = cKDTree(police_coords)
+        df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
+        df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
+        df_valid["distance_to_police_range"] = pd.cut(df_valid["distance_to_police"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100", "100-200", "200-500", "500-1000", ">1000"])
+        df.update(df_valid)
+        st.success("✅ Polis istasyonu bilgileri başarıyla eklendi")
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Polis istasyonu zenginleştirme hatası: {str(e)}")
+        return df
+
+def enrich_with_government(df):
+    try:
+        if not check_and_fix_coordinates(df, "Devlet binaları entegrasyonu"):
+            return df
+
+        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
+        if df_valid.empty:
+            st.warning("⚠️ Devlet binaları: Geçerli koordinat içeren satır yok")
+            return df
+
+        if not os.path.exists("sf_government_buildings.csv"):
+            st.error("❌ Devlet binaları verisi bulunamadı")
+            return df
+
+        df_gov = pd.read_csv("sf_government_buildings.csv")
+        if not check_and_fix_coordinates(df_gov, "Devlet binaları verisi"):
+            return df
+
+        gdf_crime = gpd.GeoDataFrame(df_valid, geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+        gdf_gov = gpd.GeoDataFrame(df_gov.dropna(subset=["longitude", "latitude"]), geometry=gpd.points_from_xy(df_gov["longitude"], df_gov["latitude"]), crs="EPSG:4326").to_crs(epsg=3857)
+
+        crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
+        gov_coords = np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T
+        gov_tree = cKDTree(gov_coords)
+        df_valid["distance_to_government"], _ = gov_tree.query(crime_coords, k=1)
+        df_valid["is_near_government"] = (df_valid["distance_to_government"] < 200).astype(int)
+        df_valid["distance_to_government_range"] = pd.cut(df_valid["distance_to_government"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100m", "100-200m", "200-500m", "500-1000m", ">1000m"])
+        df.update(df_valid)
+        st.success("✅ Devlet binası bilgileri başarıyla eklendi")
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Devlet binası zenginleştirme hatası: {str(e)}")
+        return df
+
+
 
 # Veri zenginleştirme 
 
@@ -823,14 +725,8 @@ def check_and_fix_coordinates(df, context=""):
 
 def enrich_with_police(df):
     try:
-        # Koordinat kontrolü - check_coordinate_columns yerine check_and_fix_coordinates kullanıyoruz
-        if not check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu"):
-            return df
-            
-        # Geçerli koordinatları filtrele
-        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
-        if df_valid.empty:
-            st.warning("⚠️ Geçerli koordinat içeren satır yok (police).")
+        df = check_and_fix_coordinates(df, "Polis istasyonu entegrasyonu")
+        if df.empty:
             return df
 
         # GeoDataFrame oluştur
