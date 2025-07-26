@@ -928,31 +928,72 @@ def enrich_with_weather(df):
 
 def enrich_with_police_and_gov(df):
     try:
-        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        # 🧪 1. longitude ve latitude sütunlarını kontrol et
+        if "longitude" not in df.columns or "latitude" not in df.columns:
+            st.error("❌ 'longitude' veya 'latitude' sütunu eksik.")
+            return df
+        
+        # 🧪 2. Koordinatlarda eksik veri varsa filtrele
+        df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
+        if df_valid.empty:
+            st.warning("⚠️ Geçerli koordinat içeren satır yok. Polis ve devlet binası hesaplanmadı.")
+            return df
 
+        # 🧭 3. Suç noktalarını GeoDataFrame'e çevir
+        gdf_crime = gpd.GeoDataFrame(
+            df_valid,
+            geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(3857)
+
+        # 🏢 4. Polis ve devlet binalarını oku
         police_df = pd.read_csv("sf_police_stations.csv")
         gov_df = pd.read_csv("sf_government_buildings.csv")
 
-        gdf_police = gpd.GeoDataFrame(police_df, geometry=gpd.points_from_xy(police_df["longitude"], police_df["latitude"]), crs="EPSG:4326").to_crs(3857)
-        gdf_gov = gpd.GeoDataFrame(gov_df, geometry=gpd.points_from_xy(gov_df["longitude"], gov_df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        gdf_police = gpd.GeoDataFrame(
+            police_df,
+            geometry=gpd.points_from_xy(police_df["longitude"], police_df["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(3857)
 
+        gdf_gov = gpd.GeoDataFrame(
+            gov_df,
+            geometry=gpd.points_from_xy(gov_df["longitude"], gov_df["latitude"]),
+            crs="EPSG:4326"
+        ).to_crs(3857)
+
+        # 📏 5. Koordinat dizilerini çıkar
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
-
         police_tree = cKDTree(np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T)
         gov_tree = cKDTree(np.vstack([gdf_gov.geometry.x, gdf_gov.geometry.y]).T)
 
-        df["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
-        df["distance_to_government_building"], _ = gov_tree.query(crime_coords, k=1)
+        # 📌 6. Mesafe hesapla
+        df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
+        df_valid["distance_to_government_building"], _ = gov_tree.query(crime_coords, k=1)
 
-        df["is_near_police"] = (df["distance_to_police"] < 200).astype(int)
-        df["is_near_government"] = (df["distance_to_government_building"] < 200).astype(int)
+        # 🔍 7. Yakınlık etiketleri
+        df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
+        df_valid["is_near_government"] = (df_valid["distance_to_government_building"] < 200).astype(int)
 
-        df["distance_to_police_range"] = pd.cut(df["distance_to_police"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100", "100-200", "200-500", "500-1000", ">1000"])
-        df["distance_to_government_building_range"] = pd.cut(df["distance_to_government_building"], bins=[0, 100, 200, 500, 1000, np.inf], labels=["0-100", "100-200", "200-500", "500-1000", ">1000"])
+        df_valid["distance_to_police_range"] = pd.cut(
+            df_valid["distance_to_police"],
+            bins=[0, 100, 200, 500, 1000, np.inf],
+            labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
+        )
+
+        df_valid["distance_to_government_building_range"] = pd.cut(
+            df_valid["distance_to_government_building"],
+            bins=[0, 100, 200, 500, 1000, np.inf],
+            labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
+        )
+
+        # 🔁 8. Yeni sütunları ana dataframe'e geri aktar
+        df.update(df_valid)
 
         return df
+
     except Exception as e:
-        st.error(f"Polis ve devlet binası hesaplama hatası: {e}")
+        st.error(f"❌ Polis ve devlet binası hesaplama hatası: {e}")
         return df
 
 if st.button("🧪 Veriyi Göster (Test)"):
