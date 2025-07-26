@@ -232,7 +232,7 @@ def update_police_and_gov_buildings_if_needed():
             def fetch_pois(name, query):
                 response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
-
+            
                 rows = []
                 for el in data:
                     lat = el.get("lat") or el.get("center", {}).get("lat")
@@ -246,12 +246,15 @@ def update_police_and_gov_buildings_if_needed():
                             "name": tags.get("name", ""),
                             "type": tags.get("amenity") or tags.get("office", ""),
                         })
-
+            
                 df = pd.DataFrame(rows)
-                df["latitude"] = df["lat"]
-                df["longitude"] = df["lon"]
+                df["latitude"] = pd.to_numeric(df["lat"], errors="coerce")
+                df["longitude"] = pd.to_numeric(df["lon"], errors="coerce")
+                st.write("🧪 Polis/Devlet verisi tipleri:", df.dtypes)
                 df = df.drop(columns=["lat", "lon"])
-                gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
+                gdf = gpd.GeoDataFrame(df.dropna(subset=["latitude", "longitude"]),
+                                       geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
+                                       crs="EPSG:4326")
                 return gdf
 
             gdf_police = fetch_pois("police", queries["police"])
