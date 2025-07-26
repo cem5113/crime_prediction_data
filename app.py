@@ -529,10 +529,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
                 with open(report_path, "rb") as f:
                     st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
-
-    else:
-        st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
-        st.stop()  # Hatalı indirme varsa durdur
 except Exception as e:
     st.error(f"❌ Hata oluştu: {e}")
 
