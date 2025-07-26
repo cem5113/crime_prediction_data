@@ -443,12 +443,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     poi_features["GEOID"] = poi_features["GEOID"].astype(str).str.zfill(11)
                     df = df.merge(poi_features, on="GEOID", how="left")
 
-                    st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
-                    st.write("📍 Örnek POI verisi:")
-                    st.dataframe(df[["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]].drop_duplicates().head())
-
-                except Exception as e:
-                    st.warning(f"⚠️ POI verisi eklenemedi: {e}")
+                    try:
+                        df = enrich_with_poi(df)
+                        st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
+                    
+                        st.write("📍 Örnek POI verisi:")
+                        st.dataframe(
+                            df[["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
+                            .drop_duplicates()
+                            .head()
+                        )
+                    except Exception as e:
+                        st.error(f"❌ POI verisi eklenemedi: {e}")
                 
                 try:
                     df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
