@@ -339,94 +339,82 @@ def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, re
     return output_name
 
 if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
-    with st.spinner("⏳ İşlem devam ediyor... Lütfen bekleyin. Bu birkaç dakika sürebilir."):
+    with st.spinner("⏳ İşlem devam ediyor..."):
         try:
             response = requests.get(DOWNLOAD_URL)
-
             if response.status_code == 200:
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
 
-                # Güncelleme adımları
+                # Güncelleme fonksiyonlarını sırayla çalıştır
                 update_train_data_if_needed()
                 update_bus_data_if_needed()
                 update_pois_if_needed()
                 update_weather_data()
                 update_police_and_gov_buildings_if_needed()
 
-                # POI dosyaları kontrolü
+                # POI kontrol
                 if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
-                    st.success("✅ POI CSV dosyası başarıyla oluşturuldu.")
+                    st.success("✅ POI CSV dosyası mevcut.")
                 else:
                     st.error("❌ POI CSV dosyası eksik!")
 
                 if os.path.exists("risky_pois_dynamic.json"):
-                    st.success("✅ POI risk skoru dosyası oluşturuldu.")
+                    st.success("✅ Risk skoru dosyası mevcut.")
                 else:
-                    st.error("❌ Risk skoru JSON dosyası bulunamadı.")
+                    st.error("❌ Risk skoru JSON dosyası eksik!")
 
-            else:
-                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
-                st.stop()
-
-        except Exception as e:
-            st.error(f"❌ Hata oluştu: {e}")
-
-                # 911 verisini indir
-                df_911 = None
+                # 911 verisini indir ve işle
                 try:
+                    df_911 = None
                     response_911 = requests.get(DOWNLOAD_911_URL)
                     if response_911.status_code == 200:
                         with open("sf_911_last_5_year.csv", "wb") as f:
                             f.write(response_911.content)
-                        st.success("✅ sf_911_last_5_year.csv başarıyla indirildi.")
-                
+                        st.success("✅ 911 verisi indirildi.")
                         df_911 = pd.read_csv("sf_911_last_5_year.csv")
-                
-                        # GEOID tipini string olarak düzelt ve 11 hane yap
+
                         if "GEOID" in df_911.columns:
                             df_911["GEOID"] = df_911["GEOID"].astype(str).str.zfill(11)
-                
-                        # event_hour oluşturulmamışsa oluştur
+
                         if "event_hour" not in df_911.columns:
                             if "time" in df_911.columns:
                                 df_911["event_hour"] = pd.to_datetime(df_911["time"], errors="coerce").dt.hour
                             elif "datetime" in df_911.columns:
                                 df_911["event_hour"] = pd.to_datetime(df_911["datetime"], errors="coerce").dt.hour
                             else:
-                                st.warning("⚠️ 'time' veya 'datetime' sütunu bulunamadı, 'event_hour' oluşturulamadı.")
-                                st.stop()
-                
-                        # date sütunu tarih nesnesine çevrilir
+                                st.warning("⚠️ 'event_hour' üretilemedi.")
+
                         if "date" in df_911.columns:
                             df_911["date"] = pd.to_datetime(df_911["date"], errors="coerce").dt.date
-                
-                        # 📌 VERİYİ GÖSTER
-                        st.write("🚔 911 Verisi İlk 5 Satır")
-                        st.dataframe(df_911.head())
-                        st.write("📌 911 Sütunları:", df_911.columns.tolist())
-                        st.write("📌 911 GEOID dtype:", df_911["GEOID"].dtype)
-                
-                    else:
-                        st.warning(f"⚠️ sf_911_last_5_year.csv indirilemedi: {response_911.status_code}")
-                except Exception as e:
-                    st.error(f"❌ 911 verisi yüklenemedi: {e}")
 
-                # 311 verisini oku ve kaydet
-                df_311 = None
+                        st.dataframe(df_911.head())
+                    else:
+                        st.warning(f"⚠️ 911 verisi indirilemedi: {response_911.status_code}")
+                except Exception as e:
+                    st.error(f"❌ 911 verisi işlenemedi: {e}")
+
+                # 311 verisini indir
                 try:
+                    df_311 = None
                     response_311 = requests.get(DOWNLOAD_311_URL)
                     if response_311.status_code == 200:
                         with open("sf_311_last_5_years.csv", "wb") as f:
                             f.write(response_311.content)
-                        st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
+                        st.success("✅ 311 verisi indirildi.")
                     else:
-                        st.warning(f"⚠️ sf_311_last_5_years.csv indirilemedi: {response_311.status_code}")
+                        st.warning(f"⚠️ 311 verisi indirilemedi: {response_311.status_code}")
                 except Exception as e:
-                    st.error(f"❌ 311 verisi yüklenemedi: {e}")
+                    st.error(f"❌ 311 verisi işlenemedi: {e}")
 
-                    
+            else:
+                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
+                st.stop()
+
+        except Exception as e:
+            st.error(f"❌ Genel hata oluştu: {e}")
+
                 # Suç verisini oku
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
