@@ -403,7 +403,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ 911 verisi yüklenemedi: {e}")
 
-                # 311 verisini oku ve işleyerek saat bilgisini ekle
+                # 311 verisini oku ve kaydet
                 df_311 = None
                 try:
                     response_311 = requests.get(DOWNLOAD_311_URL)
@@ -411,22 +411,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         with open("sf_311_last_5_years.csv", "wb") as f:
                             f.write(response_311.content)
                         st.success("✅ sf_311_last_5_years.csv başarıyla indirildi.")
-                
-                        df_311 = pd.read_csv("sf_311_last_5_years.csv")
-                
-                        # date ve time sütunlarını datetime formatına çevir
-                        df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce").dt.date
-                        df_311["time"] = pd.to_datetime(df_311["time"], errors="coerce").dt.time
-                
-                        # event_hour ve hour_range üret
-                        df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").apply(lambda x: x.hour if pd.notnull(x) else None)
-                        df_311["hour_range"] = df_311["event_hour"].apply(lambda x: f"{int(x//3*3)}-{int(x//3*3 + 3)}" if pd.notnull(x) else None)
-                
-                        st.write("📟 311 Verisi İlk 5 Satır")
-                        st.dataframe(df_311.head())
-                        st.write("📌 311 Sütunları:")
-                        st.write(df_311.columns.tolist())
-                
                     else:
                         st.warning(f"⚠️ sf_311_last_5_years.csv indirilemedi: {response_311.status_code}")
                 except Exception as e:
@@ -893,20 +877,21 @@ def enrich_with_311(df):
     try:
         df_311 = pd.read_csv("sf_311_last_5_years.csv")
 
-        # GEOID'leri string formatına getir (11 haneli)
-        df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-        df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+        # datetime birleştirme ve saat çıkarımı
+        df_311["datetime"] = pd.to_datetime(df_311["date"] + " " + df_311["time"], errors="coerce")
+        df_311["event_hour"] = df_311["datetime"].dt.hour
+        df_311["hour_range"] = (df_311["event_hour"] // 3) * 3
+        df_311["hour_range"] = df_311["hour_range"].astype(str) + "-" + (df_311["hour_range"] + 3).astype(str)
 
-        # Tarih ve saatten event_hour çıkar
-        df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce")
-        df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").dt.hour
+        # tarih formatı düzelt
+        df_311["date"] = pd.to_datetime(df_311["date"]).dt.date
+        df["date"] = pd.to_datetime(df["date"]).dt.date
 
-        # Ana veri de tarih ve saat dönüşümü
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        if "event_hour" not in df.columns:
-            df["event_hour"] = pd.to_datetime(df["time"], errors="coerce").dt.hour
+        # GEOID tipleri uyuşmalı
+        df_311["GEOID"] = df_311["GEOID"].astype(str).str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
 
-        # Merge işlemi
+        # saat eşleşmesiyle birleştir
         df = df.merge(df_311, on=["GEOID", "date", "event_hour"], how="left")
         return df
 
