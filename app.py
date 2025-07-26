@@ -687,44 +687,38 @@ def enrich_with_government(df):
 # Veri zenginleştirme 
 
 def check_and_fix_coordinates(df, context=""):
-    """Koordinat sütunlarını kontrol eder ve gerekirse düzeltir"""
-    # Orijinal sütun isimlerini koru
-    original_cols = df.columns.tolist()
-    
-    # Standart isimlendirmeler
-    coord_map = {
-        'latitude': ['lat', 'latitude', 'enlem'],
-        'longitude': ['lon', 'long', 'lng', 'longitude', 'boylam']
-    }
-    
-    # Her bir koordinat türü için
-    for standard_name, alternatives in coord_map.items():
-        # Standart isim yoksa alternatifleri ara
-        if standard_name not in df.columns:
-            for alt in alternatives:
-                if alt in df.columns:
-                    df[standard_name] = df[alt]
-                    st.warning(f"⚠️ {context}: {alt} → {standard_name} olarak yeniden adlandırıldı")
-                    break
-    
-    # Sayısal dönüşüm
-    if 'latitude' in df.columns:
-        df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
-    if 'longitude' in df.columns:
-        df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-    
-    # Eksikse hata ver
-    missing = []
-    if 'latitude' not in df.columns:
-        missing.append('latitude')
-    if 'longitude' not in df.columns:
-        missing.append('longitude')
-    
-    if missing:
-        st.error(f"❌ {context}: Eksik koordinat sütunları: {missing}. Mevcut sütunlar: {original_cols}")
-        return False
-    
-    return True
+    rename_map = {}
+    if "latitude" not in df.columns:
+        for alt in ["lat", "enlem"]:
+            if alt in df.columns:
+                rename_map[alt] = "latitude"
+    if "longitude" not in df.columns:
+        for alt in ["lon", "long", "lng", "boylam"]:
+            if alt in df.columns:
+                rename_map[alt] = "longitude"
+
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+        st.warning(f"⚠️ {context}: {rename_map} olarak yeniden adlandırıldı.")
+
+    if "latitude" not in df.columns or "longitude" not in df.columns:
+        st.error(f"❌ {context}: 'latitude' veya 'longitude' eksik.")
+        return df.iloc[0:0]
+
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+    df = df.dropna(subset=["latitude", "longitude"])
+
+    # Daha geniş aralık
+    df = df[
+        (df["latitude"].between(37.7, 37.84)) & 
+        (df["longitude"].between(-123.2, -122.3))
+    ].copy()
+
+    if df.empty:
+        st.warning(f"⚠️ {context}: Geçerli koordinat içeren satır yok.")
+    return df
+
 
 def enrich_with_poi(df):
     """
