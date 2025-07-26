@@ -678,14 +678,14 @@ def enrich_with_government(df):
 # Veri zenginleştirme 
 
 def clean_merged_columns(df):
-    """Birleştirme sonrası sütun temizliği yapar"""
-    # _x, _y ile biten sütunları temizle
+    """Merge sonrası oluşan _x, _y sütunlarını temizler."""
     for col in df.columns:
-        if col.endswith('_x'):
+        if col.endswith('_x') and col[:-2] in df.columns:
+            df.drop(columns=[col], inplace=True)
+        elif col.endswith('_x'):
             df.rename(columns={col: col[:-2]}, inplace=True)
         elif col.endswith('_y'):
             df.drop(columns=[col], inplace=True)
-    df = clean_merged_columns(df)
     return df
 
 def check_and_fix_coordinates(df, context=""):
