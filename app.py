@@ -855,14 +855,20 @@ def enrich_with_311(df):
 
 def enrich_with_weather(df):
     try:
-        df_weather = pd.read_csv("sf_weather_5years.csv")
-        df_weather["DATE"] = pd.to_datetime(df_weather["DATE"])
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.merge(df_weather, left_on="date", right_on="DATE", how="left")
-        df.drop(columns=["DATE"], inplace=True)
+        weather = pd.read_csv("sf_weather_5years.csv")
+        weather["date"] = pd.to_datetime(weather["date"]).dt.date
+        df["date"] = pd.to_datetime(df["datetime"]).dt.date
+
+        # Merge sadece tarih ve GEOID bazlı (longitude gerekli değil)
+        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
+        weather["GEOID"] = weather["GEOID"].astype(str).str.zfill(11)
+
+        df = df.merge(weather, on=["date", "GEOID"], how="left")
+
         return df
+
     except Exception as e:
-        st.error(f"Hava durumu verisi eklenemedi: {e}")
+        st.error(f"❌ Hava durumu zenginleştirme hatası: {e}")
         return df
 
 def enrich_with_police_and_gov(df):
