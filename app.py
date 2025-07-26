@@ -876,33 +876,35 @@ def enrich_with_weather(df):
 
 def enrich_with_police(df):
     try:
-        # Sütunları yeniden adlandır
+        # Sütun adlarını standartlaştır
         if "longitude" not in df.columns and "lon" in df.columns:
             df = df.rename(columns={"lon": "longitude"})
         if "latitude" not in df.columns and "lat" in df.columns:
             df = df.rename(columns={"lat": "latitude"})
 
-        # Sütun kontrolü
+        # Eksik sütun kontrolü
         if "longitude" not in df.columns or "latitude" not in df.columns:
             st.error("❌ Suç verisinde 'longitude' veya 'latitude' sütunu eksik (police).")
             return df
 
-        # Tip düzeltmesi
+        # Sayısal dönüşüm
         df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
         df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
 
+        # Geçerli koordinatları filtrele
         df_valid = df.dropna(subset=["longitude", "latitude"]).copy()
         if df_valid.empty:
             st.warning("⚠️ Geçerli koordinat içeren satır yok (police).")
             return df
 
-        # GeoDataFrame dönüşümü
+        # GeoDataFrame oluştur
         gdf_crime = gpd.GeoDataFrame(
             df_valid,
             geometry=gpd.points_from_xy(df_valid["longitude"], df_valid["latitude"]),
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
+        # Polis verisini yükle
         df_police = pd.read_csv("sf_police_stations.csv")
         df_police["longitude"] = pd.to_numeric(df_police["longitude"], errors="coerce")
         df_police["latitude"] = pd.to_numeric(df_police["latitude"], errors="coerce")
@@ -912,11 +914,13 @@ def enrich_with_police(df):
             crs="EPSG:4326"
         ).to_crs(epsg=3857)
 
+        # Mesafe hesapla
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         police_coords = np.vstack([gdf_police.geometry.x, gdf_police.geometry.y]).T
         police_tree = cKDTree(police_coords)
-
         df_valid["distance_to_police"], _ = police_tree.query(crime_coords, k=1)
+
+        # Ek sütunlar
         df_valid["is_near_police"] = (df_valid["distance_to_police"] < 200).astype(int)
         df_valid["distance_to_police_range"] = pd.cut(
             df_valid["distance_to_police"],
@@ -924,6 +928,7 @@ def enrich_with_police(df):
             labels=["0-100", "100-200", "200-500", "500-1000", ">1000"]
         )
 
+        # Ana df'e geri ekle
         df.update(df_valid)
         st.success("✅ Polis istasyonu bilgileri eklendi")
         return df
