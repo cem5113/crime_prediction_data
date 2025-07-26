@@ -406,19 +406,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                 df = pd.read_csv("sf_crime.csv", low_memory=False)
                 original_row_count = len(df)
-
-                try:
-                    df = enrich_with_poi(df)
-                    st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
-                    st.write("📍 Örnek POI verisi:")
-                    st.dataframe(
-                        df[["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
-                        .drop_duplicates()
-                        .head()
-                    )
-                except Exception as e:
-                    st.error(f"❌ POI verisi eklenemedi: {e}")
-
+                
                 try:
                     df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
                     with open("risky_pois_dynamic.json") as f:
@@ -775,34 +763,31 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
 # Veri zenginleştirme 
 def enrich_with_poi(df):
+    """
+    Suç verisini POI (Point of Interest) verileriyle zenginleştirir.
+    - En yakın POI'ya ve en yakın riskli POI'ya olan mesafeleri hesaplar.
+    - Her coğrafi bölge (GEOID) için POI risk yoğunluğunu hesaplar.
+    """
     try:
+        # Gerekli dosyaları yükle
         df_poi = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
         with open("risky_pois_dynamic.json") as f:
             risk_dict = json.load(f)
+        
+        # Risk skorunu ata
         df_poi["risk_score"] = df_poi["poi_subcategory"].map(risk_dict).fillna(0)
 
-        # GEOID'leri string yap
-        df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-        df_poi["GEOID"] = df_poi["GEOID"].astype(str).str.zfill(11)
-
-        # 🔹 POI yoğunluğu ve risk skorlarını GEOID bazlı hesapla
-        poi_features = df_poi.groupby("GEOID").agg(
-            poi_total_count=("id", "count"),
-            risky_poi_score=("risk_score", "mean")
-        ).reset_index()
-        df = df.merge(poi_features, on="GEOID", how="left")
-
-        # 🔹 Geo veri dönüşümü
-        gdf_crime = gpd.GeoDataFrame(df.copy(), geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
+        # GeoDataFrame'leri oluştur ve projeksiyonu ayarla (hesaplama için)
+        gdf_crime = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326").to_crs(3857)
         gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326").to_crs(3857)
 
-        # 🔹 En yakın POI mesafesi
+        # KDTree ile en yakın POI mesafesini hesapla
         poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
         crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
         poi_tree = cKDTree(poi_coords)
         df["distance_to_poi"], _ = poi_tree.query(crime_coords, k=1)
 
-        # 🔹 En yakın riskli POI mesafesi
+        # Yüksek riskli POI'lar için mesafeyi hesapla
         risky_poi = gdf_poi[gdf_poi["risk_score"] > 0]
         if not risky_poi.empty:
             risky_coords = np.vstack([risky_poi.geometry.x, risky_poi.geometry.y]).T
@@ -810,18 +795,18 @@ def enrich_with_poi(df):
             df["distance_to_high_risk_poi"], _ = risky_tree.query(crime_coords, k=1)
         else:
             df["distance_to_high_risk_poi"] = np.nan
-
-        # 🔹 Risk yoğunluğu (mean risk_score)
+        
+        # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
         risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
-        risk_density["GEOID"] = risk_density["GEOID"].astype(str).str.zfill(11)
         df = df.merge(risk_density, on="GEOID", how="left")
-
+        
+        st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
         return df
 
     except Exception as e:
-        st.error(f"❌ POI zenginleştirme hatası: {e}")
-        return df
-
+        st.error(f"❌ POI zenginleştirme sırasında hata oluştu: {e}")
+        return df # Hata durumunda bile orijinal df'i geri döndür
+        
 def enrich_with_911(df):
     try:
         df_911 = pd.read_csv("sf_911_last_5_year.csv")
