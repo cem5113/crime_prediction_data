@@ -892,12 +892,16 @@ def enrich_with_911(df):
 def enrich_with_311(df):
     try:
         df_311 = pd.read_csv("sf_311_last_5_years.csv")
-        
+
+        # GEOID'leri string formatına getir (11 haneli)
+        df_311["GEOID"] = df_311["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+        df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+
         # Tarih ve saatten event_hour çıkar
         df_311["date"] = pd.to_datetime(df_311["date"], errors="coerce")
         df_311["event_hour"] = pd.to_datetime(df_311["time"], errors="coerce").dt.hour
 
-        # Ana veride de aynı dönüşüm sağlanmalı
+        # Ana veri de tarih ve saat dönüşümü
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         if "event_hour" not in df.columns:
             df["event_hour"] = pd.to_datetime(df["time"], errors="coerce").dt.hour
