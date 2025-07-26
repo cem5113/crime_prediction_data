@@ -814,6 +814,11 @@ def enrich_with_poi(df):
         return df # Hata durumunda bile orijinal df'i geri döndür
 
 def enrich_with_police(df):
+    st.write("📌 Sütunlar:", df.columns.tolist())
+    st.write("📋 İlk 5 satır (koordinatlar):")
+    st.write(df[["latitude", "longitude"]].head())
+    st.write("❗ Eksik latitude sayısı:", df["latitude"].isna().sum())
+    st.write("❗ Eksik longitude sayısı:", df["longitude"].isna().sum())
     try:
         # 1. Suç verisinde koordinatları kontrol et
         df_checked = check_and_fix_coordinates(df.copy(), "Polis istasyonu entegrasyonu")
