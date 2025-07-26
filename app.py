@@ -961,19 +961,18 @@ if st.button("🧪 Veriyi Göster (Test)"):
         df["date"] = df["datetime"].dt.date
 
         # ✅ POI zenginleştirme (try-except içinde)
-        try:
-            df = enrich_with_poi(df)
-            st.success("✅ POI yoğunluğu ve risk skoru başarıyla eklendi.")
-            cols_to_show = ["GEOID", "poi_total_count", "risky_poi_score", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]
-            existing_cols = [col for col in cols_to_show if col in df.columns]
-            if existing_cols:
-                st.write("📍 Örnek POI verisi:")
-                st.dataframe(df[existing_cols].drop_duplicates().head())
-            else:
-                st.warning("📛 POI'ye ait gösterilecek sütun bulunamadı.")
-        except Exception as e:
-            st.error(f"❌ POI verisi eklenemedi: {e}")
-
+        df = pd.read_csv("sf_crime.csv", low_memory=False)
+        original_row_count = len(df)
+        
+        # Fonksiyonu burada çağır
+        df = enrich_with_poi(df)
+        
+        st.write("📍 Örnek POI verisi:")
+        st.dataframe(
+            df[["GEOID", "distance_to_poi", "distance_to_high_risk_poi", "poi_risk_density"]]
+            .drop_duplicates()
+            .head()
+        )
         # ✅ Diğer zenginleştirmeler
         df = enrich_with_911(df)
         st.success("✅ 911 verisi eklendi")
