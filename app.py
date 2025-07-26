@@ -942,11 +942,8 @@ if st.button("🧪 Veriyi Göster (Test)"):
         st.error(f"❌ Hata oluştu: {e}")
 
 # Günlük zenginleştirilmiş veriyi GitHub'a kaydet
-!git config --global user.name "cem5113"
-!git config --global user.email "cem5113@hotmail.com"
-!git add sf_crime_enriched.csv
-!git commit -m "📦 Günlük zenginleştirilmiş suç verisi eklendi"
-!git push
-
+import subprocess
+subprocess.run(["git", "config", "--global", "user.name", "cem5113"])
+subprocess.run(["git", "config", "--global", "user.email", "cem5113@hotmail.com"])
 
 
