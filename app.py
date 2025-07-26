@@ -856,14 +856,19 @@ def enrich_with_311(df):
 def enrich_with_weather(df):
     try:
         weather = pd.read_csv("sf_weather_5years.csv")
+
+        # 🔧 Sütun adlarını küçült
+        weather.columns = weather.columns.str.lower()  # 'DATE' → 'date'
+
         weather["date"] = pd.to_datetime(weather["date"]).dt.date
         df["date"] = pd.to_datetime(df["datetime"]).dt.date
 
-        # Merge sadece tarih ve GEOID bazlı (longitude gerekli değil)
         df["GEOID"] = df["GEOID"].astype(str).str.zfill(11)
-        weather["GEOID"] = weather["GEOID"].astype(str).str.zfill(11)
+        weather["geoid"] = weather.get("geoid", "06075000000")  # Eğer yoksa sabit değer ata
+        weather["geoid"] = weather["geoid"].astype(str).str.zfill(11)
 
-        df = df.merge(weather, on=["date", "GEOID"], how="left")
+        df = df.merge(weather, on=["date", "geoid"], how="left")
+        st.success("✅ Hava durumu verisi eklendi")
 
         return df
 
