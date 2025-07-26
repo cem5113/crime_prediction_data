@@ -980,7 +980,7 @@ def enrich_with_weather(df):
         # datetime sütunu yoksa oluştur
         if 'datetime' not in df.columns and 'date' in df.columns and 'time' in df.columns:
             try:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str)
+                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
             except:
                 df['datetime'] = pd.to_datetime(df['date'].astype(str))
         
