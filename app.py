@@ -431,11 +431,25 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                 if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
                     st.success("✅ POI CSV dosyası mevcut.")
+                    try:
+                        df_poi_prev = pd.read_csv("sf_pois_cleaned_with_geoid.csv")
+                        st.write("📌 [POI] Sütunlar:", df_poi_prev.columns.tolist())
+                        st.dataframe(df_poi_prev.head(3))
+                    except Exception as e:
+                        st.warning(f"⚠️ POI dosyası okunamadı: {e}")
                 else:
                     st.error("❌ POI CSV dosyası eksik!")
 
                 if os.path.exists("risky_pois_dynamic.json"):
                     st.success("✅ Risk skoru dosyası mevcut.")
+                    try:
+                        with open("risky_pois_dynamic.json") as f:
+                            risk_data = json.load(f)
+                        st.write("📌 [Risk Skoru JSON] İlk 3 kayıt:")
+                        preview_risk = dict(list(risk_data.items())[:3])
+                        st.json(preview_risk)
+                    except Exception as e:
+                        st.warning(f"⚠️ Risk skoru JSON okunamadı: {e}")
                 else:
                     st.error("❌ Risk skoru JSON dosyası eksik!")
 
