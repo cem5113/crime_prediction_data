@@ -1,13 +1,14 @@
+import subprocess
+import os
+
 def install_requirements():
     if os.path.exists("requirements.txt"):
-        try:
-            subprocess.check_call(["pip", "install", "-r", "requirements.txt"])
-            st.success("✅ requirements.txt başarıyla yüklendi.")
-        except Exception as e:
-            st.error(f"❌ Gereklilikler yüklenemedi: {e}")
-    else:
-        st.error("❌ requirements.txt dosyası bulunamadı.")
+        subprocess.check_call(["pip", "install", "-r", "requirements.txt"])
 
+# Önce gereklilikleri yükle
+install_requirements()
+
+# Sonra import işlemleri
 import pandas as pd
 import os
 
