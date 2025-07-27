@@ -223,6 +223,8 @@ def update_police_and_gov_buildings_if_needed():
     import os
     from datetime import datetime
     from shapely.geometry import Point
+    from sklearn.neighbors import BallTree
+    import numpy as np
     import streamlit as st
 
     # 🔧 GEOID Ekleme Yardımcı Fonksiyonu
@@ -230,10 +232,8 @@ def update_police_and_gov_buildings_if_needed():
         try:
             if "latitude" not in df.columns or "longitude" not in df.columns:
                 return df
-
             gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
             gdf_polygons = gpd.read_file(geoid_shapefile_path)[["geometry", "GEOID"]].to_crs("EPSG:4326")
-
             gdf_joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="within")
             df["GEOID"] = gdf_joined["GEOID"].fillna("").astype(str).str.zfill(11)
             return df
@@ -241,7 +241,35 @@ def update_police_and_gov_buildings_if_needed():
             st.error(f"❌ GEOID eşleme hatası: {e}")
             return df
 
-    # ⏱️ Zaman kontrolü (son güncelleme üzerinden 30 gün geçti mi)
+    # 🔢 Dinamik etiketleme
+    def make_dynamic_range_func(data, col, strategy="auto", max_bins=5):
+        values = data[col].dropna().values
+        n = len(values)
+        std = np.std(values)
+        iqr = np.percentile(values, 75) - np.percentile(values, 25)
+        if strategy == "auto":
+            if n < 500:
+                bin_count = 3
+            elif std < 1 or iqr < 1:
+                bin_count = 4
+            elif std > 20:
+                bin_count = min(10, max_bins)
+            else:
+                bin_count = 5
+        else:
+            bin_count = int(strategy)
+        quantiles = data[col].quantile([i / bin_count for i in range(bin_count + 1)]).values
+        def label(x):
+            for i in range(bin_count):
+                if x <= quantiles[i + 1]:
+                    if i == 0:
+                        return f"Q{i+1} (≤{quantiles[i+1]:.1f})"
+                    else:
+                        return f"Q{i+1} ({quantiles[i]:.1f}-{quantiles[i+1]:.1f})"
+            return f"Q{bin_count+1} (>{quantiles[-1]:.1f})"
+        return label
+
+    # ⏱️ Zaman kontrolü
     timestamp_file = "police_gov_last_update.txt"
     overpass_url = "http://overpass-api.de/api/interpreter"
 
@@ -256,12 +284,11 @@ def update_police_and_gov_buildings_if_needed():
                 return True
         return True
 
-    # 🔁 Eğer veri 1 ay içinde güncellenmediyse
     if is_month_passed(timestamp_file):
         try:
             st.write("🌐 Overpass API'den veri çekiliyor...")
 
-            # 🧭 Sorgular
+            # Sorgular
             queries = {
                 "police": """
                     [out:json][timeout:60];
@@ -281,7 +308,7 @@ def update_police_and_gov_buildings_if_needed():
                 """
             }
 
-            # 🚀 Veri çekme fonksiyonu
+            # Veri çekme fonksiyonu
             def fetch_pois(query):
                 response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
@@ -309,18 +336,40 @@ def update_police_and_gov_buildings_if_needed():
             df_police = add_geoid_by_coordinates(df_police)
             df_police.to_csv("sf_police_stations.csv", index=False)
             st.success("✅ sf_police_stations.csv indirildi ve GEOID eklendi.")
-            st.write("📌 [Polis] Sütunlar:", df_police.columns.tolist())
-            st.dataframe(df_police.head(3))
 
             # 🟨 Devlet binaları verisi
             df_gov = fetch_pois(queries["government"])
             df_gov = add_geoid_by_coordinates(df_gov)
             df_gov.to_csv("sf_government_buildings.csv", index=False)
             st.success("✅ sf_government_buildings.csv indirildi ve GEOID eklendi.")
-            st.write("📌 [Devlet Binası] Sütunlar:", df_gov.columns.tolist())
-            st.dataframe(df_gov.head(3))
 
-            # 🕓 Zaman damgası
+            # 🎯 Suç verisi zenginleştirme
+            if os.path.exists("sf_crime.csv"):
+                df_crime = pd.read_csv("sf_crime.csv").dropna(subset=["latitude", "longitude"])
+                crime_rad = np.radians(df_crime[["latitude", "longitude"]].values)
+                police_rad = np.radians(df_police[["latitude", "longitude"]].values)
+                gov_rad = np.radians(df_gov[["latitude", "longitude"]].values)
+
+                police_tree = BallTree(police_rad, metric='haversine')
+                gov_tree = BallTree(gov_rad, metric='haversine')
+                dist_police, _ = police_tree.query(crime_rad, k=1)
+                dist_gov, _ = gov_tree.query(crime_rad, k=1)
+
+                df_crime["distance_to_police"] = (dist_police[:, 0] * 6371000).round(1)
+                df_crime["distance_to_government_building"] = (dist_gov[:, 0] * 6371000).round(1)
+                df_crime["is_near_police"] = (df_crime["distance_to_police"] <= 300).astype(int)
+                df_crime["is_near_government"] = (df_crime["distance_to_government_building"] <= 300).astype(int)
+
+                df_crime["distance_to_police_range"] = df_crime["distance_to_police"].apply(
+                    make_dynamic_range_func(df_crime, "distance_to_police"))
+                df_crime["distance_to_government_building_range"] = df_crime["distance_to_government_building"].apply(
+                    make_dynamic_range_func(df_crime, "distance_to_government_building"))
+
+                df_crime.to_csv("sf_crime_09.csv", index=False)
+                st.success("✅ sf_crime_09.csv dosyası oluşturuldu.")
+            else:
+                st.warning("⚠️ sf_crime.csv dosyası bulunamadı, mesafe hesaplanamadı.")
+
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
@@ -328,7 +377,7 @@ def update_police_and_gov_buildings_if_needed():
             st.error(f"❌ Polis/kamu binası güncelleme hatası: {e}")
     else:
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
-
+        
 def update_weather_data():
     import pandas as pd
     import streamlit as st
