@@ -1,6 +1,7 @@
 # === GEREKLİ MODÜLLERİ YÜKLE VE PATH SORUNUNU GİDER ===
 import sys
 import site
+import os
 import requests
 
 # .local/site-packages yolunu ekle
@@ -20,6 +21,7 @@ def ensure_package(package_name):
 for package in ["pandas"]:
     ensure_package(package)
 
+# === EKSİK DOSYAYI GITHUB'DAN İNDİR ===
 def download_if_missing(url, path):
     if not os.path.exists(path):
         print(f"📥 {path} indiriliyor...")
@@ -44,7 +46,6 @@ for path, url in files.items():
 
 # === MODÜLLERİ İÇE AKTAR ===
 import pandas as pd
-import os
 
 # === 1. DOSYA YOLLARI ===
 grid_path = "data/sf_crime_grid_full_labeled.csv"
@@ -84,7 +85,6 @@ df_merge["911_request_count_hour_range"] = df_merge["911_request_count_hour_rang
 df_merge["911_request_count_daily(before_24_hours)"] = df_merge["911_request_count_daily(before_24_hours)"].fillna(0).astype(int)
 
 # === 6. KAYDET ===
-os.makedirs("data", exist_ok=True)
 df_merge.to_csv(output_path, index=False)
 
 # === 7. ÖZET BİLGİ ===
