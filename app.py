@@ -4,12 +4,13 @@ import requests
 import os
 import geopandas as gpd
 import json
+import subprocess
 from datetime import datetime
 
 st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Tahmin Grid'i ve Zenginleştirme Paneli")
 
-# === İndirilecek Dosyalar ===
+# === Dosya URL ve yolları ===
 DOWNLOADS = {
     "Tahmin Grid Verisi (GEOID × Zaman + Y_label)": {
         "url": "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime_grid_full_labeled.csv",
@@ -59,7 +60,7 @@ DOWNLOADS = {
     },
 }
 
-# === İndirme Fonksiyonu ===
+# === Veri indirme ve önizleme ===
 def download_and_preview(name, url, file_path, is_json=False):
     st.markdown(f"### 🔹 {name}")
     try:
@@ -82,16 +83,21 @@ def download_and_preview(name, url, file_path, is_json=False):
     except Exception as e:
         st.error(f"🚨 {name} indirilemedi: {e}")
 
-# === Butonla İndirme İşlemi ===
+# === 1. Verileri indir ve göster ===
 if st.button("📥 Verileri İndir ve Önizle (İlk 3 Satır)"):
+    for name, info in DOWNLOADS.items():
+        download_and_preview(name, info["url"], info["path"], is_json=info.get("is_json", False))
+    st.success("✅ Tüm veriler indirildi ve önizleme tamamlandı.")
+
+# === 2. Enrichment işlemini başlat (crime_enrichment.py) ===
+if st.button("⚙️ Zenginleştirme Scriptini Çalıştır (crime_enrichment.py)"):
     try:
-        for name, info in DOWNLOADS.items():
-            download_and_preview(
-                name,
-                info["url"],
-                info["path"],
-                is_json=info.get("is_json", False)
-            )
-        st.success("✅ Tüm veriler indirildi ve önizleme tamamlandı.")
+        result = subprocess.run(["python", "scripts/crime_enrichment.py"], capture_output=True, text=True)
+        if result.returncode == 0:
+            st.success("✅ crime_enrichment.py başarıyla çalıştırıldı.")
+            st.code(result.stdout)
+        else:
+            st.error("❌ Script çalıştırılırken hata oluştu.")
+            st.code(result.stderr)
     except Exception as e:
-        st.error(f"❌ Genel hata oluştu: {e}")
+        st.error(f"🚨 Subprocess hatası: {e}")
