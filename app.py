@@ -83,6 +83,13 @@ def update_bus_data_if_needed():
                     f.write(datetime.today().strftime("%Y-%m-%d"))
 
                 st.success("🚌 Otobüs durakları Socrata API'den indirildi ve GEOID ile eşleştirildi.")
+
+                # ✅ Önizleme göster
+                st.write("📌 [sf_bus_stops_with_geoid.csv] sütunlar:")
+                st.write(gdf_joined.columns.tolist())
+                st.write("📋 İlk 3 satır:")
+                st.dataframe(gdf_joined.head(3))
+
             else:
                 st.warning(f"⚠️ Otobüs verisi indirilemedi: {response.status_code}")
         except Exception as e:
@@ -117,17 +124,26 @@ def update_train_data_if_needed():
             if response.status_code == 200:
                 with open(zip_path, "wb") as f:
                     f.write(response.content)
+
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extract("stops.txt", ".")
                 os.rename("stops.txt", "sf_train_stops.csv")
+
                 with open(timestamp_file, "w") as f:
                     f.write(datetime.today().strftime("%Y-%m-%d"))
+
                 st.success("🚆 BART tren durakları güncellendi (sf_train_stops.csv)")
 
                 # === GEOID EŞLEME ===
                 train_df = pd.read_csv("sf_train_stops.csv")
+
+                # Koordinatlar varsa işlem yap
+                if "stop_lon" not in train_df.columns or "stop_lat" not in train_df.columns:
+                    st.error("❌ stop_lon veya stop_lat sütunu bulunamadı.")
+                    return
+
                 gdf_stops = gpd.GeoDataFrame(
-                    train_df,
+                    train_df.dropna(subset=["stop_lon", "stop_lat"]),
                     geometry=gpd.points_from_xy(train_df["stop_lon"], train_df["stop_lat"]),
                     crs="EPSG:4326"
                 )
@@ -137,9 +153,18 @@ def update_train_data_if_needed():
 
                 gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks, how="left", predicate="within")
                 gdf_joined["GEOID"] = gdf_joined["GEOID"].astype(str).str.zfill(11)
-                gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore").to_csv("sf_train_stops_with_geoid.csv", index=False)
+
+                gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore").to_csv(
+                    "sf_train_stops_with_geoid.csv", index=False
+                )
 
                 st.success("📌 GEOID ile eşleştirilmiş tren durakları oluşturuldu (sf_train_stops_with_geoid.csv)")
+
+                # ✅ Önizleme
+                st.write("📌 [sf_train_stops_with_geoid.csv] sütunlar:")
+                st.write(gdf_joined.columns.tolist())
+                st.write("📋 İlk 3 satır:")
+                st.dataframe(gdf_joined.head(3))
 
             else:
                 st.warning(f"⚠️ Tren verisi indirilemedi: {response.status_code}")
@@ -171,13 +196,28 @@ def update_pois_if_needed():
     if is_month_passed(timestamp_file):
         try:
             st.info("📥 POI verisi güncelleniyor...")
+
+            # 📦 POI işleme (temizleme ve risk hesaplama)
             update_pois.process_pois()
             update_pois.calculate_dynamic_risk()
 
+            # 🕒 Güncelleme zamanını kaydet
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
             st.success("✅ POI verisi başarıyla güncellendi.")
+
+            # 📄 Sonuç dosyasını göster
+            poi_path = "sf_pois_cleaned_with_geoid.csv"
+            if os.path.exists(poi_path):
+                df_poi = pd.read_csv(poi_path)
+                st.write("📌 [sf_pois_cleaned_with_geoid.csv] sütunlar:")
+                st.write(df_poi.columns.tolist())
+                st.write("📋 İlk 3 satır:")
+                st.dataframe(df_poi.head(3))
+            else:
+                st.warning("⚠️ POI dosyası bulunamadı (sf_pois_cleaned_with_geoid.csv)")
+
         except Exception as e:
             st.error(f"❌ POI güncelleme hatası: {e}")
     else:
@@ -232,7 +272,6 @@ def update_police_and_gov_buildings_if_needed():
             def fetch_pois(name, query):
                 response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
-            
                 rows = []
                 for el in data:
                     lat = el.get("lat") or el.get("center", {}).get("lat")
@@ -246,25 +285,35 @@ def update_police_and_gov_buildings_if_needed():
                             "name": tags.get("name", ""),
                             "type": tags.get("amenity") or tags.get("office", ""),
                         })
-            
+
                 df = pd.DataFrame(rows)
                 df["latitude"] = pd.to_numeric(df["lat"], errors="coerce")
                 df["longitude"] = pd.to_numeric(df["lon"], errors="coerce")
-                st.write("🧪 Polis/Devlet verisi tipleri:", df.dtypes)
                 df = df.drop(columns=["lat", "lon"])
                 gdf = gpd.GeoDataFrame(df.dropna(subset=["latitude", "longitude"]),
                                        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
                                        crs="EPSG:4326")
                 return gdf
 
+            # 🔹 Polis istasyonlarını al
             gdf_police = fetch_pois("police", queries["police"])
             gdf_police.to_csv("sf_police_stations.csv", index=False)
             st.success("✅ sf_police_stations.csv indirildi ve kaydedildi.")
+            st.write("📌 Polis verisi sütunları:")
+            st.write(gdf_police.columns.tolist())
+            st.write("📋 İlk 3 satır:")
+            st.dataframe(gdf_police.head(3))
 
+            # 🔹 Devlet binalarını al
             gdf_gov = fetch_pois("government", queries["government"])
             gdf_gov.to_csv("sf_government_buildings.csv", index=False)
             st.success("✅ sf_government_buildings.csv indirildi ve kaydedildi.")
+            st.write("📌 Devlet verisi sütunları:")
+            st.write(gdf_gov.columns.tolist())
+            st.write("📋 İlk 3 satır:")
+            st.dataframe(gdf_gov.head(3))
 
+            # 🔄 Güncelleme zamanını yaz
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
@@ -274,12 +323,19 @@ def update_police_and_gov_buildings_if_needed():
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
 
 def update_weather_data():
+    import pandas as pd
+    import streamlit as st
+    import requests
+    import os
+    import io
+    from datetime import datetime
+
     st.info("🌦️ Hava durumu verisi kontrol ediliyor...")
     try:
         save_path = "sf_weather_5years.csv"
-        station_id = "USW00023234"
+        station_id = "USW00023234"  # San Francisco Hava İstasyonu
         end_date = datetime.today().date()
-        start_date = end_date - pd.Timedelta(days=5*365)
+        start_date = end_date - pd.Timedelta(days=5 * 365)
 
         url = (
             "https://www.ncei.noaa.gov/access/services/data/v1"
@@ -308,48 +364,50 @@ def update_weather_data():
             df_filtered.to_csv(save_path, index=False)
 
             st.success(f"✅ Hava durumu güncellendi: {start_date} → {end_date}")
+
+            # ✅ Sonuç göster
+            st.write("📌 [sf_weather_5years.csv] sütunlar:")
+            st.write(df_filtered.columns.tolist())
+            st.write("📋 İlk 3 satır:")
+            st.dataframe(df_filtered.head(3))
+
         else:
             st.warning(f"❌ NOAA'dan veri çekilemedi: {response.status_code}")
     except Exception as e:
         st.error(f"❌ Hava durumu güncellenemedi: {e}")
 
-def clean_merged_columns(df):
-    """Merge sonrası oluşan _x, _y sütunlarını temizler."""
-    for col in df.columns:
-        if col.endswith('_x') and col[:-2] in df.columns:
-            df.drop(columns=[col], inplace=True)
-        elif col.endswith('_x'):
-            df.rename(columns={col: col[:-2]}, inplace=True)
-        elif col.endswith('_y'):
-            df.drop(columns=[col], inplace=True)
-    return df
-
 def create_pdf_report(file_name, row_count_before, nan_cols, row_count_after, removed_rows):
+    """Veri temizleme/işleme sonrası özet PDF raporu oluşturur."""
     now = datetime.now()
     timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
 
+    # NaN sütunlarını metin olarak derle
     if not nan_cols.empty:
         nan_parts = [f"- {col}: {count}" for col, count in nan_cols.items()]
-        nan_text = " ".join(nan_parts)
+        nan_text = "\n".join(nan_parts)
     else:
         nan_text = "Yok"
 
+    # Rapor metni
     summary = (
-        f"- Tarih/Saat: {timestamp}; "
-        f"Dosya: {file_name} ; "
-        f"Toplam satir sayisi: {row_count_before:,}; "
-        f"NaN iceren sutunlar: {nan_text}; "
-        f"Revize satir sayisi: {row_count_after:,}; "
-        f"Silinen eski tarihli satir sayisi: {removed_rows}"
+        f"🕒 Tarih/Saat: {timestamp}\n"
+        f"📄 Dosya: {file_name}\n"
+        f"📊 Toplam satır (önce): {row_count_before:,}\n"
+        f"📉 Toplam satır (sonra): {row_count_after:,}\n"
+        f"🗑️ Silinen eski tarihli satır sayısı: {removed_rows}\n"
+        f"⚠️ NaN içeren sütunlar:\n{nan_text}"
     )
 
+    # PDF oluştur
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, txt=summary.encode("latin1", "replace").decode("latin1"))
 
+    # Dosya adını tarihli oluştur
     output_name = f"report_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(output_name)
+
     return output_name
 
 if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
@@ -433,7 +491,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         "lon": "poi_lon"
                     })
                     gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["poi_lon"], df_poi["poi_lat"]))
-                    df = clean_merged_columns(df)
 
                     poi_coords = np.vstack([gdf_poi.geometry.x, gdf_poi.geometry.y]).T
                     crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
@@ -450,7 +507,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
 
                     risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
                     df = df.merge(risk_density, on="GEOID", how="left")
-                    df = clean_merged_columns(df)
                     
                     st.success("✅ POI mesafe ve risk yoğunluğu eklendi.")
                 except Exception as e:
@@ -551,7 +607,6 @@ def enrich_with_911(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_911")
         )
-        df = clean_merged_columns(df)
         return df
         
     except Exception as e:
@@ -577,7 +632,6 @@ def enrich_with_311(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_311")
         )
-        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -607,7 +661,6 @@ def enrich_with_weather(df):
             suffixes=("", "_weather")
         ).drop(columns=["weather_date"])
         st.success("✅ Hava durumu verisi başarıyla eklendi")
-        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -804,7 +857,6 @@ def enrich_with_poi(df):
         # GEOID bazında risk yoğunluğunu hesapla ve ana dataframe'e ekle
         risk_density = df_poi.groupby("GEOID")["risk_score"].mean().reset_index(name="poi_risk_density")
         df = df.merge(risk_density, on="GEOID", how="left")
-        df = clean_merged_columns(df)
         
         st.success("✅ POI mesafesi ve risk yoğunluğu başarıyla eklendi.")
         return df
@@ -957,7 +1009,6 @@ def enrich_with_911(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_911")
         )
-        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -991,7 +1042,6 @@ def enrich_with_311(df):
             on=["GEOID", "date", "event_hour"],
             suffixes=("", "_311")
         )
-        df = clean_merged_columns(df)
         return df
 
     except Exception as e:
@@ -1039,7 +1089,6 @@ def enrich_with_weather(df):
             right_on="weather_date",
             suffixes=("", "_weather")
         ).drop(columns=["weather_date"])
-        df = clean_merged_columns(df)
         st.success("✅ Hava durumu verisi başarıyla eklendi")
         return df
 
