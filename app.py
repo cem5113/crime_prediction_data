@@ -124,26 +124,22 @@ def update_train_data_if_needed():
             if response.status_code == 200:
                 with open(zip_path, "wb") as f:
                     f.write(response.content)
-
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extract("stops.txt", ".")
                 os.rename("stops.txt", "sf_train_stops.csv")
-
                 with open(timestamp_file, "w") as f:
                     f.write(datetime.today().strftime("%Y-%m-%d"))
-
                 st.success("🚆 BART tren durakları güncellendi (sf_train_stops.csv)")
 
                 # === GEOID EŞLEME ===
                 train_df = pd.read_csv("sf_train_stops.csv")
-
-                # Koordinatlar varsa işlem yap
-                if "stop_lon" not in train_df.columns or "stop_lat" not in train_df.columns:
-                    st.error("❌ stop_lon veya stop_lat sütunu bulunamadı.")
-                    return
+                st.write("📋 [Tren Durakları] Sütunlar:")
+                st.write(train_df.columns.tolist())
+                st.write("🚉 [Tren Durakları] İlk 3 Satır:")
+                st.dataframe(train_df.head(3))
 
                 gdf_stops = gpd.GeoDataFrame(
-                    train_df.dropna(subset=["stop_lon", "stop_lat"]),
+                    train_df.dropna(subset=["stop_lat", "stop_lon"]),
                     geometry=gpd.points_from_xy(train_df["stop_lon"], train_df["stop_lat"]),
                     crs="EPSG:4326"
                 )
@@ -154,17 +150,14 @@ def update_train_data_if_needed():
                 gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks, how="left", predicate="within")
                 gdf_joined["GEOID"] = gdf_joined["GEOID"].astype(str).str.zfill(11)
 
-                gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore").to_csv(
-                    "sf_train_stops_with_geoid.csv", index=False
-                )
+                final_df = gdf_joined.drop(columns=["geometry", "index_right"], errors="ignore")
+                final_df.to_csv("sf_train_stops_with_geoid.csv", index=False)
 
                 st.success("📌 GEOID ile eşleştirilmiş tren durakları oluşturuldu (sf_train_stops_with_geoid.csv)")
-
-                # ✅ Önizleme
-                st.write("📌 [sf_train_stops_with_geoid.csv] sütunlar:")
-                st.write(gdf_joined.columns.tolist())
-                st.write("📋 İlk 3 satır:")
-                st.dataframe(gdf_joined.head(3))
+                st.write("📋 [Tren + GEOID] Sütunlar:")
+                st.write(final_df.columns.tolist())
+                st.write("🚉 [Tren + GEOID] İlk 3 Satır:")
+                st.dataframe(final_df.head(3))
 
             else:
                 st.warning(f"⚠️ Tren verisi indirilemedi: {response.status_code}")
