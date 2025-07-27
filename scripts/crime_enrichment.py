@@ -1,6 +1,7 @@
 # === GEREKLİ MODÜLLERİ YÜKLE VE PATH SORUNUNU GİDER ===
 import sys
 import site
+import requests
 
 # .local/site-packages yolunu ekle
 user_site = site.getusersitepackages()
@@ -18,6 +19,28 @@ def ensure_package(package_name):
 # Gerekli tüm modülleri sırayla kontrol et
 for package in ["pandas"]:
     ensure_package(package)
+
+def download_if_missing(url, path):
+    if not os.path.exists(path):
+        print(f"📥 {path} indiriliyor...")
+        r = requests.get(url)
+        if r.status_code == 200:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            print(f"✅ {path} başarıyla indirildi.")
+        else:
+            raise Exception(f"❌ {path} indirilemedi. Status code: {r.status_code}")
+
+# GitHub URL'leri ve dosya yolları
+files = {
+    "data/sf_crime_grid_full_labeled.csv": "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime_grid_full_labeled.csv",
+    "sf_911_last_5_year.csv": "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
+}
+
+# Eksikse indir
+os.makedirs("data", exist_ok=True)
+for path, url in files.items():
+    download_if_missing(url, path)
 
 # === MODÜLLERİ İÇE AKTAR ===
 import pandas as pd
