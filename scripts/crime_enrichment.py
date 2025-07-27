@@ -1,6 +1,16 @@
 import pandas as pd
 import os
 
+def install_requirements():
+    if os.path.exists("requirements.txt"):
+        try:
+            subprocess.check_call(["pip", "install", "-r", "requirements.txt"])
+            st.success("✅ requirements.txt başarıyla yüklendi.")
+        except Exception as e:
+            st.error(f"❌ Gereklilikler yüklenemedi: {e}")
+    else:
+        st.error("❌ requirements.txt dosyası bulunamadı.")
+
 # === 1. Dosya yolları ===
 grid_path = "data/sf_crime_grid_full_labeled.csv"
 calls_911_path = "sf_911_last_5_year.csv"
