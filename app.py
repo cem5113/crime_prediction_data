@@ -581,7 +581,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                             # 🌟 GEOID düzeltme
                             if "GEOID" in df_bus.columns:
-                                df_bus["GEOID"] = df_bus["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(12)
+                                df_bus["GEOID"] = df_bus["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
                 
                             st.write("📋 [Otobüs] Sütunlar:", df_bus.columns.tolist())
                             st.write("🚌 Otobüs verisi (ilk 3 satır):")
