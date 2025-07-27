@@ -579,6 +579,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                         try:
                             df_bus = pd.read_csv("sf_bus_stops.csv").dropna(subset=["stop_lat", "stop_lon"])
+                            df_bus["GEOID"] = df_bus["GEOID"].astype(str).str.zfill(11)
                             st.write("📋 [Otobüs] Sütunlar:", df_bus.columns.tolist())
                             st.write("🚌 Otobüs verisi (ilk 3 satır):")
                             st.dataframe(df_bus.head(3))
