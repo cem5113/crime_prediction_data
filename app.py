@@ -225,18 +225,23 @@ def update_police_and_gov_buildings_if_needed():
     from shapely.geometry import Point
     import streamlit as st
 
+    # 🔧 GEOID Ekleme Yardımcı Fonksiyonu
     def add_geoid_by_coordinates(df, geoid_shapefile_path="sf_blockgroup_shapes.geojson"):
-        """Koordinatlara göre GEOID eşler"""
-        if "latitude" not in df.columns or "longitude" not in df.columns:
+        try:
+            if "latitude" not in df.columns or "longitude" not in df.columns:
+                return df
+
+            gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
+            gdf_polygons = gpd.read_file(geoid_shapefile_path)[["geometry", "GEOID"]].to_crs("EPSG:4326")
+
+            gdf_joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="within")
+            df["GEOID"] = gdf_joined["GEOID"].fillna("").astype(str).str.zfill(11)
+            return df
+        except Exception as e:
+            st.error(f"❌ GEOID eşleme hatası: {e}")
             return df
 
-        gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
-        gdf_polygons = gpd.read_file(geoid_shapefile_path)[["geometry", "GEOID"]].to_crs("EPSG:4326")
-
-        gdf_joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="within")
-        df["GEOID"] = gdf_joined["GEOID"].fillna("").astype(str).str.zfill(11)
-        return df
-
+    # ⏱️ Zaman kontrolü (son güncelleme üzerinden 30 gün geçti mi)
     timestamp_file = "police_gov_last_update.txt"
     overpass_url = "http://overpass-api.de/api/interpreter"
 
@@ -251,29 +256,32 @@ def update_police_and_gov_buildings_if_needed():
                 return True
         return True
 
+    # 🔁 Eğer veri 1 ay içinde güncellenmediyse
     if is_month_passed(timestamp_file):
         try:
             st.write("🌐 Overpass API'den veri çekiliyor...")
 
+            # 🧭 Sorgular
             queries = {
                 "police": """
-                [out:json][timeout:60];
-                (
-                  node["amenity"="police"](37.70,-123.00,37.83,-122.35);
-                  way["amenity"="police"](37.70,-123.00,37.83,-122.35);
-                );
-                out center;
+                    [out:json][timeout:60];
+                    (
+                      node["amenity"="police"](37.70,-123.00,37.83,-122.35);
+                      way["amenity"="police"](37.70,-123.00,37.83,-122.35);
+                    );
+                    out center;
                 """,
                 "government": """
-                [out:json][timeout:60];
-                (
-                  node["amenity"="townhall"](37.70,-123.00,37.83,-122.35);
-                  node["office"="government"](37.70,-123.00,37.83,-122.35);
-                );
-                out center;
+                    [out:json][timeout:60];
+                    (
+                      node["amenity"="townhall"](37.70,-123.00,37.83,-122.35);
+                      node["office"="government"](37.70,-123.00,37.83,-122.35);
+                    );
+                    out center;
                 """
             }
 
+            # 🚀 Veri çekme fonksiyonu
             def fetch_pois(query):
                 response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
@@ -288,7 +296,7 @@ def update_police_and_gov_buildings_if_needed():
                             "lat": lat,
                             "lon": lon,
                             "name": tags.get("name", ""),
-                            "type": tags.get("amenity") or tags.get("office", ""),
+                            "type": tags.get("amenity") or tags.get("office", "")
                         })
                 df = pd.DataFrame(rows)
                 df["latitude"] = pd.to_numeric(df["lat"], errors="coerce")
@@ -296,23 +304,23 @@ def update_police_and_gov_buildings_if_needed():
                 df = df.drop(columns=["lat", "lon"])
                 return df.dropna(subset=["latitude", "longitude"])
 
-            # 🔹 Polis verisi
+            # 🟦 Polis verisi
             df_police = fetch_pois(queries["police"])
             df_police = add_geoid_by_coordinates(df_police)
             df_police.to_csv("sf_police_stations.csv", index=False)
             st.success("✅ sf_police_stations.csv indirildi ve GEOID eklendi.")
-            st.write("📌 Polis verisi sütunları:", df_police.columns.tolist())
+            st.write("📌 [Polis] Sütunlar:", df_police.columns.tolist())
             st.dataframe(df_police.head(3))
 
-            # 🔹 Devlet binaları verisi
+            # 🟨 Devlet binaları verisi
             df_gov = fetch_pois(queries["government"])
             df_gov = add_geoid_by_coordinates(df_gov)
             df_gov.to_csv("sf_government_buildings.csv", index=False)
             st.success("✅ sf_government_buildings.csv indirildi ve GEOID eklendi.")
-            st.write("📌 Devlet binası sütunları:", df_gov.columns.tolist())
+            st.write("📌 [Devlet Binası] Sütunlar:", df_gov.columns.tolist())
             st.dataframe(df_gov.head(3))
 
-            # 🔄 Güncelleme zamanı
+            # 🕓 Zaman damgası
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
@@ -320,7 +328,7 @@ def update_police_and_gov_buildings_if_needed():
             st.error(f"❌ Polis/kamu binası güncelleme hatası: {e}")
     else:
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
-        
+
 def update_weather_data():
     import pandas as pd
     import streamlit as st
@@ -616,10 +624,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     if os.path.exists("sf_police_stations.csv"):
                         df_police = pd.read_csv("sf_police_stations.csv").dropna(subset=["latitude", "longitude"])
                 
-                        # 🌟 GEOID düzeltme
-                        if "GEOID" in df_police.columns:
-                            df_police["GEOID"] = df_police["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                
                         st.success("✅ sf_police_stations.csv dosyası mevcut.")
                         st.write("📋 [Polis] Sütunlar:", df_police.columns.tolist())
                         st.write("🚓 Polis verisi (ilk 3 satır):")
@@ -633,10 +637,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     if os.path.exists("sf_government_buildings.csv"):
                         df_gov = pd.read_csv("sf_government_buildings.csv").dropna(subset=["latitude", "longitude"])
                 
-                        # 🌟 GEOID düzeltme
-                        if "GEOID" in df_gov.columns:
-                            df_gov["GEOID"] = df_gov["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
-                
                         st.success("✅ sf_government_buildings.csv dosyası mevcut.")
                         st.write("📋 [Devlet Binası] Sütunlar:", df_gov.columns.tolist())
                         st.write("🏛️ Devlet binası verisi (ilk 3 satır):")
@@ -645,8 +645,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                         st.warning("⚠️ sf_government_buildings.csv bulunamadı.")
                 except Exception as e:
                     st.error(f"❌ Devlet binası verisi okunamadı: {e}")
-
-                
+   
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
                 removed_rows = 0
