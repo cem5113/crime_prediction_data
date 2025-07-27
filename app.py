@@ -12,7 +12,7 @@ st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Tahmin Grid'i ve Zenginleştirme Paneli")
 
 # === Dosya URL ve yolları ===
-DOWNLOAD_GRID_URL = DOWNLOAD_GRID_URL = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/crime_data/sf_crime_grid_full_labeled.csv"
+DOWNLOAD_GRID_URL = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/crime_data/sf_crime_grid_full_labeled.csv"
 DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
 DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
 DOWNLOAD_POPULATION_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_population.csv"
