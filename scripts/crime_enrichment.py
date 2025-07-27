@@ -1,16 +1,14 @@
-import subprocess
-import os
+import sys, site
+user_site = site.getusersitepackages()
+if user_site not in sys.path:
+    sys.path.append(user_site)
 
-def install_requirements():
-    if os.path.exists("requirements.txt"):
-        subprocess.check_call(["pip", "install", "-r", "requirements.txt"])
-
-# Önce gereklilikleri yükle
-install_requirements()
-
-# Sonra import işlemleri
-import pandas as pd
-import os
+try:
+    import pandas as pd
+except ModuleNotFoundError:
+    import subprocess
+    subprocess.check_call(["pip", "install", "--user", "pandas"])
+    import pandas as pd
 
 # === 1. Dosya yolları ===
 grid_path = "data/sf_crime_grid_full_labeled.csv"
