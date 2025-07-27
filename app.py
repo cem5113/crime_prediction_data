@@ -10,6 +10,16 @@ from datetime import datetime
 st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Tahmin Grid'i ve Zenginleştirme Paneli")
 
+def install_requirements():
+    if os.path.exists("requirements.txt"):
+        try:
+            subprocess.check_call(["pip", "install", "-r", "requirements.txt"])
+            st.success("✅ requirements.txt başarıyla yüklendi.")
+        except Exception as e:
+            st.error(f"❌ Gereklilikler yüklenemedi: {e}")
+    else:
+        st.error("❌ requirements.txt dosyası bulunamadı.")
+
 # === Dosya URL ve yolları ===
 DOWNLOADS = {
     "Tahmin Grid Verisi (GEOID × Zaman + Y_label)": {
