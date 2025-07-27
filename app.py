@@ -223,6 +223,19 @@ def update_police_and_gov_buildings_if_needed():
     import os
     from datetime import datetime
     from shapely.geometry import Point
+    import streamlit as st
+
+    def add_geoid_by_coordinates(df, geoid_shapefile_path="sf_blockgroup_shapes.geojson"):
+        """Koordinatlara göre GEOID eşler"""
+        if "latitude" not in df.columns or "longitude" not in df.columns:
+            return df
+
+        gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326")
+        gdf_polygons = gpd.read_file(geoid_shapefile_path)[["geometry", "GEOID"]].to_crs("EPSG:4326")
+
+        gdf_joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="within")
+        df["GEOID"] = gdf_joined["GEOID"].fillna("").astype(str).str.zfill(11)
+        return df
 
     timestamp_file = "police_gov_last_update.txt"
     overpass_url = "http://overpass-api.de/api/interpreter"
@@ -242,7 +255,6 @@ def update_police_and_gov_buildings_if_needed():
         try:
             st.write("🌐 Overpass API'den veri çekiliyor...")
 
-            # === Overpass Sorguları ===
             queries = {
                 "police": """
                 [out:json][timeout:60];
@@ -262,7 +274,7 @@ def update_police_and_gov_buildings_if_needed():
                 """
             }
 
-            def fetch_pois(name, query):
+            def fetch_pois(query):
                 response = requests.post(overpass_url, data={"data": query})
                 data = response.json()["elements"]
                 rows = []
@@ -278,35 +290,29 @@ def update_police_and_gov_buildings_if_needed():
                             "name": tags.get("name", ""),
                             "type": tags.get("amenity") or tags.get("office", ""),
                         })
-
                 df = pd.DataFrame(rows)
                 df["latitude"] = pd.to_numeric(df["lat"], errors="coerce")
                 df["longitude"] = pd.to_numeric(df["lon"], errors="coerce")
                 df = df.drop(columns=["lat", "lon"])
-                gdf = gpd.GeoDataFrame(df.dropna(subset=["latitude", "longitude"]),
-                                       geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
-                                       crs="EPSG:4326")
-                return gdf
+                return df.dropna(subset=["latitude", "longitude"])
 
-            # 🔹 Polis istasyonlarını al
-            gdf_police = fetch_pois("police", queries["police"])
-            gdf_police.to_csv("sf_police_stations.csv", index=False)
-            st.success("✅ sf_police_stations.csv indirildi ve kaydedildi.")
-            st.write("📌 Polis verisi sütunları:")
-            st.write(gdf_police.columns.tolist())
-            st.write("📋 İlk 3 satır:")
-            st.dataframe(gdf_police.head(3))
+            # 🔹 Polis verisi
+            df_police = fetch_pois(queries["police"])
+            df_police = add_geoid_by_coordinates(df_police)
+            df_police.to_csv("sf_police_stations.csv", index=False)
+            st.success("✅ sf_police_stations.csv indirildi ve GEOID eklendi.")
+            st.write("📌 Polis verisi sütunları:", df_police.columns.tolist())
+            st.dataframe(df_police.head(3))
 
-            # 🔹 Devlet binalarını al
-            gdf_gov = fetch_pois("government", queries["government"])
-            gdf_gov.to_csv("sf_government_buildings.csv", index=False)
-            st.success("✅ sf_government_buildings.csv indirildi ve kaydedildi.")
-            st.write("📌 Devlet verisi sütunları:")
-            st.write(gdf_gov.columns.tolist())
-            st.write("📋 İlk 3 satır:")
-            st.dataframe(gdf_gov.head(3))
+            # 🔹 Devlet binaları verisi
+            df_gov = fetch_pois(queries["government"])
+            df_gov = add_geoid_by_coordinates(df_gov)
+            df_gov.to_csv("sf_government_buildings.csv", index=False)
+            st.success("✅ sf_government_buildings.csv indirildi ve GEOID eklendi.")
+            st.write("📌 Devlet binası sütunları:", df_gov.columns.tolist())
+            st.dataframe(df_gov.head(3))
 
-            # 🔄 Güncelleme zamanını yaz
+            # 🔄 Güncelleme zamanı
             with open(timestamp_file, "w") as f:
                 f.write(datetime.today().strftime("%Y-%m-%d"))
 
@@ -314,7 +320,7 @@ def update_police_and_gov_buildings_if_needed():
             st.error(f"❌ Polis/kamu binası güncelleme hatası: {e}")
     else:
         st.info("📅 Polis ve kamu binası verisi bu ay zaten güncellendi.")
-
+        
 def update_weather_data():
     import pandas as pd
     import streamlit as st
