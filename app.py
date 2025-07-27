@@ -418,12 +418,16 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 with open("sf_crime.csv", "wb") as f:
                     f.write(response.content)
                 st.success("✅ sf_crime.csv başarıyla indirildi.")
-
-                update_train_data_if_needed()
-                update_bus_data_if_needed()
-                update_pois_if_needed()
-                update_weather_data()
-                update_police_and_gov_buildings_if_needed()
+                
+                # 🔍 Dosya önizlemesini göster
+                try:
+                    df_preview = pd.read_csv("sf_crime.csv")
+                    st.write("📌 [sf_crime.csv] sütunlar:")
+                    st.write(df_preview.columns.tolist())
+                    st.write("📋 İlk 3 satır:")
+                    st.dataframe(df_preview.head(3))
+                except Exception as e:
+                    st.warning(f"⚠️ sf_crime.csv önizleme hatası: {e}")
 
                 if os.path.exists("sf_pois_cleaned_with_geoid.csv"):
                     st.success("✅ POI CSV dosyası mevcut.")
