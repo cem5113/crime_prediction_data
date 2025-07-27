@@ -570,7 +570,6 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     st.warning("⚠️ Nüfus verisi (sf_population.csv) bulunamadı.")
 
                 try:
-                    # 🚌 Otobüs verisi indir
                     response_bus = requests.get(DOWNLOAD_BUS_URL)
                     if response_bus.status_code == 200:
                         with open("sf_bus_stops.csv", "wb") as f:
@@ -579,14 +578,18 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 
                         try:
                             df_bus = pd.read_csv("sf_bus_stops.csv").dropna(subset=["stop_lat", "stop_lon"])
-                            df_bus["GEOID"] = df_bus["GEOID"].astype(str).str.zfill(11)
+                
+                            # 🌟 GEOID düzeltme
+                            if "GEOID" in df_bus.columns:
+                                df_bus["GEOID"] = df_bus["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                
                             st.write("📋 [Otobüs] Sütunlar:", df_bus.columns.tolist())
                             st.write("🚌 Otobüs verisi (ilk 3 satır):")
                             st.dataframe(df_bus.head(3))
                         except Exception as e:
-                            st.warning(f"⚠️ Otobüs CSV okunurken hata oluştu: {e}")
+                            st.warning(f"⚠️ sf_bus_stops.csv okunurken hata oluştu: {e}")
                     else:
-                        st.warning(f"⚠️ Otobüs verisi indirilemedi: {response_bus.status_code}")
+                        st.warning(f"⚠️ sf_bus_stops.csv indirilemedi: {response_bus.status_code}")
                 except Exception as e:
                     st.error(f"❌ Otobüs verisi indirilemedi: {e}")
                 
