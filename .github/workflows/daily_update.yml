@@ -23,21 +23,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: ⬆️ sf_crime.csv verisini güncelle
+      - name: ⬆️ sf_crime.csv verisini güncelle ve grid dosyalarını oluştur
         run: |
           python scripts/update_sf_crime.py
-
-      - name: 📑 sf_crime_49.csv verisini zenginleştir
-        run: |
-          python scripts/enrich_sf_crime_49.py
-
-      # NOT: generate_sf_crime_52.py artık gerekmez; update_sf_crime.py içinde üretim var.
 
       - name: 📤 Değişiklikleri commit et
         run: |
           git config user.name "cem5113"
           git config user.email "cem5113@hotmail.com"
-          git add data/sf_crime.csv sf_crime_49.csv \
+          git add data/sf_crime.csv \
                   crime_data/sf_crime_grid_summary_labeled.csv \
                   crime_data/sf_crime_grid_full_labeled.csv
           git commit -m "🔄 Günlük otomatik veri güncellemesi ve tahmin grid'i üretimi"
