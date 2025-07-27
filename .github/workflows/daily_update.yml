@@ -31,6 +31,10 @@ jobs:
         run: |
           python scripts/crime_enrichment.py
 
+      - name: 🟦 311 verisini indir, özetle ve sf_crime_04 ile birleştir
+        run: |
+          python scripts/update_311_data.py
+
       - name: 📤 Değişiklikleri commit et
         run: |
           git config user.name "cem5113"
@@ -38,9 +42,12 @@ jobs:
           git add data/sf_crime.csv \
                   data/sf_crime_01.csv \
                   crime_data/sf_crime_grid_summary_labeled.csv \
-                  crime_data/sf_crime_grid_full_labeled.csv
-          git commit -m "🔄 Günlük veri, enrichment ve tahmin grid'i güncellemesi"
+                  crime_data/sf_crime_grid_full_labeled.csv \
+                  crime_data/sf_311_last_5_years.csv \
+                  crime_data/311_requests_range.csv \
+                  crime_data/sf_crime_04.csv
+          git commit -m "🔄 Günlük veri, enrichment, 911 ve 311 ile birleşim güncellemesi"
           git push origin main
 
       - name: ✅ Tamamlandı
-        run: echo "Tüm veri güncelleme, enrichment ve grid üretimi tamamlandı."
+        run: echo "Tüm veri güncelleme, enrichment, 911 ve 311 birleştirme adımları tamamlandı."
