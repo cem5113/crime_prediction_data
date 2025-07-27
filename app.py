@@ -570,6 +570,7 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                     st.warning("⚠️ Nüfus verisi (sf_population.csv) bulunamadı.")
 
                 try:
+                    # 🚌 Otobüs verisi indir
                     response_bus = requests.get(DOWNLOAD_BUS_URL)
                     if response_bus.status_code == 200:
                         with open("sf_bus_stops.csv", "wb") as f:
@@ -582,11 +583,25 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                             st.write("🚌 Otobüs verisi (ilk 3 satır):")
                             st.dataframe(df_bus.head(3))
                         except Exception as e:
-                            st.warning(f"⚠️ sf_bus_stops.csv okunurken hata oluştu: {e}")
+                            st.warning(f"⚠️ Otobüs CSV okunurken hata oluştu: {e}")
                     else:
-                        st.warning(f"⚠️ sf_bus_stops.csv indirilemedi: {response_bus.status_code}")
+                        st.warning(f"⚠️ Otobüs verisi indirilemedi: {response_bus.status_code}")
                 except Exception as e:
                     st.error(f"❌ Otobüs verisi indirilemedi: {e}")
+                
+                try:
+                    # 🚆 Tren verisi oku
+                    if os.path.exists("sf_train_stops_with_geoid.csv"):
+                        df_train = pd.read_csv("sf_train_stops_with_geoid.csv").dropna(subset=["stop_lat", "stop_lon"])
+                        st.success("✅ sf_train_stops_with_geoid.csv dosyası mevcut.")
+                        st.write("📋 [Tren] Sütunlar:", df_train.columns.tolist())
+                        st.write("🚆 Tren verisi (ilk 3 satır):")
+                        st.dataframe(df_train.head(3))
+                    else:
+                        st.warning("⚠️ sf_train_stops_with_geoid.csv bulunamadı.")
+                except Exception as e:
+                    st.error(f"❌ Tren verisi okunamadı: {e}")
+
 
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
