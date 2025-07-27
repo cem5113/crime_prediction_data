@@ -27,15 +27,20 @@ jobs:
         run: |
           python scripts/update_sf_crime.py
 
+      - name: 🧠 911 + grid → crime_enrichment.py ile birleştir
+        run: |
+          python scripts/crime_enrichment.py
+
       - name: 📤 Değişiklikleri commit et
         run: |
           git config user.name "cem5113"
           git config user.email "cem5113@hotmail.com"
           git add data/sf_crime.csv \
+                  data/sf_crime_01.csv \
                   crime_data/sf_crime_grid_summary_labeled.csv \
                   crime_data/sf_crime_grid_full_labeled.csv
-          git commit -m "🔄 Günlük otomatik veri güncellemesi ve tahmin grid'i üretimi"
+          git commit -m "🔄 Günlük veri, enrichment ve tahmin grid'i güncellemesi"
           git push origin main
 
       - name: ✅ Tamamlandı
-        run: echo "Tüm veri güncelleme ve tahmin grid üretimi tamamlandı."
+        run: echo "Tüm veri güncelleme, enrichment ve grid üretimi tamamlandı."
