@@ -606,7 +606,41 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ Tren verisi okunamadı: {e}")
 
+                try:
+                    if os.path.exists("sf_police_stations.csv"):
+                        df_police = pd.read_csv("sf_police_stations.csv").dropna(subset=["latitude", "longitude"])
+                
+                        # 🌟 GEOID düzeltme
+                        if "GEOID" in df_police.columns:
+                            df_police["GEOID"] = df_police["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                
+                        st.success("✅ sf_police_stations.csv dosyası mevcut.")
+                        st.write("📋 [Polis] Sütunlar:", df_police.columns.tolist())
+                        st.write("🚓 Polis verisi (ilk 3 satır):")
+                        st.dataframe(df_police.head(3))
+                    else:
+                        st.warning("⚠️ sf_police_stations.csv bulunamadı.")
+                except Exception as e:
+                    st.error(f"❌ Polis verisi okunamadı: {e}")
+                
+                try:
+                    if os.path.exists("sf_government_buildings.csv"):
+                        df_gov = pd.read_csv("sf_government_buildings.csv").dropna(subset=["latitude", "longitude"])
+                
+                        # 🌟 GEOID düzeltme
+                        if "GEOID" in df_gov.columns:
+                            df_gov["GEOID"] = df_gov["GEOID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(11)
+                
+                        st.success("✅ sf_government_buildings.csv dosyası mevcut.")
+                        st.write("📋 [Devlet Binası] Sütunlar:", df_gov.columns.tolist())
+                        st.write("🏛️ Devlet binası verisi (ilk 3 satır):")
+                        st.dataframe(df_gov.head(3))
+                    else:
+                        st.warning("⚠️ sf_government_buildings.csv bulunamadı.")
+                except Exception as e:
+                    st.error(f"❌ Devlet binası verisi okunamadı: {e}")
 
+                
                 nan_summary = df.isna().sum()
                 nan_cols = nan_summary[nan_summary > 0]
                 removed_rows = 0
@@ -811,7 +845,7 @@ def enrich_with_government(df):
 
         df_gov = pd.read_csv("sf_government_buildings.csv")
 
-        # 3. Devlet binası koordinatlarını kontrol et
+        # . Devlet binası koordinatlarını kontrol et
         df_gov_checked = check_and_fix_coordinates(df_gov, "Devlet binaları verisi")
         if df_gov_checked.empty:
             st.warning("⚠️ Devlet binaları: Geçerli istasyon koordinatı yok.")
