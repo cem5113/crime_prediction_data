@@ -1,31 +1,65 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 import os
 import geopandas as gpd
 import json
-from shapely.geometry import Point
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="Veri Güncelleme", layout="wide")
 st.title("📦 Günlük Suç Tahmin Grid'i ve Zenginleştirme Paneli")
 
-# === Dosya URL ve yolları ===
-DOWNLOAD_GRID_URL = "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime_grid_full_labeled.csv"
-DOWNLOAD_911_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv"
-DOWNLOAD_311_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv"
-DOWNLOAD_POPULATION_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_population.csv"
-DOWNLOAD_BUS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops_with_geoid.csv"
-DOWNLOAD_TRAIN_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_train_stops_with_geoid.csv"
-DOWNLOAD_POIS_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson"
-RISKY_POIS_JSON_PATH = "risky_pois_dynamic.json"
-DOWNLOAD_RISKY_POIS_JSON_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/risky_pois_dynamic.json"
-DOWNLOAD_POLICE_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_police_stations.csv"
-DOWNLOAD_GOV_URL = "https://github.com/cem5113/crime_prediction_data/raw/main/sf_government_buildings.csv"
-DOWNLOAD_WEATHER_URL = "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_weather_5years.csv"
+# === İndirilecek Dosyalar ===
+DOWNLOADS = {
+    "Tahmin Grid Verisi (GEOID × Zaman + Y_label)": {
+        "url": "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_crime_grid_full_labeled.csv",
+        "path": "sf_crime_grid_full_labeled.csv"
+    },
+    "911 Çağrıları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
+        "path": "sf_911_last_5_year.csv"
+    },
+    "311 Çağrıları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv",
+        "path": "sf_311_last_5_years.csv"
+    },
+    "Nüfus Verisi": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_population.csv",
+        "path": "sf_population.csv"
+    },
+    "Otobüs Durakları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_bus_stops_with_geoid.csv",
+        "path": "sf_bus_stops_with_geoid.csv"
+    },
+    "Tren Durakları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_train_stops_with_geoid.csv",
+        "path": "sf_train_stops_with_geoid.csv"
+    },
+    "POI GeoJSON": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_pois.geojson",
+        "path": "sf_pois.geojson",
+        "is_json": True
+    },
+    "POI Risk Skorları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/risky_pois_dynamic.json",
+        "path": "risky_pois_dynamic.json",
+        "is_json": True
+    },
+    "Polis İstasyonları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_police_stations.csv",
+        "path": "sf_police_stations.csv"
+    },
+    "Devlet Binaları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/raw/main/sf_government_buildings.csv",
+        "path": "sf_government_buildings.csv"
+    },
+    "Hava Durumu": {
+        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_weather_5years.csv",
+        "path": "sf_weather_5years.csv"
+    },
+}
 
-# === Veri indirme ve önizleme fonksiyonu ===
+# === İndirme Fonksiyonu ===
 def download_and_preview(name, url, file_path, is_json=False):
     st.markdown(f"### 🔹 {name}")
     try:
@@ -44,26 +78,20 @@ def download_and_preview(name, url, file_path, is_json=False):
                 st.dataframe(df.head(3))
                 st.caption(f"📌 Sütunlar: {list(df.columns)}")
         else:
-            st.error(f"❌ {name} indirilemedi. Kod: {response.status_code}")
+            st.error(f"❌ {name} indirilemedi. HTTP Kod: {response.status_code}")
     except Exception as e:
-        st.error(f"🚨 {name} indirilirken hata: {e}")
+        st.error(f"🚨 {name} indirilemedi: {e}")
 
-# === Butonla çalışan ana fonksiyon ===
-if st.button("📅 Verileri İndir ve İlk 3 Satırı Göster"):
+# === Butonla İndirme İşlemi ===
+if st.button("📥 Verileri İndir ve Önizle (İlk 3 Satır)"):
     try:
-        download_and_preview("Tahmin Grid Verisi (Tüm GEOID × Zaman + Y_label)", DOWNLOAD_GRID_URL, "sf_crime_grid_full_labeled.csv")
-        download_and_preview("911 Çağrıları", DOWNLOAD_911_URL, "sf_911_last_5_year.csv")
-        download_and_preview("311 Çağrıları", DOWNLOAD_311_URL, "sf_311_last_5_years.csv")
-        download_and_preview("Nüfus Verisi", DOWNLOAD_POPULATION_URL, "sf_population.csv")
-        download_and_preview("Otobüs Durakları", DOWNLOAD_BUS_URL, "sf_bus_stops_with_geoid.csv")
-        download_and_preview("Tren Durakları", DOWNLOAD_TRAIN_URL, "sf_train_stops_with_geoid.csv")
-        download_and_preview("POI GeoJSON", DOWNLOAD_POIS_URL, "sf_pois.geojson", is_json=True)
-        download_and_preview("POI Risk Skorları", DOWNLOAD_RISKY_POIS_JSON_URL, RISKY_POIS_JSON_PATH, is_json=True)
-        download_and_preview("Polis İstasyonları", DOWNLOAD_POLICE_URL, "sf_police_stations.csv")
-        download_and_preview("Devlet Binaları", DOWNLOAD_GOV_URL, "sf_government_buildings.csv")
-        download_and_preview("Hava Durumu", DOWNLOAD_WEATHER_URL, "sf_weather_5years.csv")
-
-        st.success("✅ Tüm veriler başarıyla indirildi ve ilk 3 satır gösterildi.")
-
+        for name, info in DOWNLOADS.items():
+            download_and_preview(
+                name,
+                info["url"],
+                info["path"],
+                is_json=info.get("is_json", False)
+            )
+        st.success("✅ Tüm veriler indirildi ve önizleme tamamlandı.")
     except Exception as e:
         st.error(f"❌ Genel hata oluştu: {e}")
