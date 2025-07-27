@@ -1,4 +1,3 @@
-# daily_pipeline.py
 # === SUÇ VERİSİ GÜNCELLEME, ÖZETLEME ve Y_LABEL ÜRETİMİ ===
 
 import pandas as pd
