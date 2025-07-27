@@ -595,30 +595,21 @@ if st.button("📥 sf_crime.csv indir, zenginleştir ve özetle"):
                 except Exception as e:
                     st.error(f"❌ Otobüs verisi indirilemedi: {e}")
 
-                try:
-                    nan_summary = df.isna().sum()
-                    nan_cols = nan_summary[nan_summary > 0]
-                    removed_rows = original_row_count - len(df)
-                
-                    report_path = create_pdf_report(
-                        file_name="sf_crime.csv",
-                        row_count_before=original_row_count,
-                        nan_cols=nan_cols,
-                        row_count_after=len(df),
-                        removed_rows=removed_rows
-                    )
-                
-                    with open(report_path, "rb") as f:
-                        st.download_button(
-                            label="📄 PDF Raporu İndir",
-                            data=f,
-                            file_name=report_path,
-                            mime="application/pdf"
-                        )
-                
-                except Exception as e:
-                    st.error(f"❌ PDF raporu oluşturulamadı: {e}")
+                nan_summary = df.isna().sum()
+                nan_cols = nan_summary[nan_summary > 0]
+                removed_rows = 0
+                removed_rows = original_row_count - len(df)
+                report_path = create_pdf_report("sf_crime.csv", original_row_count, nan_cols, len(df), removed_rows)
+                with open(report_path, "rb") as f:
+                    st.download_button("📄 PDF Raporu İndir", f, file_name=report_path, mime="application/pdf")
 
+            else:
+                st.error(f"❌ sf_crime.csv indirilemedi, HTTP kodu: {response.status_code}")
+                st.stop()
+
+        except Exception as e:
+            st.error(f"❌ Genel hata oluştu: {e}")
+            
 # === Yardimci Fonksiyonlar ===
 def check_and_fix_coordinates(df, context=""):
     """Koordinat sütunlarını kontrol eder, dönüştürür ve geçersiz değerleri temizler"""
