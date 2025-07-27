@@ -1,6 +1,3 @@
-import pandas as pd
-import os
-
 def install_requirements():
     if os.path.exists("requirements.txt"):
         try:
@@ -10,6 +7,9 @@ def install_requirements():
             st.error(f"❌ Gereklilikler yüklenemedi: {e}")
     else:
         st.error("❌ requirements.txt dosyası bulunamadı.")
+
+import pandas as pd
+import os
 
 # === 1. Dosya yolları ===
 grid_path = "data/sf_crime_grid_full_labeled.csv"
