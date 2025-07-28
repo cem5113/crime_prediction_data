@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 import os
 
 # === 1. Dosya yolları ===
-raw_save_path = "crime_data/sf_311_last_5_years.csv"
+raw_save_path =     "311 Çağrıları": {
+        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv",
+        "path": "sf_311_last_5_years.csv"
+    },
 agg_save_path = "crime_data/311_requests_range.csv"
 crime_03_path = "crime_data/sf_crime_03.csv"
 output_path = "crime_data/sf_crime_04.csv"
