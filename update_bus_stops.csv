@@ -8,22 +8,22 @@ import os
 import requests
 
 # === 1. Dosya yolları ===
-crime_path = "crime_data/sf_crime_03.csv"
-bus_output_path = "crime_data/sf_bus_stops_with_geoid.csv"
-output_path = "crime_data/sf_crime_06.csv"
-census_path = "sf_census_blocks_with_population.geojson"
+BASE_DIR = "crime_data"
+crime_path = os.path.join(BASE_DIR, "sf_crime_03.csv")
+bus_output_path = os.path.join(BASE_DIR, "sf_bus_stops_with_geoid.csv")
+output_path = os.path.join(BASE_DIR, "sf_crime_06.csv")
+census_path = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
 
 # === 2. Socrata API'den otobüs duraklarını indir ===
-print("🚌 Otobüs verisi Socrata API'den indiriliyor...")
+print("🚌 Otobüs durakları Socrata API'den indiriliyor...")
 try:
     resp = requests.get("https://data.sfgov.org/resource/i28k-bkz6.json")
     resp.raise_for_status()
-    bus_data = resp.json()
-    df_bus = pd.DataFrame(bus_data).dropna(subset=["latitude", "longitude"])
+    df_bus = pd.DataFrame(resp.json()).dropna(subset=["latitude", "longitude"])
     df_bus["stop_lat"] = df_bus["latitude"].astype(float)
     df_bus["stop_lon"] = df_bus["longitude"].astype(float)
 
-    # GEOID eşle
+    # GEOID eşleme
     gdf_bus = gpd.GeoDataFrame(
         df_bus,
         geometry=gpd.points_from_xy(df_bus["stop_lon"], df_bus["stop_lat"]),
@@ -34,7 +34,7 @@ try:
     gdf_bus = gpd.sjoin(gdf_bus, gdf_blocks[["GEOID", "geometry"]], how="left", predicate="within")
     gdf_bus = gdf_bus.drop(columns="geometry")
     gdf_bus.to_csv(bus_output_path, index=False)
-    print(f"✅ Otobüs verisi kaydedildi: {bus_output_path}")
+    print(f"✅ Otobüs durakları kaydedildi → {bus_output_path}")
 except Exception as e:
     print("❌ Otobüs verisi indirilemedi:", e)
     exit()
@@ -43,24 +43,25 @@ except Exception as e:
 df_crime = pd.read_csv(crime_path, dtype={"GEOID": str})
 df_bus = pd.read_csv(bus_output_path).dropna(subset=["stop_lat", "stop_lon"])
 
-# === 4. Geo dönüşüm
+# === 4. Geo dönüşüm (EPSG:3857) ===
 gdf_crime = gpd.GeoDataFrame(
     df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]),
     crs="EPSG:4326"
 ).to_crs(epsg=3857)
+
 gdf_bus = gpd.GeoDataFrame(
     df_bus, geometry=gpd.points_from_xy(df_bus["stop_lon"], df_bus["stop_lat"]),
     crs="EPSG:4326"
 ).to_crs(epsg=3857)
 
-# === 5. En yakın otobüs durağına mesafe
+# === 5. En yakın otobüs durağına mesafe (metre cinsinden) ===
 crime_coords = np.vstack([gdf_crime.geometry.x, gdf_crime.geometry.y]).T
 bus_coords = np.vstack([gdf_bus.geometry.x, gdf_bus.geometry.y]).T
 tree = cKDTree(bus_coords)
 distances, _ = tree.query(crime_coords, k=1)
 gdf_crime["distance_to_bus"] = distances
 
-# === 6. Binleme (mesafe)
+# === 6. Mesafe binleme (range) ===
 def freedman_diaconis_bin_count(data, max_bins=10):
     q75, q25 = np.percentile(data, [75, 25])
     iqr = q75 - q25
@@ -71,29 +72,23 @@ def freedman_diaconis_bin_count(data, max_bins=10):
     bin_count = int(np.ceil((data.max() - data.min()) / bin_width))
     return max(2, min(max_bins, bin_count))
 
-n_dist_bins = freedman_diaconis_bin_count(gdf_crime["distance_to_bus"].values)
-_, dist_bin_edges = pd.qcut(gdf_crime["distance_to_bus"], q=n_dist_bins, retbins=True, duplicates="drop")
-dist_labels = [f"{int(dist_bin_edges[i])}–{int(dist_bin_edges[i+1])}m" for i in range(len(dist_bin_edges) - 1)]
-gdf_crime["distance_to_bus_range"] = pd.cut(
-    gdf_crime["distance_to_bus"], bins=dist_bin_edges, labels=dist_labels, include_lowest=True
-)
+n_dist_bins = freedman_diaconis_bin_count(gdf_crime["distance_to_bus"])
+_, dist_edges = pd.qcut(gdf_crime["distance_to_bus"], q=n_dist_bins, retbins=True, duplicates="drop")
+dist_labels = [f"{int(dist_edges[i])}–{int(dist_edges[i+1])}m" for i in range(len(dist_edges) - 1)]
+gdf_crime["distance_to_bus_range"] = pd.cut(gdf_crime["distance_to_bus"], bins=dist_edges, labels=dist_labels, include_lowest=True)
 
-# === 7. Otobüs durağı yoğunluğu (dinamik yarıçap)
-dynamic_radius = np.percentile(gdf_crime["distance_to_bus"], 75)
-def count_bus_stops_within_radius(point, bus_gdf, radius):
-    return bus_gdf.distance(point).lt(radius).sum()
+# === 7. Dinamik yarıçap ile çevredeki otobüs sayısı ===
+radius = np.percentile(gdf_crime["distance_to_bus"], 75)
+def count_stops(pt):
+    return gdf_bus.distance(pt).lt(radius).sum()
 
-gdf_crime["bus_stop_count"] = gdf_crime.geometry.apply(
-    lambda pt: count_bus_stops_within_radius(pt, gdf_bus, dynamic_radius)
-)
+gdf_crime["bus_stop_count"] = gdf_crime.geometry.apply(count_stops)
 
-# === 8. Binleme (bus_stop_count)
-n_count_bins = freedman_diaconis_bin_count(gdf_crime["bus_stop_count"].values)
-_, count_bin_edges = pd.qcut(gdf_crime["bus_stop_count"], q=n_count_bins, retbins=True, duplicates="drop")
-count_labels = [f"{int(count_bin_edges[i])}–{int(count_bin_edges[i+1])}" for i in range(len(count_bin_edges) - 1)]
-gdf_crime["bus_stop_count_range"] = pd.cut(
-    gdf_crime["bus_stop_count"], bins=count_bin_edges, labels=count_labels, include_lowest=True
-)
+# === 8. Yoğunluk binleme
+n_count_bins = freedman_diaconis_bin_count(gdf_crime["bus_stop_count"])
+_, count_edges = pd.qcut(gdf_crime["bus_stop_count"], q=n_count_bins, retbins=True, duplicates="drop")
+count_labels = [f"{int(count_edges[i])}–{int(count_edges[i+1])}" for i in range(len(count_edges) - 1)]
+gdf_crime["bus_stop_count_range"] = pd.cut(gdf_crime["bus_stop_count"], bins=count_edges, labels=count_labels, include_lowest=True)
 
 # === 9. Kaydet
 df_final = gdf_crime.drop(columns="geometry")
