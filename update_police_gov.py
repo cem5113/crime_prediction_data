@@ -1,68 +1,66 @@
-import requests 
-import geopandas as gpd
 import pandas as pd
+import geopandas as gpd
+import numpy as np
 import os
 from shapely.geometry import Point
+from sklearn.neighbors import BallTree
 
-# === Ayar ===
-SF_BBOX = (37.70, -123.00, 37.83, -122.35)  # (south, west, north, east)
-GEOID_PATH = "sf_blockgroup_shapes.geojson"  # GEOID sınırları
+# === Dosya Yolları ===
+BASE_DIR = "/content/drive/MyDrive/crime_data"
+CRIME_INPUT = os.path.join(BASE_DIR, "sf_crime_06.csv")
+CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_07.csv")
+POLICE_PATH = os.path.join(BASE_DIR, "sf_police_stations.csv")
+GOV_PATH = os.path.join(BASE_DIR, "sf_government_buildings.csv")
 
-OUTPUT_POLICE = "sf_police_stations.csv"
-OUTPUT_GOV = "sf_government_buildings.csv"
+# === Yardımcı: Mesafe hesapla ve range ver ===
+def haversine_features(df_crime, df_target, prefix, radius=300):
+    # GeoDataFrame dönüşümü
+    gdf_crime = gpd.GeoDataFrame(df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]), crs="EPSG:4326")
+    gdf_target = gpd.GeoDataFrame(df_target, geometry=gpd.points_from_xy(df_target["longitude"], df_target["latitude"]), crs="EPSG:4326")
 
-# === Overpass Turbo Sorgu Şablonu ===
-def build_query(key, value):
-    return f"""
-    [out:json][timeout:25];
-    (
-      node["{key}"="{value}"]({SF_BBOX[0]},{SF_BBOX[1]},{SF_BBOX[2]},{SF_BBOX[3]});
-      way["{key}"="{value}"]({SF_BBOX[0]},{SF_BBOX[1]},{SF_BBOX[2]},{SF_BBOX[3]});
-      relation["{key}"="{value}"]({SF_BBOX[0]},{SF_BBOX[1]},{SF_BBOX[2]},{SF_BBOX[3]});
-    );
-    out center;
-    """
+    # Koordinatları radian'a çevir
+    crime_rad = np.radians(gdf_crime[["latitude", "longitude"]].values)
+    target_rad = np.radians(gdf_target[["latitude", "longitude"]].values)
 
-# === GEOID eşleme fonksiyonu ===
-def add_geoid(df, geoid_path=GEOID_PATH):
-    if "latitude" not in df.columns or "longitude" not in df.columns:
-        return df
-    gdf_points = gpd.GeoDataFrame(
-        df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326"
-    )
-    gdf_polygons = gpd.read_file(geoid_path)[["geometry", "GEOID"]].to_crs("EPSG:4326")
-    gdf_joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="within")
-    df["GEOID"] = gdf_joined["GEOID"].fillna("").astype(str).str.zfill(11)
-    return df
+    # BallTree ile mesafe hesapla
+    tree = BallTree(target_rad, metric='haversine')
+    dist, _ = tree.query(crime_rad, k=1)
+    dist_meters = dist[:, 0] * 6371000  # metre cinsine çevir
 
-# === Veriyi indir ve işle ===
-def fetch_osm_data(key, value):
-    query = build_query(key, value)
-    response = requests.post("https://overpass-api.de/api/interpreter", data={"data": query})
-    data = response.json()
+    df_crime[f"distance_to_{prefix}"] = dist_meters.round(1)
+    df_crime[f"is_near_{prefix}"] = (dist_meters <= radius).astype(int)
 
-    records = []
-    for element in data["elements"]:
-        if "lat" in element and "lon" in element:
-            lat, lon = element["lat"], element["lon"]
-        elif "center" in element:
-            lat, lon = element["center"]["lat"], element["center"]["lon"]
-        else:
-            continue
-        name = element.get("tags", {}).get("name", "")
-        records.append({"latitude": lat, "longitude": lon, "name": name})
-    return pd.DataFrame(records)
+    # Dinamik binleme (range sütunu)
+    def make_bins(col):
+        q = pd.qcut(col, 4, labels=[f"Q{i+1}" for i in range(4)], duplicates='drop')
+        return q.astype(str)
 
-# === 1. Polis istasyonları ===
-print("🚓 Polis istasyonları indiriliyor...")
-df_police = fetch_osm_data("amenity", "police")
-df_police = add_geoid(df_police)
-df_police.to_csv(OUTPUT_POLICE, index=False)
-print(f"✅ {len(df_police)} polis noktası kaydedildi → {OUTPUT_POLICE}")
+    df_crime[f"distance_to_{prefix}_range"] = make_bins(df_crime[f"distance_to_{prefix}"])
+    return df_crime
 
-# === 2. Hükümet binaları ===
-print("🏛️ Hükümet binaları indiriliyor...")
-df_gov = fetch_osm_data("amenity", "townhall")
-df_gov = add_geoid(df_gov)
-df_gov.to_csv(OUTPUT_GOV, index=False)
-print(f"✅ {len(df_gov)} kamu noktası kaydedildi → {OUTPUT_GOV}")
+# === Ana Fonksiyon ===
+def enrich_with_police_and_government():
+    print("📥 Veri yükleniyor...")
+    df_crime = pd.read_csv(CRIME_INPUT)
+    df_police = pd.read_csv(POLICE_PATH)
+    df_gov = pd.read_csv(GOV_PATH)
+
+    print("🚓 Polis istasyonları entegre ediliyor...")
+    df_crime = haversine_features(df_crime, df_police, prefix="police", radius=300)
+
+    print("🏛️ Hükümet binaları entegre ediliyor...")
+    df_crime = haversine_features(df_crime, df_gov, prefix="government", radius=300)
+
+    print("💾 Zenginleştirilmiş veri kaydediliyor...")
+    df_crime.to_csv(CRIME_OUTPUT, index=False)
+
+    print(f"✅ Zenginleştirme tamamlandı → {CRIME_OUTPUT}")
+    print("📄 Eklenen sütunlar:")
+    print([
+        "distance_to_police", "is_near_police", "distance_to_police_range",
+        "distance_to_government", "is_near_government", "distance_to_government_range"
+    ])
+
+# === Çalıştır ===
+if __name__ == "__main__":
+    enrich_with_police_and_government()
