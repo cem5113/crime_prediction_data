@@ -1,17 +1,17 @@
-import pandas as pd
+import pandas as pd 
 import geopandas as gpd
 from shapely.geometry import Point
 from datetime import datetime, timedelta
 import os
+import requests
+import time
+from urllib.parse import quote
 
 # === 1. Dosya yolları ===
-raw_save_path =     "311 Çağrıları": {
-        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.2/sf_311_last_5_years.csv",
-        "path": "sf_311_last_5_years.csv"
-    },
+raw_save_path = "crime_data/sf_311_last_5_years.csv"
 agg_save_path = "crime_data/311_requests_range.csv"
-crime_03_path = "crime_data/sf_crime_03.csv"
-output_path = "crime_data/sf_crime_04.csv"
+crime_01_path = "crime_data/sf_crime_01.csv"
+output_path = "crime_data/sf_crime_02.csv"
 census_path = "crime_data/sf_census_blocks_with_population.geojson"
 
 # === 2. Tarih aralığı: Son 5 yıl
@@ -19,10 +19,6 @@ today = datetime.today().date()
 start_date = today - timedelta(days=1825)
 
 # === 3. 311 verisini indir (SFPD/Police)
-from urllib.parse import quote
-import time
-import requests
-
 soql = (
     f"$where=requested_datetime >= '{start_date}T00:00:00.000' "
     "AND (agency_responsible like '%Police%' OR agency_responsible like '%SFPD%')"
@@ -77,7 +73,6 @@ df["GEOID"] = df["GEOID"].astype(str).str.extract(r"(\d{11})")[0]
 # === 5. Saatlik özet
 df["hour_range"] = (df["hour"] // 3) * 3
 df["hour_range"] = df["hour_range"].astype(str) + "-" + (df["hour_range"] + 3).astype(str)
-
 summary = df.groupby(["GEOID", "date", "hour_range"]).size().reset_index(name="311_request_count")
 
 # === 6. Kaydet
@@ -88,8 +83,8 @@ print(f"✅ Ham 311 verisi: {raw_save_path}")
 print(f"✅ Özet 311 verisi: {agg_save_path}")
 
 # === 7. Suç verisi ile birleştir
-if os.path.exists(crime_03_path):
-    df_crime = pd.read_csv(crime_03_path)
+if os.path.exists(crime_01_path):
+    df_crime = pd.read_csv(crime_01_path)
     df_crime["GEOID"] = df_crime["GEOID"].astype(str).str.zfill(11)
     summary["GEOID"] = summary["GEOID"].astype(str).str.zfill(11)
     df_merge = pd.merge(df_crime, summary, on=["GEOID", "date"], how="left")
@@ -97,4 +92,4 @@ if os.path.exists(crime_03_path):
     df_merge.to_csv(output_path, index=False)
     print(f"✅ Birleştirilmiş çıktı: {output_path}")
 else:
-    print("⚠️ sf_crime_03.csv bulunamadı. Birleştirme atlandı.")
+    print("⚠️ sf_crime_01.csv bulunamadı. Birleştirme atlandı.")
