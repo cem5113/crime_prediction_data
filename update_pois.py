@@ -1,5 +1,3 @@
-# update_pois.py
-
 import os
 import ast
 import json
@@ -10,7 +8,7 @@ from collections import defaultdict
 from shapely.geometry import Point
 from sklearn.neighbors import BallTree
 
-# === DOSYA YOLLARI ===
+# === 0. DOSYA YOLLARI ===
 BASE_DIR = "/content/drive/MyDrive/crime_data"
 POI_GEOJSON = os.path.join(BASE_DIR, "sf_pois.geojson")
 BLOCK_PATH = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
@@ -19,7 +17,8 @@ POI_RISK_JSON = os.path.join(BASE_DIR, "risky_pois_dynamic.json")
 CRIME_INPUT = os.path.join(BASE_DIR, "sf_crime_05.csv")
 CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_06.csv")
 
-# === 1. POI VERİSİNİ TEMİZLE + GEOID EKLE ===
+
+# === 1. POI VERİSİ TEMİZLEME VE GEOID EKLEME ===
 def extract_poi_fields(tags):
     if isinstance(tags, str):
         try:
@@ -34,15 +33,17 @@ def extract_poi_fields(tags):
     return pd.Series([None, None, None])
 
 def clean_and_assign_geoid_to_pois():
-    print("📍 POI verisi indiriliyor ve GEOID atanıyor...")
+    print("📍 POI verisi okunuyor ve GEOID atanıyor...")
     gdf = gpd.read_file(POI_GEOJSON)
     gdf[['poi_category', 'poi_subcategory', 'poi_name']] = gdf['tags'].apply(extract_poi_fields)
+
     if 'geometry' not in gdf.columns:
         gdf['geometry'] = gpd.points_from_xy(gdf['lon'], gdf['lat'])
     gdf = gdf.set_geometry('geometry').set_crs("EPSG:4326")
 
     gdf_blocks = gpd.read_file(BLOCK_PATH)
-    gdf_blocks["GEOID"] = gdf_blocks["GEOID"].astype(str).str.zfill(12)
+    gdf_blocks["GEOID"] = gdf_blocks["GEOID"].astype(str).str.zfill(11)
+
     gdf_joined = gpd.sjoin(gdf, gdf_blocks[['GEOID', 'geometry']], how='left', predicate='within')
 
     df_cleaned = gdf_joined[['id', 'lat', 'lon', 'poi_category', 'poi_subcategory', 'poi_name', 'GEOID']].copy()
@@ -51,61 +52,46 @@ def clean_and_assign_geoid_to_pois():
     return df_cleaned
 
 
-# === 2. POI RISK SKORU HESAPLA ===
+# === 2. DİNAMİK RİSK SKORU HESAPLAMA ===
 def calculate_dynamic_risk(df_crime, df_poi):
-    print("📊 Dinamik POI risk skorları hesaplanıyor...")
-    gdf_crime = gpd.GeoDataFrame(
-        df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]), crs="EPSG:4326"
-    )
-    gdf_poi = gpd.GeoDataFrame(
-        df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326"
-    )
+    print("📊 POI risk skorları hesaplanıyor (300m yarıçap)...")
+    gdf_crime = gpd.GeoDataFrame(df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]), crs="EPSG:4326")
+    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326")
     gdf_poi = gdf_poi[~gdf_poi["poi_subcategory"].isin(["police", "ranger_station"])]
 
     poi_rad = np.radians(gdf_poi[["lat", "lon"]].astype(float).values)
     crime_rad = np.radians(gdf_crime[["latitude", "longitude"]].astype(float).values)
     tree = BallTree(crime_rad, metric="haversine")
-    radius = 300 / 6371000  # 300m
+    radius = 300 / 6371000  # 300m in radians
 
     poi_types = gdf_poi["poi_subcategory"].fillna("")
-    poi_crime_counts = []
-    for i, pt in enumerate(poi_rad):
-        subtype = poi_types.iloc[i]
-        if subtype == "":
-            continue
-        crime_ids = tree.query_radius([pt], r=radius)[0]
-        poi_crime_counts.append((subtype, len(crime_ids)))
+    poi_crime_counts = [
+        (subtype, len(tree.query_radius([pt], r=radius)[0]))
+        for pt, subtype in zip(poi_rad, poi_types) if subtype
+    ]
 
-    poi_crime_sum = defaultdict(int)
-    poi_type_count = defaultdict(int)
+    poi_risk_raw = defaultdict(list)
     for subtype, count in poi_crime_counts:
-        poi_crime_sum[subtype] += count
-        poi_type_count[subtype] += 1
+        poi_risk_raw[subtype].append(count)
 
-    poi_risk_raw = {
-        subtype: round(poi_crime_sum[subtype] / poi_type_count[subtype], 4)
-        for subtype in poi_crime_sum
-    }
-
-    min_val = min(poi_risk_raw.values())
-    max_val = max(poi_risk_raw.values())
+    poi_risk_avg = {k: round(np.mean(v), 4) for k, v in poi_risk_raw.items()}
+    min_val, max_val = min(poi_risk_avg.values()), max(poi_risk_avg.values())
 
     poi_risk_normalized = {
-        subtype: round(3 * (score - min_val) / (max_val - min_val + 1e-6), 2)
-        for subtype, score in poi_risk_raw.items()
+        k: round(3 * (v - min_val) / (max_val - min_val + 1e-6), 2)
+        for k, v in poi_risk_avg.items()
     }
 
     with open(POI_RISK_JSON, "w") as f:
         json.dump(poi_risk_normalized, f, indent=2)
 
-    print("📊 Dynamically calculated POI risk scores (normalized 0–3 scale):\n")
-    for subtype, score in sorted(poi_risk_normalized.items(), key=lambda x: x[1], reverse=True):
-        raw = poi_risk_raw[subtype]
-        print(f"{subtype:<25} → raw avg crime: {raw:.2f} | normalized score: {score:.2f}")
+    print("📈 POI risk skorları (normalize edildi 0–3):")
+    for k, score in sorted(poi_risk_normalized.items(), key=lambda x: -x[1]):
+        print(f"{k:<25} → score: {score:.2f}")
     return poi_risk_normalized
 
 
-# === 3. DİNAMİK KATEGORİLEME (Q1–Q4) ===
+# === 3. DİNAMİK KATEGORİLEME (Q1–Q4 vb.) ===
 def make_dynamic_range_func(values, strategy="auto", max_bins=5):
     values = np.array(values.dropna())
     n = len(values)
@@ -134,60 +120,48 @@ def make_dynamic_range_func(values, strategy="auto", max_bins=5):
     return label
 
 
-# === 4. SUÇ VERİSİNE POI ÖZELLİKLERİNİ ATA ===
+# === 4. SUÇ VERİSİNE POI ÖZELLİĞİ EKLE ===
 def enrich_crime_with_poi(df_crime, df_poi, poi_risk_scores):
-    print("🔗 POI verileri suç verisiyle eşleştiriliyor...")
+    print("🔗 POI özellikleri suç verisine ekleniyor...")
     df_poi["risk_score"] = df_poi["poi_subcategory"].map(poi_risk_scores).fillna(0)
 
-    gdf_crime = gpd.GeoDataFrame(
-        df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]), crs="EPSG:4326"
-    )
-    gdf_poi = gpd.GeoDataFrame(
-        df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326"
-    )
+    gdf_crime = gpd.GeoDataFrame(df_crime, geometry=gpd.points_from_xy(df_crime["longitude"], df_crime["latitude"]), crs="EPSG:4326")
+    gdf_poi = gpd.GeoDataFrame(df_poi, geometry=gpd.points_from_xy(df_poi["lon"], df_poi["lat"]), crs="EPSG:4326")
 
     crime_rad = np.radians(gdf_crime[["latitude", "longitude"]].values)
     poi_rad = np.radians(gdf_poi[["lat", "lon"]].values)
     tree = BallTree(poi_rad, metric="haversine")
-    radius = 300 / 6371000
+    radius = 300 / 6371000  # 300m
 
     indices = tree.query_radius(crime_rad, r=radius)
-
-    poi_total_count = []
-    poi_risk_score = []
-    poi_dominant_type = []
-
     poi_types = gdf_poi["poi_subcategory"].fillna("")
+
+    total_count, risk_score_sum, dominant_type = [], [], []
 
     for idx_list in indices:
         subtypes = poi_types.iloc[idx_list]
-        subtype_counts = subtypes.value_counts()
-        poi_total_count.append(len(idx_list))
         risk_vals = subtypes.map(poi_risk_scores).fillna(0)
-        poi_risk_score.append(risk_vals.sum())
-        poi_dominant_type.append(subtype_counts.idxmax() if not subtype_counts.empty else "No_POI")
+        total_count.append(len(idx_list))
+        risk_score_sum.append(risk_vals.sum())
+        dominant_type.append(subtypes.value_counts().idxmax() if not subtypes.empty else "No_POI")
 
-    gdf_crime["poi_total_count"] = poi_total_count
-    gdf_crime["poi_risk_score"] = poi_risk_score
-    gdf_crime["poi_dominant_type"] = poi_dominant_type
+    gdf_crime["poi_total_count"] = total_count
+    gdf_crime["poi_risk_score"] = risk_score_sum
+    gdf_crime["poi_dominant_type"] = dominant_type
 
-    # Range kategorileri
-    count_label_func = make_dynamic_range_func(gdf_crime["poi_total_count"])
-    score_label_func = make_dynamic_range_func(gdf_crime["poi_risk_score"])
-
-    gdf_crime["poi_total_count_range"] = gdf_crime["poi_total_count"].apply(count_label_func)
-    gdf_crime["poi_risk_score_range"] = gdf_crime["poi_risk_score"].apply(score_label_func)
+    # Aralık etiketleri
+    gdf_crime["poi_total_count_range"] = gdf_crime["poi_total_count"].apply(make_dynamic_range_func(gdf_crime["poi_total_count"]))
+    gdf_crime["poi_risk_score_range"] = gdf_crime["poi_risk_score"].apply(make_dynamic_range_func(gdf_crime["poi_risk_score"]))
 
     df_result = gdf_crime.drop(columns="geometry")
     df_result.to_csv(CRIME_OUTPUT, index=False)
-    print(f"✅ Zenginleştirilmiş suç verisi kaydedildi: {CRIME_OUTPUT}")
-    print("📄 Columns added to crime data: ['poi_total_count', 'poi_risk_score', 'poi_dominant_type', 'poi_total_count_range', 'poi_risk_score_range']")
+    print(f"✅ Enriched crime verisi kaydedildi: {CRIME_OUTPUT}")
     return df_result
 
 
-# === ANA AKIŞ ===
+# === ANA FONKSİYON AKIŞI ===
 if __name__ == "__main__":
-    print("🚀 POI güncelleme ve risk analizi başlatılıyor...")
+    print("🚀 POI güncelleme işlemi başlıyor...")
     df_crime = pd.read_csv(CRIME_INPUT)
     df_poi = clean_and_assign_geoid_to_pois()
     poi_risk_scores = calculate_dynamic_risk(df_crime, df_poi)
