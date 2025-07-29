@@ -1,43 +1,42 @@
-# update_weather_data.py
+# enrich_with_weather.py
+
 import pandas as pd
-import datetime
-import requests
-import io
-import os
 
-def update_weather_data(save_path="sf_weather_5years.csv"):
-    end_date = datetime.date.today()
-    start_date = end_date - datetime.timedelta(days=5 * 365)
-    station_id = "USW00023234"  # San Francisco Havaalanı
+# === Dosya Yolları ===
+CRIME_INPUT = "sf_crime_07.csv"
+WEATHER_CSV = "sf_weather_5years.csv"
+CRIME_OUTPUT = "sf_crime_08.csv"
 
-    url = (
-        "https://www.ncei.noaa.gov/access/services/data/v1"
-        f"?dataset=daily-summaries"
-        f"&stations={station_id}"
-        f"&startDate={start_date}"
-        f"&endDate={end_date}"
-        f"&dataTypes=TMAX,TMIN,PRCP"
-        f"&format=csv"
-    )
+# === 1. Verileri oku ===
+df_crime = pd.read_csv(CRIME_INPUT)
+df_weather = pd.read_csv(WEATHER_CSV)
 
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            df_new = pd.read_csv(io.StringIO(response.text))
-            df_new["DATE"] = pd.to_datetime(df_new["DATE"])
+# === 2. Tarih formatlarını kontrol et ===
+df_crime["date"] = pd.to_datetime(df_crime["date"])
+df_weather["DATE"] = pd.to_datetime(df_weather["DATE"])
 
-            if os.path.exists(save_path):
-                df_old = pd.read_csv(save_path)
-                df_old["DATE"] = pd.to_datetime(df_old["DATE"])
-                df_combined = pd.concat([df_old, df_new]).drop_duplicates(subset=["DATE"])
-            else:
-                df_combined = df_new
+# === 3. Sıcaklıkları Celcius'a çevir (NOAA verisi 1/10 °C birimindedir) ===
+if "TMAX" in df_weather.columns:
+    df_weather["temp_max"] = df_weather["TMAX"] / 10
+if "TMIN" in df_weather.columns:
+    df_weather["temp_min"] = df_weather["TMIN"] / 10
+if "PRCP" in df_weather.columns:
+    df_weather["precipitation_mm"] = df_weather["PRCP"] / 10  # mm cinsinden
 
-            df_filtered = df_combined[df_combined["DATE"] >= pd.to_datetime(start_date)]
-            df_filtered.to_csv(save_path, index=False)
-            print(f"✅ Güncellendi: {start_date} → {end_date}")
-            print(f"📁 Kaydedildi: {save_path}")
-        else:
-            print(f"❌ Veri çekilemedi: {response.status_code}")
-    except Exception as e:
-        print(f"❌ Hata oluştu: {e}")
+# === 4. Range hesapla (günlük sıcaklık farkı)
+df_weather["temp_range"] = (df_weather["temp_max"] - df_weather["temp_min"]).round(1)
+
+# === 5. Gerekli sütunları seç
+weather_cols = ["DATE", "temp_max", "temp_min", "temp_range", "precipitation_mm"]
+df_weather = df_weather[weather_cols].rename(columns={"DATE": "date"})
+
+# === 6. Suç verisi ile birleştir
+df_merged = pd.merge(df_crime, df_weather, on="date", how="left")
+
+# === 7. Kaydet
+df_merged.to_csv(CRIME_OUTPUT, index=False)
+
+# === 8. Özet
+print(f"✅ Hava durumu eklendi → {CRIME_OUTPUT}")
+print("📄 Eklenen sütunlar:", ["temp_max", "temp_min", "temp_range", "precipitation_mm"])
+print(f"📊 Satır sayısı: {df_merged.shape[0]}, Sütun sayısı: {df_merged.shape[1]}")
