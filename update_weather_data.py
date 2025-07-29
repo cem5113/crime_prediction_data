@@ -2,7 +2,7 @@ import pandas as pd
 import os
 
 # === Dosya Yolları ===
-BASE_DIR = "/content/drive/MyDrive/crime_data"
+BASE_DIR = "crime_data"
 CRIME_INPUT = os.path.join(BASE_DIR, "sf_crime_07.csv")
 WEATHER_CSV = os.path.join(BASE_DIR, "sf_weather_5years.csv")
 CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_08.csv")
