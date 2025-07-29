@@ -9,7 +9,7 @@ from shapely.geometry import Point
 from sklearn.neighbors import BallTree
 
 # === 0. DOSYA YOLLARI ===
-BASE_DIR = "/content/drive/MyDrive/crime_data"
+BASE_DIR = "crime_data"
 POI_GEOJSON = os.path.join(BASE_DIR, "sf_pois.geojson")
 BLOCK_PATH = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
 POI_CLEANED_CSV = os.path.join(BASE_DIR, "sf_pois_cleaned_with_geoid.csv")
