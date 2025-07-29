@@ -6,7 +6,7 @@ from shapely.geometry import Point
 from sklearn.neighbors import BallTree
 
 # === Dosya Yolları ===
-BASE_DIR = "/content/drive/MyDrive/crime_data"
+BASE_DIR = "crime_data"
 CRIME_INPUT = os.path.join(BASE_DIR, "sf_crime_06.csv")
 CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_07.csv")
 POLICE_PATH = os.path.join(BASE_DIR, "sf_police_stations.csv")
