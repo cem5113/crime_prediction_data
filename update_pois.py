@@ -255,16 +255,3 @@ if __name__ == "__main__":
     # 3) Suçu POI ile zenginleştir
     _ = enrich_crime_with_poi(df_crime, df_poi, risk_dict, radius_m=300)
     print("🎉 Bitti.")
-
-import pandas as pd
-import streamlit as st
-CRIME_OUTPUT = "crime_data/sf_crime_06.csv"
-
-if os.path.exists(CRIME_OUTPUT):
-    df_out = pd.read_csv(CRIME_OUTPUT)
-    st.write(df_out.shape, "satır, sütun")
-    st.dataframe(df_out[['poi_total_count','poi_risk_score','poi_dominant_type',
-                         'poi_total_count_range','poi_risk_score_range']].head(10))
-else:
-    st.warning("sf_crime_06.csv henüz oluşmamış görünüyor. Pipeline'ın son adımı çalıştı mı?")
-
