@@ -97,7 +97,10 @@ def clean_and_assign_geoid_to_pois():
     # Çıktı kolonlarını güvenle seç
     keep_cols = [c for c in ["id", "lat", "lon", "poi_category", "poi_subcategory", "poi_name", "GEOID"] if c in gdf_joined.columns]
     df_cleaned = gdf_joined[keep_cols].copy()
-
+    print("📋 Temizlenmiş POI sütunları:", df_cleaned.columns.tolist())
+    print("📄 Temizlenmiş POI ilk 5 satır:")
+    print(df_cleaned.head(5).to_string())
+    
     if "id" not in df_cleaned.columns:
         df_cleaned["id"] = np.arange(len(df_cleaned))
 
