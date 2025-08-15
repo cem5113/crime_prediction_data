@@ -11,7 +11,7 @@ import requests
 BASE_DIR = "crime_data"
 crime_path = os.path.join(BASE_DIR, "sf_crime_03.csv")
 bus_output_path = os.path.join(BASE_DIR, "sf_bus_stops_with_geoid.csv")
-output_path = os.path.join(BASE_DIR, "sf_crime_06.csv")
+output_path = os.path.join(BASE_DIR, "sf_crime_04.csv")
 census_path = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
 
 # === 2. Socrata API'den otobüs duraklarını indir ===
