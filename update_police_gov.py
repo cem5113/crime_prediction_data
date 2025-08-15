@@ -7,7 +7,7 @@ import os
 # -------------------------
 # 1) Dosya yolları
 # -------------------------
-BASE_DIR = "/content/drive/MyDrive/crime_data"  # gerekirse değiştir
+BASE_DIR = "crime_data"
 CRIME_IN  = os.path.join(BASE_DIR, "sf_crime_06.csv")
 POLICE    = os.path.join(BASE_DIR, "sf_police_stations.csv")
 GOV       = os.path.join(BASE_DIR, "sf_government_buildings.csv")
