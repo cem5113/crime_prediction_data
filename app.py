@@ -69,7 +69,7 @@ DOWNLOADS = {
         "path": "sf_government_buildings.csv"
     },
     "Hava Durumu": {
-        "url": "https://github.com/cem5113/crime_prediction_data/releases/download/latest/sf_weather_5years.csv",
+        "url": "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_weather_5years.csv",
         "path": "sf_weather_5years.csv"
     },
 }
