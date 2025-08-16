@@ -1,15 +1,19 @@
 name: Daily Crime Data Update
 
 on:
-  # 1) Her gün 07:00 San Francisco saati (UTC-7 yaz saati, UTC-8 kış saati)
   schedule:
-    - cron: "0 14 * * *"   # 07:00 PST/PDT = 14:00 UTC
-  # 2) Elle tetikleme imkanı
+    - cron: "0 14 * * *"   # 07:00 SF
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    concurrency:
+      group: daily-crime-update
+      cancel-in-progress: true
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -21,16 +25,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas geopandas shapely requests pyogrio holidays
+          fi
 
-      - name: Run update scripts
+      - name: Run update scripts (available only)
         run: |
           python -u scripts/update_crime.py
           python -u scripts/update_911.py
           python -u scripts/update_311.py
           python -u scripts/update_population.py
-          python -u scripts/update_bus.py
+          # NOT: update_bus.py yok → çağrılmıyor
           python -u scripts/update_train.py
           python -u scripts/update_poi.py
           python -u scripts/update_police_gov.py
@@ -41,5 +49,5 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add -A
-          git commit -m "🔄 Auto update data [skip ci]" || echo "No changes to commit"
-          git push
+          git commit -m "🔄 Daily auto-update [skip ci]" || echo "No changes to commit"
+          git push || echo "Nothing to push"
