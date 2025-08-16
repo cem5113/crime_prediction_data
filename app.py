@@ -63,6 +63,25 @@ DOWNLOADS = {
 }
 Path(ROOT/"crime_data").mkdir(exist_ok=True)
 
+st.markdown("### 0) (Opsiyonel) Gereklilikleri yükle")
+if st.button("📦 requirements.txt yükle"):
+    try:
+        req = ROOT / "requirements.txt"
+        if req.exists():
+            out = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", str(req)],
+                cwd=str(ROOT), capture_output=True, text=True
+            )
+            st.code(out.stdout or "")
+            if out.returncode == 0:
+                st.success("✅ Gereklilikler yüklendi.")
+            else:
+                st.error("❌ Kurulumda hata!"); st.code(out.stderr or "")
+        else:
+            st.warning("⚠️ requirements.txt bulunamadı.")
+    except Exception as e:
+        st.error(f"Kurulum çağrısı başarısız: {e}")
+
 def download_and_preview(name, url, file_path, is_json=False):
     st.markdown(f"### 🔹 {name}")
     try:
@@ -76,9 +95,10 @@ def download_and_preview(name, url, file_path, is_json=False):
         else:
             with open(file_path, "wb") as f:
                 f.write(r.content)
-            df = pd.read_csv(file_path)
-            st.dataframe(df.head(3))
-            st.caption(f"📌 Sütunlar: {list(df.columns)}")
+            df = pd.read_csv(file_path, nrows=3)
+            cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            st.dataframe(df)
+            st.caption(f"📌 Sütunlar: {cols}")
     except Exception as e:
         st.error(f"❌ {name} indirilemedi: {e}")
 
@@ -120,16 +140,18 @@ def ensure_script(local_name: str) -> Path | None:
     p = SCRIPTS_DIR / local_name
     if p.exists():
         return p
-    # GitHub'da aynı adla dene
     url = f"{GITHUB_SCRIPTS_BASE}/{local_name}"
     try:
         r = requests.get(url, timeout=20)
-        if r.status_code == 200 and r.text.strip():
+        r.raise_for_status()
+        if r.text.strip():
             p.write_text(r.text, encoding="utf-8")
             st.info(f"⬇️ Script indirildi: {local_name}")
             return p
-    except Exception:
-        pass
+        else:
+            st.error(f"❌ {local_name} indirildi ama içerik boş.")
+    except Exception as e:
+        st.error(f"❌ {local_name} indirilemedi: {e}")
     return None
 
 def resolve_script(entry: dict) -> Path | None:
@@ -177,16 +199,16 @@ def run_script(path: Path) -> bool:
 # === 2) Güncelle & Zenginleştir ===
 st.markdown("### 2) Güncelleme ve Zenginleştirme (01 → 08)")
 if st.button("⚙️ Güncelleme ve Zenginleştirme (01 → 08)"):
-    all_ok = True
-    for entry in PIPELINE:
-        script_path = resolve_script(entry)
-        if not script_path:
-            st.warning(f"⏭️ {entry['name']} bulunamadı/indirilemedi, atlanıyor.")
-            all_ok = False  # dilersen True bırak, pipeline'ı yeşil saymak için
-            continue
-        ok = run_script(script_path)
-        all_ok = all_ok and ok
-    if all_ok:
-        st.success("🎉 Pipeline bitti: Tüm adımlar başarıyla tamamlandı.")
-    else:
+    with st.spinner("⏳ Scriptler çalıştırılıyor..."):
+        all_ok = True
+        for entry in PIPELINE:
+            script_path = resolve_script(entry)
+            if not script_path:
+                st.warning(f"⏭️ {entry['name']} bulunamadı/indirilemedi, atlanıyor.")
+                all_ok = False
+                continue
+            ok = run_script(script_path)
+            all_ok = all_ok and ok
+    st.success("🎉 Pipeline bitti: Tüm adımlar başarıyla tamamlandı.") if all_ok else \
         st.warning("ℹ️ Pipeline tamamlandı; eksik/hatalı adımlar var. Logları kontrol edin.")
+
