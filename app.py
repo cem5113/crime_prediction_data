@@ -154,15 +154,21 @@ def resolve_script(entry: dict) -> Path | None:
 def run_script(path: Path) -> bool:
     st.write(f"▶️ {path.name} çalıştırılıyor…")
     try:
-        res = subprocess.run([sys.executable, str(path)], capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, "-u", str(path)],
+            cwd=str(ROOT),                      # <<< önemli
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
         if res.returncode == 0:
             st.success(f"✅ {path.name} tamamlandı")
             if res.stdout:
-                st.code(res.stdout)
+                st.code(res.stdout[:20000])     # çok uzun stdout’u kırpmak için
             return True
         else:
             st.error(f"❌ {path.name} hata verdi")
-            st.code(res.stderr or "(stderr boş)")
+            st.code((res.stderr or res.stdout or "(stderr/stdout boş)")[:20000])
             return False
     except Exception as e:
         st.error(f"🚨 {path.name} çağrılamadı: {e}")
