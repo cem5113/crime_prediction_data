@@ -2,8 +2,7 @@ name: Monthly POI Update
 
 on:
   schedule:
-    # Her ayın 1'i, 07:00 San Francisco = 14:00 UTC
-    - cron: "0 14 1 * *"
+    - cron: "0 14 1 * *"   # Her ayın 1'i 07:00 SF
   workflow_dispatch:
 
 permissions:
@@ -12,34 +11,27 @@ permissions:
 jobs:
   update-pois:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📦 Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: 🐍 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: 📦 Install Python packages
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            # Minimal set: GDAL yerine pyogrio tercih
             pip install pandas geopandas shapely requests pyogrio
           fi
-
-      - name: ▶️ Run POI update script
-        run: |
-          python -u scripts/update_poi.py
-
-      - name: ✅ Commit and push updates
+      - name: Run POI updater
+        run: python -u scripts/update_poi.py
+      - name: Commit and push
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add sf_pois_cleaned_with_geoid.csv risky_pois_dynamic.json || true
-          git commit -m "🔄 Monthly POI data updated [skip ci]" || echo "No changes to commit"
+          git commit -m "🔄 Monthly POI data updated [skip ci]" || echo "No changes"
           git push || echo "Nothing to push"
