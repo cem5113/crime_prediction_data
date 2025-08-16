@@ -12,6 +12,10 @@ permissions:
 jobs:
   update-stops:
     runs-on: ubuntu-latest
+    concurrency:
+      group: update-stops-monthly
+      cancel-in-progress: true
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -30,9 +34,13 @@ jobs:
             pip install pandas geopandas shapely requests pyogrio
           fi
 
-      - name: Update bus & train stops
+      - name: Update bus stops
         run: |
-          python -u scripts/update_stops.py
+          python -u scripts/update_bus.py
+
+      - name: Update train stops
+        run: |
+          python -u scripts/update_train.py
 
       - name: Commit and push updated files
         run: |
