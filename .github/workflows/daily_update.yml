@@ -1,53 +1,45 @@
 name: Daily Crime Data Update
 
 on:
+  # 1) Her gün 07:00 San Francisco saati (UTC-7 yaz saati, UTC-8 kış saati)
   schedule:
-    - cron: '0 2 * * *'  # Her gün saat 02:00 UTC (SF saatiyle 19:00)
+    - cron: "0 14 * * *"   # 07:00 PST/PDT = 14:00 UTC
+  # 2) Elle tetikleme imkanı
   workflow_dispatch:
 
 jobs:
-  update-crime-data:
+  update:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📆 Repo'yu klonla
-        uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: 🔧 Python ortamını kur
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
-      - name: 📦 Gereklilikleri yükle
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: ⬆️ sf_crime.csv verisini güncelle ve grid dosyalarını oluştur
+      - name: Run update scripts
         run: |
-          python scripts/update_sf_crime.py
+          python -u scripts/update_crime.py
+          python -u scripts/update_911.py
+          python -u scripts/update_311.py
+          python -u scripts/update_population.py
+          python -u scripts/update_bus.py
+          python -u scripts/update_train.py
+          python -u scripts/update_poi.py
+          python -u scripts/update_police_gov.py
+          python -u scripts/update_weather.py
 
-      - name: 🧠 911 + grid → crime_enrichment.py ile birleştir
+      - name: Commit and push updated data
         run: |
-          python scripts/crime_enrichment.py
-
-      - name: 🟦 311 verisini indir, özetle ve sf_crime_04 ile birleştir
-        run: |
-          python scripts/update_311_data.py
-
-      - name: 📤 Değişiklikleri commit et
-        run: |
-          git config user.name "cem5113"
-          git config user.email "cem5113@hotmail.com"
-          git add data/sf_crime.csv \
-                  data/sf_crime_01.csv \
-                  crime_data/sf_crime_grid_summary_labeled.csv \
-                  crime_data/sf_crime_grid_full_labeled.csv \
-                  crime_data/sf_311_last_5_years.csv \
-                  crime_data/311_requests_range.csv \
-                  crime_data/sf_crime_04.csv
-          git commit -m "🔄 Günlük veri, enrichment, 911 ve 311 ile birleşim güncellemesi"
-          git push origin main
-
-      - name: ✅ Tamamlandı
-        run: echo "Tüm veri güncelleme, enrichment, 911 ve 311 birleştirme adımları tamamlandı."
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add -A
+          git commit -m "🔄 Auto update data [skip ci]" || echo "No changes to commit"
+          git push
