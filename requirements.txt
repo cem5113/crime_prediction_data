@@ -4,3 +4,6 @@ streamlit
 fpdf
 geopandas
 shapely
+pyogrio 
+shapely
+holidays
