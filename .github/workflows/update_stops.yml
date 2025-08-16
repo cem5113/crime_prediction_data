@@ -1,33 +1,43 @@
 name: Update Transit Stops Monthly
 
 on:
+  # Her ayın 1'i, 07:00 San Francisco = 14:00 UTC
   schedule:
-    - cron: '0 8 1 * *'  # Her ayın 1'inde UTC 08:00'de çalışır
+    - cron: "0 14 1 * *"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   update-stops:
     runs-on: ubuntu-latest
     steps:
-      - name: Repo'yu klonla
-        uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Python kur
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
-      - name: Gerekli Python paketlerini yükle
+      - name: Install dependencies
         run: |
-          pip install pandas geopandas requests shapely
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas geopandas shapely requests pyogrio
+          fi
 
-      - name: Bus ve Train verilerini güncelle
-        run: python scripts/update_stops.py
-
-      - name: Güncellenen dosyaları commit et
+      - name: Update bus & train stops
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          git add sf_bus_stops_with_geoid.csv sf_train_stops_with_geoid.csv
-          git commit -m "🚏 Monthly update: bus & train stops" || echo "No changes"
-          git push
+          python -u scripts/update_stops.py
+
+      - name: Commit and push updated files
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add sf_bus_stops_with_geoid.csv sf_train_stops_with_geoid.csv || true
+          git commit -m "🚏 Monthly update: bus & train stops [skip ci]" || echo "No changes"
+          git push || echo "Nothing to push"
