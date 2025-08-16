@@ -1,0 +1,81 @@
+name: Daily Crime Pipeline (SF 08:00)
+
+on:
+  schedule:
+    - cron: "0 15 * * *"   # 08:00 San Francisco (PDT)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crime-pipeline
+  cancel-in-progress: false
+
+jobs:
+  build-crime-01-08:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas numpy requests geopandas shapely pyogrio scipy scikit-learn holidays
+
+      # 00 - Opsiyonel: grid ve bloklar kökteyse crime_data/ altına kopyala
+      - name: 00 - Prepare base artifacts (optional)
+        run: |
+          mkdir -p crime_data
+          [ -f sf_crime_grid_full_labeled.csv ] && cp -f sf_crime_grid_full_labeled.csv crime_data/
+          [ -f sf_census_blocks_with_population.geojson ] && cp -f sf_census_blocks_with_population.geojson crime_data/ || true
+          [ -f sf_population.csv ] && cp -f sf_population.csv crime_data/ || true
+
+      - name: 01 - 911
+        run: python -u scripts/update_911.py
+
+      - name: 02 - 311
+        run: python -u scripts/update_311.py
+
+      - name: 03 - Population
+        run: python -u scripts/update_population.py
+
+      - name: 04 - Bus
+        run: python -u scripts/update_bus.py
+
+      - name: 05 - Train
+        run: python -u scripts/update_train.py
+
+      - name: 06 - POI
+        run: |
+          if [ -f scripts/update_poi.py ]; then
+            python -u scripts/update_poi.py
+          else
+            python -u scripts/pipeline_make_sf_crime_06.py
+          fi
+
+      - name: 07 - Police & Government
+        run: |
+          if [ -f scripts/update_police_gov.py ]; then
+            python -u scripts/update_police_gov.py
+          else
+            python -u scripts/enrich_police_gov_06_to_07.py
+          fi
+
+      - name: 08 - Weather
+        run: python -u scripts/update_weather.py
+
+      - name: Commit & push
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add -A
+          git commit -m "🧩 Daily pipeline (01→08) at SF 08:00 [skip ci]" || echo "No changes"
+          git push || echo "Nothing to push"
