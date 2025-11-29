@@ -196,6 +196,59 @@ def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataF
 
     return out
 
+def build_hour_range_artifact(df: pd.DataFrame, out_path: Path) -> None:
+    """
+    df_out içinden (GEOID, date, neighbor_crime_1d/3d/7d) al,
+    her gün için 8 tane hour range üret, her range için
+    bitiş saatine göre slot_end_ts üret ve yeni CSV'ye yaz.
+    """
+
+    # 8 adet 3-saatlik range (örnek konfig; istersen değiştirirsin)
+    HOUR_RANGES = [
+        ("00:00", "03:00"),
+        ("03:00", "06:00"),
+        ("06:00", "09:00"),
+        ("09:00", "12:00"),
+        ("12:00", "15:00"),
+        ("15:00", "18:00"),
+        ("18:00", "21:00"),
+        ("21:00", "24:00"),
+    ]
+
+    base_cols = ["GEOID", "date", "neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
+    missing = [c for c in base_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Hour-range artifact için eksik kolon(lar): {missing}")
+
+    d = df[base_cols].dropna(subset=["GEOID", "date"]).copy()
+    d["GEOID"] = _norm_geoid(d["GEOID"], GEOID_LEN)
+    d["date"] = _as_date64(d["date"])
+
+    blocks = []
+    for i, (start_h, end_h) in enumerate(HOUR_RANGES, start=1):
+        tmp = d.copy()
+        tmp["hour_slot_id"] = i
+        tmp["hour_start"] = start_h
+        tmp["hour_end"] = end_h
+
+        # hour range'in bitiş anı: aynı günün end_h saati
+        if end_h == "24:00":
+            # 24:00'ı bir sonraki gün 00:00 olarak yorumla
+            tmp["slot_end_ts"] = tmp["date"] + pd.Timedelta(days=1)
+        else:
+            tmp["slot_end_ts"] = tmp["date"] + pd.to_timedelta(end_h + ":00")
+
+        blocks.append(tmp)
+
+    artifact = pd.concat(blocks, ignore_index=True)
+
+    # CSV'ye yaz
+    _safe_write_csv(artifact, out_path)
+    log(
+        f"✨ hour-range artifact: {out_path} — "
+        f"{len(artifact):,} satır, {artifact['hour_slot_id'].nunique()} hour range"
+    )
+
 def main() -> int:
     log("🚀 enrich_with_neighbors_fr.py (fr_crime_08 → fr_crime_09)")
     
@@ -263,6 +316,9 @@ def main() -> int:
             df_out[c] = pd.to_numeric(df_out[c], errors="coerce").fillna(0).astype("int64")
 
     _safe_write_csv(df_out, fr_out)
+
+    hour_artifact_path = fr_out.with_name(fr_out.stem + "_hour_ranges.csv")
+    build_hour_range_artifact(df_out, hour_artifact_path)
 
     # Preview
     try:
