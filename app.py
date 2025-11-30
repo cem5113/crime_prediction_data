@@ -987,7 +987,8 @@ def list_files_sorted(
 
     if include is None:
         include = []
-        for prefix in ["sf", "fr"]:
+        # SADECE SF
+        for prefix in ["sf"]:
             include += [str(bdir / f"{prefix}_crime_{i:02d}.csv") for i in range(1, 10)]
             include += [str(bdir / f"{prefix}_crime_y.csv")]
         include += [str(bdir / "sf_crime_grid_full_labeled.csv")]
