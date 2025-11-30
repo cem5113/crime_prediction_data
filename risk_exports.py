@@ -179,12 +179,11 @@ def postprocess_proba(proba: np.ndarray) -> np.ndarray:
 def _load_recent_crime(window_days=30):
     """
     Baseline ve top3 için son window_days suç verisi.
-    Öncelik: sf_crime.csv → fr_crime.csv
+    Kaynak: sf_crime.csv
     ✅ hour_range: SAATLİK
     """
     cand_paths = [
         os.path.join(CRIME_DIR, "sf_crime.csv"),
-        os.path.join(CRIME_DIR, "fr_crime.csv"),
     ]
     raw_path = next((p for p in cand_paths if os.path.exists(p)), None)
     if not raw_path:
@@ -508,7 +507,7 @@ def export_risk_tables(df, y, proba, threshold, out_prefix=""):
 # =========================================================
 def optional_top_crime_types(window_days: int = 365, out_name: str = "risk_types_top3.csv"):
     """
-    sf_crime.csv/fr_crime.csv mevcutsa, son `window_days` penceresinde:
+    sf_crime.csv mevcutsa, son `window_days` penceresinde:
       - overall Top-3 suç türü
       - hour_range (saatlik) bazında Top-3 suç türü
     üretir. Yoksa None döner.
