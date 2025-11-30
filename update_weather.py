@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, date, timezone
 import os
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 # Opsiyonel: PyGithub ve Meteostat
 try:
@@ -25,6 +26,10 @@ pd.options.mode.copy_on_write = True
 # =====================================================================================
 DATA_DIR      = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").rstrip("/")
 WEATHER_CSV   = os.getenv("WEATHER_CSV", os.path.join(DATA_DIR, "sf_weather_5years.csv"))
+
+CRIME_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
+SRC = CRIME_DIR / "sf_crime_07.csv"
+DST = CRIME_DIR / "sf_crime_08.csv"
 
 UPLOAD_WEATHER_TO_GH = os.getenv("UPLOAD_WEATHER_TO_GH", "0") in ("1", "true", "True")
 PROBE_GH_STATUS      = os.getenv("PROBE_GH_STATUS", "1") in ("1", "true", "True")
