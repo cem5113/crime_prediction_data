@@ -1,8 +1,7 @@
-# update_weather.py
+# update_weather.py 
 
 from datetime import datetime, timedelta, date, timezone
 import os
-from pathlib import Path
 import pandas as pd
 import numpy as np
 
@@ -26,11 +25,6 @@ pd.options.mode.copy_on_write = True
 # =====================================================================================
 DATA_DIR      = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").rstrip("/")
 WEATHER_CSV   = os.getenv("WEATHER_CSV", os.path.join(DATA_DIR, "sf_weather_5years.csv"))
-
-# Crime dosyaları için path ayarları
-CRIME_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
-SRC = CRIME_DIR / "sf_crime_07.csv"
-DST = CRIME_DIR / "sf_crime_08.csv"
 
 UPLOAD_WEATHER_TO_GH = os.getenv("UPLOAD_WEATHER_TO_GH", "0") in ("1", "true", "True")
 PROBE_GH_STATUS      = os.getenv("PROBE_GH_STATUS", "1") in ("1", "true", "True")
@@ -336,31 +330,3 @@ _WEATHER_LATEST = allw.copy()
 # GitHub durumu raporla + gerekirse yükle
 if Github is not None and (PROBE_GH_STATUS or UPLOAD_WEATHER_TO_GH):
     upsert_github_csv_smart(allw, WEATHER_TARGET_PATH)
-
-# =====================================================================================
-# (YENİ) sf_crime_07.csv + weather → sf_crime_08.csv
-# =====================================================================================
-try:
-    if not SRC.exists():
-        print(f"⚠️ Crime kaynak dosyası bulunamadı, merge atlanıyor: {SRC}")
-    else:
-        print(f"📂 Crime kaynağı: {SRC}")
-        crime_df = pd.read_csv(SRC, low_memory=False)
-
-        if "date" not in crime_df.columns:
-            raise ValueError("sf_crime_07.csv içinde 'date' kolonu bulunamadı. Merge için 'date' kolonu gereklidir.")
-
-        # Tarih kolonlarını normalize et
-        crime_df["date"] = pd.to_datetime(crime_df["date"], errors="coerce").dt.date
-        weather_df = allw.copy()
-        weather_df["date"] = pd.to_datetime(weather_df["date"], errors="coerce").dt.date
-
-        # Merge: tarih üzerinden left join
-        merged = crime_df.merge(weather_df, on="date", how="left")
-
-        # Çıktıyı kaydet
-        DST.parent.mkdir(parents=True, exist_ok=True)
-        merged.to_csv(DST, index=False)
-        print(f"💾 Crime + weather merge tamamlandı: {DST} — {len(merged)} satır")
-except Exception as e:
-    print("⚠️ Crime ve weather merge işlemi sırasında hata oluştu, sf_crime_08.csv üretilemedi:", e)
