@@ -21,8 +21,8 @@ import pandas as pd
 
 # --- I/O yolları ---
 CRIME_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
-SRC = CRIME_DIR / "sf_crime_08.csv"
-DST = CRIME_DIR / "sf_crime_09.csv"
+SRC = CRIME_DIR / "sf_crime_07.csv"
+DST = CRIME_DIR / "sf_crime_08.csv"
 NEIGH_FILE = Path(os.environ.get("NEIGH_FILE", str(CRIME_DIR / "neighbors.csv")))
 GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 
