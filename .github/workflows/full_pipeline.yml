@@ -1266,6 +1266,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
+      - name: Upload artifact (varsayılan)
+        if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf-crime-pipeline-output
+          if-no-files-found: error
+          retention-days: 14
+          path: |
             ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
             ${{ env.CRIME_DATA_DIR }}/sf_population.csv
@@ -1278,6 +1286,7 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_911_recent.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
             ${{ env.CRIME_DATA_DIR }}/neighbors.csv
             ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.csv
@@ -1320,4 +1329,5 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/*_latest.csv
             ${{ env.CRIME_DATA_DIR }}/latest_overview.csv
             ${{ env.CRIME_DATA_DIR }}/_build_info.txt
+
       
