@@ -259,7 +259,6 @@ jobs:
             "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
             "${CRIME_DATA_DIR}/sf_911_last_5_year_y.csv"
             "data/sf_911_last_5_year.csv" "data/sf_911_last_5_year_y.csv"
-            "data/_tmp_911.csv" "data/sf_911_recent.csv"
             "outputs/sf_911_last_5_year.csv" "outputs/sf_911_last_5_year_y.csv"
             "outputs/_tmp_911.csv" "outputs/sf_911_recent.csv"
           )
@@ -631,6 +630,7 @@ jobs:
               if not need:
                   return nb
               idx = {g:i for i,g in enumerate(geos["geoid"])}
+
               XY  = geos[["x","y"]].to_numpy()
               add = []
               for g in need:
@@ -674,14 +674,14 @@ jobs:
           echo "neighbors.csv (ilk 10 satır):"
           head -n 10 "${DEST}" || true
 
-      - name: 10.6) sf_crime_07 → sf_crime_08 (komşuluk ekleme)
+      - name: 10.6) sf_crime_08 → sf_crime_09 (komşuluk ekleme)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
           NEIGH_FILE: ${{ env.CRIME_DATA_DIR }}/neighbors.csv
         run: |
           set -e
-          [ -f "${CRIME_DATA_DIR}/sf_crime_07.csv" ] || { echo "❌ sf_crime_07.csv yok"; exit 2; }
+          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
           [ -f "${NEIGH_FILE}" ] || { echo "❌ neighbors.csv yok: ${NEIGH_FILE}"; exit 3; }
 
           # Doğru betik yolunu bul ve çalıştır
@@ -697,9 +697,9 @@ jobs:
           python -u "$PY"
 
           # Çıktıyı doğrula
-          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv oluşmadı"; exit 5; }
-          echo "---- sf_crime_08.csv (head) ----"
-          head -n 10 "${CRIME_DATA_DIR}/sf_crime_08.csv" || true
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 5; }
+          echo "---- sf_crime_09.csv (head) ----"
+          head -n 10 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
 
       - name: 10.7) Install feature-analysis deps
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -713,7 +713,7 @@ jobs:
       - name: 10.8) Feature analysis (XGB + SHAP)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
-          FEATURE_DATASET: ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
+          FEATURE_DATASET: ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
           NUMERIC_ACCEPT: "0.99"
           NUMERIC_SOFT: "0.85"
           MAX_CATS: "50"
@@ -1320,4 +1320,3 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/*_latest.csv
             ${{ env.CRIME_DATA_DIR }}/latest_overview.csv
             ${{ env.CRIME_DATA_DIR }}/_build_info.txt
-      
