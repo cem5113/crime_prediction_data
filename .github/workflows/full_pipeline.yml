@@ -1247,7 +1247,7 @@ jobs:
           name: sf-crime-parquet
           path: parquet_out/
           if-no-files-found: warn
-
+      
       # CSV'leri ayrı artifact olarak yükle
       - name: Upload CSV artifact (opsiyonel)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
@@ -1256,7 +1256,7 @@ jobs:
           name: sf-crime-csv
           path: csv_out/
           if-no-files-found: warn
-          
+      
       # ---- ÇIKTILAR ----
       - name: Upload artifact (varsayılan)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
@@ -1265,15 +1265,7 @@ jobs:
           name: sf-crime-pipeline-output
           if-no-files-found: error
           retention-days: 14
-          path: |
-      - name: Upload artifact (varsayılan)
-        if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: sf-crime-pipeline-output
-          if-no-files-found: error
-          retention-days: 14
-          path: |
+          path:
             ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
             ${{ env.CRIME_DATA_DIR }}/sf_population.csv
