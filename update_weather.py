@@ -1,4 +1,14 @@
 # update_weather.py 
+import streamlit as st
+import requests
+
+API_KEY = st.secrets["VISUAL_CROSSING_API_KEY"]
+
+url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/san francisco?unitGroup=us&key={API_KEY}&contentType=json"
+
+response = requests.get(url)
+response.raise_for_status()
+data = response.json()
 
 from datetime import datetime, timedelta, date, timezone
 import os
