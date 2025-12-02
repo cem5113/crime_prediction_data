@@ -1,0 +1,1159 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Stacking-based crime risk pipeline (2-phase, progress, robust exports)
+
+Aşama 1 (TRAIN_PHASE=select):
+  - Son 12 ay alt-küme (SUBSET_STRATEGY=last12m, SUBSET_MIN_POS ile güvenlik)
+  - TimeSeriesSplit(n_splits=3)
+  - Hafif ağaç sayıları (RF/ET/XGB/LGB)
+  - LinearSVC/KNN yok
+  - Base & Meta için % ilerleme logları
+Aşama 2 (TRAIN_PHASE=final):
+  - 5 yıl tam veri (SUBSET_STRATEGY=none)
+  - TimeSeriesSplit(n_splits=5)
+  - Daha yüksek ağaç sayıları
+"""
+
+import os, re, json, warnings
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from risk_exports_fr import build_hourly, build_daily_from_hourly
+from risk_exports import optional_top_crime_types
+from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+from sklearn.base import clone, BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_selection import VarianceThreshold, SelectFromModel
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, average_precision_score, precision_recall_curve,
+    log_loss, brier_score_loss,
+)
+from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, HistGradientBoostingClassifier
+from joblib import dump, Memory
+
+# -------------------- ENV / Global --------------------
+
+def _env_flag(name: str, default: bool = False) -> int:
+    """ENV bayrağını güvenli oku: 1/true/yes/on → 1, aksi → 0 (int döner)."""
+    v = os.getenv(name)
+    if v is None:
+        return 1 if default else 0
+    return 1 if str(v).strip().lower() in {"1", "true", "yes", "y", "on"} else 0
+
+
+CRIME_DIR   = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
+GEOID_LEN   = int(os.getenv("GEOID_LEN", "11"))
+TRAIN_PHASE = os.getenv("TRAIN_PHASE", "select").strip().lower()  # select | final
+CV_JOBS     = int(os.getenv("CV_JOBS", "1" if TRAIN_PHASE=="final" else "4"))
+warnings.filterwarnings("ignore", category=FutureWarning)
+FAST_MODE      = _env_flag("FAST_MODE", default=True)   # Günlükte hızlı çalış
+SKIP_CV        = _env_flag("SKIP_CV", default=True)     # CV ve OOF hesaplarını atla
+REUSE_MODELS   = _env_flag("REUSE_MODELS", default=True)# Varsa mevcut modelleri kullan
+FOLDS_SELECT   = int(os.getenv("FOLDS_SELECT", "2"))    # Select fazında 2 fold yeterli
+BASE_MODELS    = os.getenv("BASE_MODELS", "hgb,lgb").split(",")  # Günlük set
+if REUSE_MODELS and (not (Path(CRIME_DIR) / "models").exists()):
+    print("⚠️ REUSE_MODELS=1 ama models/ yok. İlk run REUSE_MODELS=0 olmalı.")
+
+# ============================================================
+# 🔥 OUT-OF-TIME TRAIN/SCORE AYRIMI (in-sample'ı kırar)
+# ============================================================
+FR_TZ = ZoneInfo("America/Los_Angeles")
+HORIZON_DAYS = int(os.getenv("PATROL_HORIZON_DAYS", "1"))
+
+USE_OOT_SPLIT      = _env_flag("USE_OOT_SPLIT", default=True)  # 1 ise train/score split aktif
+TRAIN_CUTOFF_DATE  = os.getenv("TRAIN_CUTOFF_DATE", "").strip()  # "YYYY-MM-DD" (boşsa otomatik)
+SCORE_HORIZON_DAYS = int(os.getenv("SCORE_HORIZON_DAYS", str(HORIZON_DAYS)))  # default PATROL_HORIZON_DAYS
+MIN_TRAIN_DAYS     = int(os.getenv("MIN_TRAIN_DAYS", "365"))  # güvenlik: en az 1 yıl train
+
+def _suffix_from_dataset(path: str) -> str:
+    """Çıktı dosya adlarına sonek üretimi (Q1..Q4 kaldırıldı)."""
+    try:
+        name = Path(path).stem
+    except Exception:
+        return ""
+    # REV: Quartile etiketleri tamamen kaldırıldı
+    tags = ["10", "09", "08", "grid_full_labeled"]  # REV: yalın sonekler
+    for tag in tags:
+        if tag.lower() in name.lower():
+            return f"_{tag}"
+    # fr_crime temel dosyalarında sonek boş kalsın
+    if name.lower() in {"fr_crime", "fr-crime"}:
+        return ""
+    parts = name.split("_")
+    return f"_{parts[-1]}" if len(parts) >= 2 else ""
+
+# --- Spatial-TE kontrolü ---
+NEIGHBOR_FILE     = os.getenv("NEIGHBOR_FILE", "").strip()        # 'GEOID,neighbor' iki sütunlu csv (opsiyonel)
+TE_ALPHA          = float(os.getenv("TE_ALPHA", "50"))            # Laplace smoothing gücü (m)
+GEO_COL_NAME      = os.getenv("GEO_COL_NAME", "GEOID")            # GEOID kolon adı
+
+_env_has_te       = os.getenv("ENABLE_SPATIAL_TE")
+ENABLE_SPATIAL_TE = _env_flag("ENABLE_SPATIAL_TE", default=False)
+if _env_has_te is None and NEIGHBOR_FILE:
+    ENABLE_SPATIAL_TE = 1
+
+# --- Ablation ayarları (opsiyonel) ---
+ENABLE_TE_ABLATION = _env_flag("ENABLE_TE_ABLATION", default=False)
+ABLASYON_BASIS     = os.getenv("ABLASYON_BASIS", "ohe").strip().lower()
+if ABLASYON_BASIS not in {"ohe", "te"}:
+    ABLASYON_BASIS = "ohe"
+
+
+def phase_is_select() -> bool:
+    return TRAIN_PHASE == "select"
+
+def _hour_from_range(s: str) -> int:
+    try:
+        h = int(str(s).split("-")[0])
+        return max(0, min(23, h))
+    except Exception:
+        return 0
+
+# --- 2) HOUR_RANGE yardımcıları (TEK KERE) ---
+def _hr_from_event_hour(s):
+    h = pd.to_numeric(s, errors="coerce").fillna(0).astype(int) % 24
+    start = (h // 3) * 3
+    end = (start + 3) % 24
+    return start.map(lambda x: f"{x:02d}") + "-" + end.map(lambda x: f"{x:02d}")
+
+def ensure_date_hour_on_df(df: pd.DataFrame) -> pd.DataFrame:
+    """date ve hour_range kolonlarını güvenle üretir/normalize eder."""
+    out = df.copy()
+
+    # --- 1) DATE türet ---
+    if "date" in out.columns:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    elif "datetime" in out.columns:
+        out["date"] = pd.to_datetime(out["datetime"], errors="coerce")
+    elif "hr_key" in out.columns:
+        s = out["hr_key"].astype(str)
+        dt = pd.to_datetime(s, errors="coerce")
+        if dt.notna().mean() <= 0.5:
+            z = s.str.replace(r"[^0-9]", "", regex=True)
+            def _to_iso(z_):
+                if len(z_) >= 10:  # YYYYMMDDHH
+                    return f"{z_[:4]}-{z_[4:6]}-{z_[6:8]} {z_[8:10]}:00:00"
+                if len(z_) >= 8:   # YYYYMMDD
+                    return f"{z_[:4]}-{z_[4:6]}-{z_[6:8]} 00:00:00"
+                return None
+            dt = pd.to_datetime(z.map(_to_iso), errors="coerce")
+        out["date"] = dt
+    else:
+        out["date"] = pd.NaT
+
+    # --- 2) HOUR_RANGE türet/normalize ---
+    if "hour_range" in out.columns:
+        hr_raw = (
+            out["hour_range"]
+            .astype(str)
+            .str.replace("\u2013", "-", regex=False)
+            .str.replace("\u2014", "-", regex=False)
+        )
+        hr = hr_raw.str.extract(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
+        ok = hr.notna().all(axis=1)
+
+        if ok.any():
+            h0 = pd.to_numeric(hr.loc[ok, 0], errors="coerce").fillna(0).astype(int) % 24
+            h1 = pd.to_numeric(hr.loc[ok, 1], errors="coerce").fillna(0).astype(int) % 24
+            out.loc[ok, "hour_range"] = h0.map("{:02d}".format) + "-" + h1.map("{:02d}".format)
+
+        miss = ~ok
+        if miss.any():
+            if "event_hour" in out.columns:
+                out.loc[miss, "hour_range"] = _hr_from_event_hour(out.loc[miss, "event_hour"])
+            elif "hr_key" in out.columns:
+                hh = out.loc[miss, "hr_key"].astype(str).str.extract(r"\b(\d{1,2})\b")[0]
+                out.loc[miss, "hour_range"] = _hr_from_event_hour(hh)
+            else:
+                out.loc[miss, "hour_range"] = "00-03"
+
+    elif "event_hour" in out.columns:
+        out["hour_range"] = _hr_from_event_hour(out["event_hour"])
+    elif "hr_key" in out.columns:
+        hh = out["hr_key"].astype(str).str.extract(r"\b(\d{1,2})\b")[0]
+        out["hour_range"] = _hr_from_event_hour(hh)
+    else:
+        out["hour_range"] = "00-03"
+
+    return out
+
+def ensure_date_hour_on_df_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    """(Gerekirse) eski çağrılar için isim değişmeden kalmış wrapper."""
+    return ensure_date_hour_on_df(df)
+
+def _load_neighbors(path: str):
+    """
+    Komşuluk dosyası opsiyonel. Format örnekleri:
+      A) GEOID,neighbor
+      B) src,dst
+    Aynı GEOID için birden çok komşu satırı olabilir.
+    Dönen: dict[str, set[str]]
+    """
+    if not path or not os.path.exists(path):
+        return None
+    df_n = pd.read_csv(path, dtype=str)
+    df_n.columns = [c.lower() for c in df_n.columns]
+    if {"geoid", "neighbor"}.issubset(df_n.columns):
+        src, dst = "geoid", "neighbor"
+    elif {"src", "dst"}.issubset(df_n.columns):
+        src, dst = "src", "dst"
+    else:
+        raise ValueError("NEIGHBOR_FILE beklenen sütunları içermiyor (geoid,neighbor) veya (src,dst)")
+
+    adj = {}
+    for g, d in df_n[[src, dst]].itertuples(index=False, name=None):
+        if g not in adj:
+            adj[g] = set()
+        adj[g].add(d)
+    return adj
+
+class SpatialTargetEncoder(BaseEstimator, TransformerMixin):
+    """
+    GEOID için hedef kodlama (komşu katkılı, Laplace smoothing):
+      TE(g) = (sum_y(g) + m * global_mean + sum_y(neighbors(g))) / (n(g) + m + n_neighbors(g))
+    - m = TE_ALPHA (Laplace smoothing)
+    - neighbors(g) varsa eklenir, yoksa yalnız Laplace yapılır.
+    Not: CV sırasında sızıntı yok; Pipeline içindeki her fold'un train'inde fit edilir.
+    """
+    def __init__(self, geo_col=GEO_COL_NAME, alpha=50.0, neighbors_dict=None):
+        self.geo_col = geo_col
+        self.alpha = float(alpha)
+        self.neighbors_dict = neighbors_dict
+        self.mapping_ = None
+        self.global_mean_ = None
+
+    def _geo_series(self, X):
+        if isinstance(X, pd.DataFrame):
+            if self.geo_col in X.columns:
+                return X[self.geo_col].astype(str)
+            if X.shape[1] == 1:
+                return X.iloc[:, 0].astype(str)
+            raise ValueError(f"{self.geo_col} kolonu bulunamadı ve çoklu sütun geldi.")
+        X = np.asarray(X)
+        if X.ndim == 1:
+            return pd.Series(X.ravel().astype(str))
+        return pd.Series(X[:, 0].astype(str))
+
+    def fit(self, X, y=None):
+        if y is None:
+            raise ValueError("SpatialTargetEncoder.fit için y gerekli.")
+        s_geo = self._geo_series(X)
+        y = pd.Series(y).astype(float)
+        if len(s_geo) != len(y):
+            raise ValueError("X ve y uzunlukları uyumsuz.")
+
+        grp = pd.DataFrame({"geo": s_geo, "y": y}).groupby("geo")["y"].agg(["sum", "count"])
+        grp.columns = ["sum_y", "n"]
+        self.global_mean_ = float(y.mean()) if len(y) else 0.5
+
+        if self.neighbors_dict:
+            sum_dict = grp["sum_y"].to_dict()
+            n_dict   = grp["n"].to_dict()
+            neigh_sum = []
+            neigh_n   = []
+            for g in grp.index:
+                acc_s = 0.0
+                acc_n = 0.0
+                for nb in self.neighbors_dict.get(g, []):
+                    acc_s += sum_dict.get(nb, 0.0)
+                    acc_n += n_dict.get(nb, 0.0)
+                neigh_sum.append(acc_s)
+                neigh_n.append(acc_n)
+            grp["neigh_sum"] = neigh_sum
+            grp["neigh_n"]   = neigh_n
+        else:
+            grp["neigh_sum"] = 0.0
+            grp["neigh_n"]   = 0.0
+
+        m = self.alpha
+        grp["te"] = (grp["sum_y"] + m*self.global_mean_ + grp["neigh_sum"]) / (grp["n"] + m + grp["neigh_n"])
+        self.mapping_ = grp["te"].to_dict()
+        return self
+
+    def transform(self, X):
+        s_geo = self._geo_series(X)
+        te = s_geo.map(self.mapping_).fillna(self.global_mean_ if self.global_mean_ is not None else 0.5)
+        return te.to_numpy().reshape(-1, 1)
+
+def subset_last12m(df: pd.DataFrame, min_pos: int = 10_000) -> pd.DataFrame:
+    if "date" not in df.columns:
+        return df
+    dmax = pd.to_datetime(df["date"], errors="coerce").max()
+    if pd.isna(dmax):
+        return df
+    sub = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=365))]
+    if sub["Y_label"].sum() < min_pos:
+        for months in (18, 24):
+            sub2 = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=30*months))]
+            if sub2["Y_label"].sum() >= min_pos:
+                sub = sub2
+                break
+    return sub
+
+# -------------------- File helpers --------------------
+def _normalize_geoid(s: pd.Series, target_len: int) -> pd.Series:
+    s = s.astype(str).str.extract(r"(\d+)")[0]
+    return s.str[-target_len:].str.zfill(target_len)
+
+def _ensure_date_and_hour_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "GEOID" in out.columns:
+        out["GEOID"] = _normalize_geoid(out["GEOID"], GEOID_LEN)
+    out = ensure_date_hour_on_df(out)
+    count_cols = [c for c in out.columns if any(k in c.lower() for k in ["_count", "911_", "311_"])]
+    for c in count_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+    num_cols = [c for c in out.columns if out[c].dtype.kind in "fc" and c not in count_cols and c != "Y_label"]
+    for c in num_cols:
+        med = pd.to_numeric(out[c], errors="coerce").median()
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(med)
+    cat_cols = [c for c in out.columns if out[c].dtype == "object"]
+    for c in cat_cols:
+        mode = out[c].mode(dropna=True)
+        out[c] = out[c].fillna(mode.iloc[0] if not mode.empty else "")
+    return out
+
+# REV: 09 üretim fonksiyonları tutulabilir ama kullanılmayacak.
+def _make_fr_crime_09_inline():
+    src = os.path.join(CRIME_DIR, "fr_crime_08.csv")
+    dst = os.path.join(CRIME_DIR, "fr_crime_09.csv")
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"{src} bulunamadı (08 yok).")
+    df = pd.read_csv(src, low_memory=False, dtype={"GEOID": str})
+    df = _ensure_date_and_hour_legacy(df)
+    wanted_last = ["date", "hour_range", "GEOID"]
+    cols = [c for c in df.columns if c not in wanted_last] + [c for c in wanted_last if c in df.columns]
+    df = df[cols]
+    Path(CRIME_DIR).mkdir(parents=True, exist_ok=True)
+    df.to_csv(dst, index=False)
+    print(f"✅ fr_crime_09 hazır → {dst}")
+    return dst
+
+def ensure_fr_crime_09() -> str:
+    p09 = os.path.join(CRIME_DIR, "fr_crime_09.csv")
+    if os.path.exists(p09):
+        return p09
+    return _make_fr_crime_09_inline()
+
+# -------------------- Feature prep --------------------
+def build_feature_lists(df: pd.DataFrame):
+    drop_cols = {"Y_label", "id", "datetime", "time"}
+    count_like = [c for c in df.columns if any(k in c.lower() for k in ["_count", "911_", "311_"])]
+    num_cands  = [c for c in df.columns if df[c].dtype.kind in "fc" and c not in count_like and c not in drop_cols]
+    cat_cands  = [c for c in df.columns if df[c].dtype == "object" and c not in drop_cols]
+    return count_like, num_cands, cat_cands
+
+def find_leaky_numeric_features(df, feature_cols, y, corr_thr=0.995, auc_thr=0.995):
+    X = df[feature_cols].copy()
+    leaky, details = set(), {}
+    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    if not num_cols:
+        return [], {}
+    cmat = pd.concat([X[num_cols], y.rename("Y")], axis=1).corr(numeric_only=True)["Y"].drop(labels=["Y"], errors="ignore")
+    for c, v in cmat.abs().items():
+        if pd.notna(v) and v >= corr_thr:
+            leaky.add(c); details[c] = {"reason": "leak_corr", "corr": float(v), "auc": None}
+    for c in num_cols:
+        s = pd.to_numeric(X[c], errors="coerce")
+        idx = s.notna()
+        if idx.sum() < 30:
+            continue
+        try:
+            auc = roc_auc_score(y[idx], s[idx])
+            if auc >= auc_thr or auc <= (1 - auc_thr):
+                d = details.get(c, {"reason": "leak_auc", "corr": None, "auc": None})
+                d["reason"] = "leak_auc"; d["auc"] = float(auc); details[c] = d; leaky.add(c)
+        except Exception:
+            pass
+    return sorted(leaky), details
+
+def build_preprocessor(count_features, num_features, cat_features) -> ColumnTransformer:
+    cat_features = list(cat_features)
+    has_geo = GEO_COL_NAME in cat_features
+
+    numeric_pipe_counts = Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value=0.0)),
+    ])
+    numeric_pipe_cont = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler(with_mean=False, with_std=True)),
+    ])
+
+    try:
+        ohe = OneHotEncoder(
+            handle_unknown="ignore",
+            sparse_output=True, 
+            min_frequency=100,
+            dtype=np.float32,
+        )
+    except TypeError:
+        ohe = OneHotEncoder(
+            handle_unknown="ignore",
+            sparse=False,
+            dtype=np.float32,
+        )
+
+    categorical_pipe_other = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("ohe", ohe),
+    ])
+
+    transformers = [
+        ("cnt", numeric_pipe_counts, count_features),
+        ("num", numeric_pipe_cont,   num_features),
+    ]
+
+    neighbors_dict = _load_neighbors(NEIGHBOR_FILE) if (ENABLE_SPATIAL_TE and has_geo) else None
+
+    if ENABLE_SPATIAL_TE and has_geo:
+        transformers.append(
+            ("geo_te", SpatialTargetEncoder(geo_col=GEO_COL_NAME, alpha=TE_ALPHA, neighbors_dict=neighbors_dict), [GEO_COL_NAME])
+        )
+        other_cats = [c for c in cat_features if c != GEO_COL_NAME]
+        if other_cats:
+            transformers.append(("cat", categorical_pipe_other, other_cats))
+    else:
+        if cat_features:
+            transformers.append(("cat", categorical_pipe_other, cat_features))
+
+    pre = ColumnTransformer(
+        transformers=transformers,
+        remainder="drop",
+        sparse_threshold=1.0,
+    )
+    return pre
+
+def build_preprocessor_forced(count_features, num_features, cat_features, use_spatial_te: bool) -> ColumnTransformer:
+    global ENABLE_SPATIAL_TE
+    prev = ENABLE_SPATIAL_TE
+    try:
+        ENABLE_SPATIAL_TE = 1 if use_spatial_te else 0
+        return build_preprocessor(count_features, num_features, cat_features)
+    finally:
+        ENABLE_SPATIAL_TE = prev
+
+# -------------------- Models --------------------
+def base_estimators(class_weight_balanced=True):
+    cw = "balanced" if class_weight_balanced else None
+    light = phase_is_select() or FAST_MODE
+
+    ests = []
+    if ("hgb" in BASE_MODELS) or FAST_MODE:
+        ests.append(("hgb", HistGradientBoostingClassifier(
+            max_depth=6 if light else 7,          
+            learning_rate=0.08 if light else 0.06,
+            max_bins=255,
+            l2_regularization=0.0,
+            random_state=42,
+            early_stopping=True,
+            n_iter_no_change=20,
+            max_iter=180 if light else 220         
+        )))
+
+    HAS_LGB = False
+    try:
+        from lightgbm import LGBMClassifier  # type: ignore
+        HAS_LGB = True
+    except Exception:
+        pass
+    if (("lgb" in BASE_MODELS) or FAST_MODE) and HAS_LGB:
+        from lightgbm import LGBMClassifier
+        ests.append(("lgb", LGBMClassifier(
+            n_estimators=150 if light else 220,    
+            num_leaves=31,
+            learning_rate=0.07 if light else 0.05,
+            subsample=0.9, colsample_bytree=0.9,
+            min_data_in_leaf=40 if light else 50,
+            max_bin=255,                          
+            force_col_wise=True, verbosity=-1,
+            objective="binary", class_weight=cw,
+            n_jobs=1, num_threads=1,              
+            random_state=42
+        )))
+
+    if not FAST_MODE:
+        from sklearn.linear_model import LogisticRegression as LR
+        from sklearn.linear_model import RidgeClassifier as RC
+        ests = [("lr_l1", LR(penalty="l1", solver="saga", C=0.5, max_iter=3000, class_weight=cw)),
+                ("ridge", RC(alpha=1.0, class_weight=cw))] + ests
+        from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+        ests += [
+            ("rf", RandomForestClassifier(n_estimators=150 if light else 400, max_depth=14, min_samples_leaf=3,
+                                          class_weight="balanced_subsample" if class_weight_balanced else None,
+                                          n_jobs=2, random_state=42)),
+            ("et", ExtraTreesClassifier(n_estimators=200 if light else 500, max_depth=14, min_samples_leaf=3,
+                                        class_weight=cw, n_jobs=2, random_state=42)),
+        ]
+    return ests
+
+# -------------------- Metrics & CV with progress --------------------
+def metric_row(name, y_true, y_hat, proba):
+    return {
+        "model": name,
+        "accuracy": float(accuracy_score(y_true, y_hat)),
+        "precision": float(precision_score(y_true, y_hat, zero_division=0)),
+        "recall": float(recall_score(y_true, y_hat, zero_division=0)),
+        "f1": float(f1_score(y_true, y_hat, zero_division=0)),
+        "roc_auc": float(roc_auc_score(y_true, proba)),
+        "pr_auc": float(average_precision_score(y_true, proba)),
+        "log_loss": float(log_loss(y_true, np.c_[1-proba, proba])),
+        "brier": float(brier_score_loss(y_true, proba)),
+    }
+
+def optimal_threshold(y_true, proba, beta=1.0):
+    prec, rec, th = precision_recall_curve(y_true, proba)
+    f = (1 + beta**2) * (prec * rec) / (beta**2 * prec + rec + 1e-12)
+    if len(th) == 0:
+        return 0.5
+    return float(th[np.nanargmax(f[:-1])])
+
+def make_cv(df: pd.DataFrame, folds_select: int = 3, folds_final: int = 5):
+    if FAST_MODE:
+        folds_select = min(FOLDS_SELECT, folds_select)
+    n_splits = folds_select if phase_is_select() else folds_final
+    if "date" in df.columns and df["date"].notna().any():
+        return TimeSeriesSplit(n_splits=n_splits), None
+    return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42), None
+
+def cv_oof_and_metrics(pipes: dict, X: pd.DataFrame, y: pd.Series, cv, cv_jobs: int = 4):
+    splits = list(cv.split(X, y))
+    n_folds = len(splits)
+    n_models = len(pipes)
+    total = n_folds * n_models
+    done = 0
+
+    rows, oof_probs, names = [], {}, []
+    for name in pipes.keys():
+        oof_probs[name] = np.zeros(len(X), dtype=np.float32)
+
+    for m_i, (name, pipe) in enumerate(pipes.items(), 1):
+        names.append(name)
+        for f_i, (tr, te) in enumerate(splits, 1):
+            mdl = clone(pipe)
+            mdl.fit(X.iloc[tr], y.iloc[tr])
+            if hasattr(mdl, "predict_proba"):
+                p = mdl.predict_proba(X.iloc[te])[:, 1]
+            else:
+                d = mdl.decision_function(X.iloc[te])
+                p = (d - d.min()) / (d.max() - d.min() + 1e-9)
+            oof_probs[name][te] = p
+            done += 1
+            print(f"Progress: {done}/{total} ({100.0*done/total:5.1f}%) — [{name}] fold {f_i}/{n_folds}")
+
+        proba = oof_probs[name]
+        thr = optimal_threshold(y, proba)
+        yhat = (proba >= thr).astype(int)
+        rows.append(metric_row(name, y, yhat, proba))
+
+    Z = np.column_stack([oof_probs[n] for n in names])
+    return pd.DataFrame(rows), Z, names, oof_probs
+
+def evaluate_meta_on_oof(Z: np.ndarray, y: pd.Series):
+    folds = 3 if phase_is_select() else 5
+    cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+    results = []
+
+    models = [("Stacking(meta=LogReg)", LogisticRegression(max_iter=5000))]
+    try:
+        from lightgbm import LGBMClassifier  # type: ignore
+        models.append(("Stacking(meta=LightGBM)", LGBMClassifier(
+            n_estimators=200 if phase_is_select() else 250,  # 400 → 250
+            num_leaves=31, learning_rate=0.05,
+            subsample=0.9, colsample_bytree=0.9, min_data_in_leaf=50,
+            max_bin=255,
+            force_col_wise=True, verbosity=-1,
+            n_jobs=1, num_threads=1,
+            random_state=42
+        )))
+
+    except Exception:
+        pass
+
+    for label, meta in models:
+        ps = np.zeros(len(y), dtype=float)
+        for i, (tr, te) in enumerate(cv.split(Z, y), 1):
+            meta.fit(Z[tr], y.iloc[tr])
+            p = meta.predict_proba(Z[te])[:, 1] if hasattr(meta, "predict_proba") else meta.decision_function(Z[te])
+            ps[te] = p
+            print(f"Meta progress [{label}]: {i}/{folds} ({100*i/folds:5.1f}%)")
+
+        thr = optimal_threshold(y, ps)
+        yhat = (ps >= thr).astype(int)
+        m = metric_row(label, y, yhat, ps); m["model"] = label
+        results.append(m)
+
+    return pd.DataFrame(results)
+
+# -------------------- Fit full & export --------------------
+def fit_full_models_and_export(
+    pipes: dict,
+    preprocessor: ColumnTransformer,
+    X: pd.DataFrame,
+    y: pd.Series,
+    choose_meta: str = "logreg",
+):
+    proba_cols, mats, full_pipes = [], [], {}
+    for name, base in pipes.items():
+        base.fit(X, y)
+        full_pipes[name] = base
+        if hasattr(base, "predict_proba"):
+            p = base.predict_proba(X)[:, 1]
+        else:
+            d = base.decision_function(X)
+            p = (d - d.min()) / (d.max() - d.min() + 1e-9)
+        mats.append(p.reshape(-1, 1)); proba_cols.append(name)
+    Z_full = np.hstack(mats)
+
+    if choose_meta == "lgb":
+        try:
+            from lightgbm import LGBMClassifier
+            meta = LGBMClassifier(
+                n_estimators=200 if phase_is_select() else 250,
+                num_leaves=31, learning_rate=0.05,
+                subsample=0.9, colsample_bytree=0.9, min_data_in_leaf=50,
+                max_bin=255,
+                force_col_wise=True, verbosity=-1,
+                n_jobs=1, num_threads=1,
+                random_state=42
+            )
+
+            meta_name = "meta_lgb"
+        except Exception:
+            meta = LogisticRegression(max_iter=5000); meta_name = "meta_logreg"
+    else:
+        meta = LogisticRegression(max_iter=5000); meta_name = "meta_logreg"
+
+    meta.fit(Z_full, y)
+
+    out_models = Path(CRIME_DIR) / "models"
+    out_models.mkdir(parents=True, exist_ok=True)
+    dump(preprocessor, out_models / "preprocessor.joblib")
+    dump(full_pipes,   out_models / "base_pipes.joblib")
+    dump({"names": proba_cols, "meta": meta}, out_models / f"stacking_{meta_name}.joblib")
+
+    p_stack = meta.predict_proba(Z_full)[:, 1] if hasattr(meta, "predict_proba") else meta.decision_function(Z_full)
+    thr = optimal_threshold(y, p_stack)
+    (out_models / f"threshold_{meta_name}.json").write_text(json.dumps({"threshold": float(thr)}), encoding="utf-8")
+    return meta_name, proba_cols, p_stack, thr
+
+# -------------------- Main --------------------
+if __name__ == "__main__":
+    # --- 1) Dataset listesini hazırla ---
+    ds_env = os.getenv("STACKING_DATASETS", "").strip()
+    if ds_env:
+        cand_paths = [p.strip() for p in ds_env.split(",") if p.strip()]
+        datasets = []
+        for p in cand_paths:
+            p_abs = p if os.path.isabs(p) else os.path.join(CRIME_DIR, p)
+            datasets.append(p_abs if os.path.exists(p_abs) else p)
+    else:
+        dataset_env = os.getenv("STACKING_DATASET", "").strip()
+        if dataset_env:
+            datasets = [dataset_env if os.path.isabs(dataset_env) else os.path.join(CRIME_DIR, dataset_env)]
+        else:
+            # REV: Varsayılan dataset doğrudan fr_crime_10_FA.csv
+            datasets = [os.path.join(CRIME_DIR, "fr_crime_10_FA.csv")]
+
+    summary_rows = []
+    all_metrics_concat = []
+
+    for data_path in datasets:
+        if not os.path.exists(data_path):
+            alt = os.path.join(CRIME_DIR, Path(data_path).name)
+            if os.path.exists(alt):
+                data_path = alt
+            else:
+                print(f"⚠️ dataset bulunamadı: {data_path} (atlandı)")
+                continue
+
+        print(f"📄 Using dataset: {data_path} | TRAIN_PHASE={TRAIN_PHASE} | CV_JOBS={CV_JOBS}")
+        out_suffix = _suffix_from_dataset(data_path)
+
+        # ---- yükle & hazırla
+        df = pd.read_csv(data_path, low_memory=False, dtype={"GEOID": str})
+        if "Y_label" not in df.columns:
+            raise ValueError(f"{data_path} içinde Y_label kolonu yok.")
+        df = ensure_date_hour_on_df(df)
+        
+        # ============================================================
+        # ✅ Train/Score split (out-of-time)
+        # ============================================================
+        if USE_OOT_SPLIT and "date" in df.columns and df["date"].notna().any():
+            df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+            dmax = df["_dt"].max()
+        
+            if TRAIN_CUTOFF_DATE:
+                cutoff = pd.to_datetime(TRAIN_CUTOFF_DATE)
+            else:
+                cutoff = dmax - pd.Timedelta(days=SCORE_HORIZON_DAYS)
+        
+            min_cut = dmax - pd.Timedelta(days=max(MIN_TRAIN_DAYS, SCORE_HORIZON_DAYS + 1))
+            cutoff = max(cutoff, min_cut)
+        
+            train_df = df[df["_dt"] <= cutoff].copy()
+            score_df = df[df["_dt"] > cutoff].copy()
+        
+            if score_df.empty:
+                score_df = df[df["_dt"] > (dmax - pd.Timedelta(days=1))].copy()
+                print("⚠️ score_df boştu → son 1 gün fallback kullanıldı (risk in-sample'a yaklaşabilir).")
+        
+            print(f"🧊 OOT split aktif | cutoff={cutoff.date()} | train={train_df.shape} | score={score_df.shape}")
+        
+        else:
+            train_df = df.copy()
+            score_df = df.copy()
+            print("🧊 OOT split pasif → train=score=df (in-sample risk üretir!)")
+
+        def subset_last_ndays(df: pd.DataFrame, days: int = 30, min_pos: int = 2_000) -> pd.DataFrame:
+            """Son N gün. Debug/ram koruma için."""
+            if "date" not in df.columns:
+                return df
+            dmax = pd.to_datetime(df["date"], errors="coerce").max()
+            if pd.isna(dmax):
+                return df
+        
+            sub = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=days))]
+        
+            # güvenlik: pozitif çok azsa pencereyi kademeli büyüt
+            if "Y_label" in df.columns and sub["Y_label"].sum() < min_pos:
+                for d in (60, 90, 120, 180, 365):
+                    sub2 = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=d))]
+                    if sub2["Y_label"].sum() >= min_pos:
+                        sub = sub2
+                        break
+            return sub
+        
+        
+        def subset_last_nm(df: pd.DataFrame, months: int = 24, min_pos: int = 10_000) -> pd.DataFrame:
+            """Mevcut aylık pencere (dokunmadık)."""
+            if "date" not in df.columns:
+                return df
+            dmax = pd.to_datetime(df["date"], errors="coerce").max()
+            if pd.isna(dmax):
+                return df
+            sub = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=30*months))]
+            if "Y_label" in df.columns and sub["Y_label"].sum() < min_pos:
+                for m in (36, 48, 60):
+                    sub2 = df[pd.to_datetime(df["date"], errors="coerce") >= (dmax - pd.Timedelta(days=30*m))]
+                    if sub2["Y_label"].sum() >= min_pos:
+                        sub = sub2
+                        break
+            return sub
+
+        
+        # --- select/final ikisinde de subset uygula ---
+        before = train_df.shape
+        min_pos = int(os.getenv("SUBSET_MIN_POS", "10000"))
+        
+        # default: select=last12m, final=last1m (debug/ram için)
+        default_strategy = "last12m" if phase_is_select() else "last1m"
+        strategy = os.getenv("SUBSET_STRATEGY", default_strategy).lower()
+        
+        if strategy in ("last1m", "last30d", "last_30d"):
+            # 1 aylık eğitim
+            train_df = subset_last_ndays(train_df, days=30, min_pos=max(2000, min_pos//5))
+        elif strategy == "last12m":
+            train_df = subset_last12m(train_df, min_pos=min_pos)
+        elif strategy == "last24m":
+            train_df = subset_last_nm(train_df, months=24, min_pos=min_pos)
+        elif strategy == "last36m":
+            train_df = subset_last_nm(train_df, months=36, min_pos=min_pos)
+        elif strategy == "none":
+            pass
+        else:
+            print(f"⚠️ Bilinmeyen SUBSET_STRATEGY={strategy} → none gibi davranıyorum.")
+
+        
+        after = train_df.shape
+        print(f"🔧 Subset ({strategy}): {before} → {after} (pos={int(train_df['Y_label'].sum())})")
+
+          
+        print(f"[DEBUG] score_df date span: {score_df['date'].min()} → {score_df['date'].max()}")
+      
+        # feature engineering artık train_df üzerinden
+        # --- 1) Ana DF artık sadece training subset ---
+        df = train_df.copy()
+        
+        # Eğer strateji last30d ise score tarafı da limitli olsun (RAM koruma)
+        if strategy in ("last30d", "last1m", "last_30d"):
+            print("⚡ DEBUG: last30d → score_df = train_df olarak ayarlandı.")
+            score_df = train_df.copy()
+        
+        # ---------------------------------------------------------
+        # --- 2) Feature listeleri üret ve GEOID normalize et ---
+        # ---------------------------------------------------------
+        counts, nums, cats = build_feature_lists(df)
+        
+        if "GEOID" in df.columns:
+            df["GEOID"] = (
+                df["GEOID"].astype(str)
+                .str.extract(r"(\d+)")[0]
+                .str[-GEOID_LEN:].str.zfill(GEOID_LEN)
+            )
+        
+        # Boolean kolon düzeltmeleri (TRAIN)
+        for col in (
+            [c for c in df.columns if c.startswith("is_")] +
+            ["is_weekend","is_night","is_school_hour","is_business_hour",
+             "is_near_police","is_near_government"]
+        ):
+            if col in df.columns:
+                if df[col].dtype == object:
+                    m = df[col].astype(str).str.lower().map({
+                        "true":1,"yes":1,"y":1,"false":0,"no":0,"n":0,"1":1,"0":0
+                    })
+                    df[col] = pd.to_numeric(m.fillna(df[col]), errors="coerce")
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        
+        # ✅ Temizlenmiş df → train_df (tek sefer, doğru yer)
+        train_df = df
+        
+        # Boolean kolon düzeltmeleri (SCORE)  ← REUSE_MODELS için şart
+        for col in (
+            [c for c in score_df.columns if c.startswith("is_")] +
+            ["is_weekend","is_night","is_school_hour","is_business_hour",
+             "is_near_police","is_near_government"]
+        ):
+            if col in score_df.columns:
+                if score_df[col].dtype == object:
+                    m = score_df[col].astype(str).str.lower().map({
+                        "true":1,"yes":1,"y":1,"false":0,"no":0,"n":0,"1":1,"0":0
+                    })
+                    score_df[col] = pd.to_numeric(m.fillna(score_df[col]), errors="coerce")
+                score_df[col] = pd.to_numeric(score_df[col], errors="coerce").fillna(0).astype(int)
+
+        # ---------------------------------------------------------
+        # --- 3) Leakage temizliği ---
+        # ---------------------------------------------------------
+        sus, info = find_leaky_numeric_features(
+            df,
+            list(dict.fromkeys(counts + nums + cats)),
+            df["Y_label"].astype(int),
+            corr_thr=0.9995,
+            auc_thr=0.9995,
+        )
+        if sus:
+            counts = [c for c in counts if c not in sus]
+            nums   = [c for c in nums   if c not in sus]
+
+        feature_cols = list(dict.fromkeys(counts + nums + cats))
+
+        # ---------------------------------------------------------
+        # --- 4) Feature Analysis yükle (varsa) ---
+        # ---------------------------------------------------------
+        fa_list_path = Path(CRIME_DIR) / "selected_features_fr.csv"
+        if fa_list_path.exists():
+            fa_list = pd.read_csv(fa_list_path)["feature"].astype(str).tolist()
+            print(f"🔎 Feature Analysis aktif → {len(fa_list)} özellik kullanılacak.")
+
+            FORCE_KEEP = {
+                "event_hour","hour_range","day_of_week","month","season",
+                "is_weekend","is_night","is_business_hour","is_school_hour",
+                "past_7d_crimes","prev_crime_1h","prev_crime_3h","crime_count_past_48h",
+                "911_geo_hr_last3d","911_geo_hr_last7d","311_request_count",
+            }
+
+            fa_usable = []
+            for c in feature_cols:
+                if c == "GEOID":
+                    fa_usable.append(c)
+                elif (c in fa_list) or (c in FORCE_KEEP):
+                    fa_usable.append(c)
+
+            if fa_usable:
+                feature_cols = fa_usable
+                print(f"🎯 FA sonrası kullanılan sütun sayısı: {len(feature_cols)} (FORCE_KEEP dahil)")
+        else:
+            print(f"⚠️ {fa_list_path} bulunamadı. Tüm özellikler kullanılacak.")
+
+        # FA sonrası hizalama
+        counts = [c for c in counts if c in feature_cols]
+        nums   = [c for c in nums   if c in feature_cols]
+        cats   = [c for c in cats   if c in feature_cols]
+
+        # ---------------------------------------------------------
+        # --- 5) Tamamen boş kolonları at ---
+        # ---------------------------------------------------------
+        empty_cols = [c for c in feature_cols if (c in df.columns and df[c].isna().all())]
+        if empty_cols:
+            print(f"[CLEAN] Tamamen boş kolonlar atılıyor: {empty_cols}")
+            counts = [c for c in counts if c not in empty_cols]
+            nums   = [c for c in nums   if c not in empty_cols]
+            cats   = [c for c in cats   if c not in empty_cols]
+            feature_cols = [c for c in feature_cols if c not in empty_cols]
+
+        if not feature_cols:
+            raise ValueError("feature_cols boş kaldı (FA/leakage sonrası en az 1 özellik kalmalıdır).")
+
+        # ---------------------------------------------------------
+        # --- 6) Preprocessor oluştur ---
+        # ---------------------------------------------------------
+        pre = build_preprocessor(counts, nums, cats)
+
+        # ---------------------------------------------------------
+        # --- 7) score_df GEOID düzeltmesi ---
+        # ---------------------------------------------------------
+        if "GEOID" in score_df.columns:
+            score_df["GEOID"] = (
+                score_df["GEOID"].astype(str)
+                .str.extract(r"(\d+)")[0]
+                .str[-GEOID_LEN:].str.zfill(GEOID_LEN)
+            )
+
+        # ---------------------------------------------------------
+        # --- 8) Train / Score X matrisleri ---
+        # ---------------------------------------------------------
+        train_X = train_df[feature_cols].copy()
+        
+        # Eğer last30d ise zaten score_df yukarıda eşitlendi
+        score_X = score_df[feature_cols].copy()
+        
+        num_like = [c for c in feature_cols if (c in counts) or (c in nums)]
+        if num_like:
+            train_X[num_like] = train_X[num_like].apply(pd.to_numeric, errors="coerce").astype(np.float32)
+            score_X[num_like] = score_X[num_like].apply(pd.to_numeric, errors="coerce").astype(np.float32)
+        
+        train_y = train_df["Y_label"].astype(int)
+
+        MEM = Memory(location=os.path.join(CRIME_DIR, ".skcache"), verbose=0)
+        base_list = base_estimators(class_weight_balanced=True)
+        base_pipes = {name: Pipeline([("prep", pre), ("clf", est)], memory=MEM) for name, est in base_list}
+        cv, _ = make_cv(train_df)
+
+        out_models = Path(CRIME_DIR) / "models"
+        stack_any = list(out_models.glob("stacking_*.joblib"))
+        thr_any   = list(out_models.glob("threshold_*.json"))
+
+        # ---- Eğitim / Skorlama ----
+        reused = False
+        
+        # ------------------------------------------------------
+        # 1) REUSE_MODELS → sadece yükle ve score üret
+        # ------------------------------------------------------
+        if REUSE_MODELS and stack_any and thr_any:
+            print("♻️ REUSE_MODELS=1 → Mevcut stacking modeli ile sadece skorlanıyor.")
+            print("   (Not: FA/leakage/dataset değiştiyse 1 kez REUSE_MODELS=0 ile yeniden eğit.)")
+        
+            # RAM koruması: REUSE modunda train set'i taşımaya gerek yok
+            del train_X
+            del train_y
+        
+            from joblib import load
+            pre = load(out_models / "preprocessor.joblib")
+            base_pipes = load(out_models / "base_pipes.joblib")
+            stack_obj  = load(stack_any[0])
+
+            proba_cols = stack_obj["names"]
+            meta       = stack_obj["meta"]
+        
+            try:
+                thr = json.loads(thr_any[0].read_text())["threshold"]
+            except Exception:
+                thr = 0.5
+        
+            mats = []
+            for name in proba_cols:
+                mdl = base_pipes[name]
+                if hasattr(mdl, "predict_proba"):
+                    p = mdl.predict_proba(score_X)[:, 1]
+                else:
+                    d = mdl.decision_function(score_X)
+                    p = (d - d.min()) / (d.max() - d.min() + 1e-9)
+                mats.append(p.reshape(-1, 1))
+        
+            Z_full  = np.hstack(mats)
+            p_stack = meta.predict_proba(Z_full)[:, 1] if hasattr(meta, "predict_proba") else meta.decision_function(Z_full)
+        
+            base_metrics = pd.DataFrame()
+            meta_metrics = pd.DataFrame()
+            reused = True
+        
+        
+        # ------------------------------------------------------
+        # 2) SKIP_CV=1 → full-data fit (CV/OOF yok)
+        # ------------------------------------------------------
+        elif SKIP_CV:
+            print("⚡ SKIP_CV=1 → CV/OOF atlanıyor; full-data stacking fit ediliyor.")
+        
+            MEM = Memory(location=os.path.join(CRIME_DIR, ".skcache"), verbose=0)
+            base_list  = base_estimators(class_weight_balanced=True)
+            base_pipes = {
+                name: Pipeline([("prep", pre), ("clf", est)], memory=MEM)
+                for name, est in base_list
+            }
+        
+            proba_cols, mats = [], []
+            for name, pipe in base_pipes.items():
+                pipe.fit(train_X, train_y)
+                if hasattr(pipe, "predict_proba"):
+                    p = pipe.predict_proba(score_X)[:, 1]
+                else:
+                    d = pipe.decision_function(score_X)
+                    p = (d - d.min())/(d.max()-d.min()+1e-9)
+        
+                p = p.astype(np.float32, copy=False)
+                mats.append(p.reshape(-1, 1))
+                proba_cols.append(name)
+        
+            Z_full = np.hstack(mats).astype(np.float32, copy=False)
+        
+            meta = LogisticRegression(max_iter=5000)
+            Z_train = np.column_stack([
+                (base_pipes[n].predict_proba(train_X)[:, 1]
+                 if hasattr(base_pipes[n], "predict_proba")
+                 else base_pipes[n].decision_function(train_X))
+                for n in proba_cols
+            ]).astype(np.float32, copy=False)
+        
+            meta.fit(Z_train, train_y)
+            p_stack = meta.predict_proba(Z_full)[:, 1]
+            thr = optimal_threshold(train_y, meta.predict_proba(Z_train)[:, 1])
+        
+            out_models.mkdir(parents=True, exist_ok=True)
+            dump(pre, out_models / "preprocessor.joblib")
+            dump(base_pipes, out_models / "base_pipes.joblib")
+            dump({"names": proba_cols, "meta": meta}, out_models / "stacking_meta_logreg.joblib")
+            (out_models / "threshold_meta_logreg.json").write_text(
+                json.dumps({"threshold": float(thr)}), encoding="utf-8"
+            )
+        
+            base_metrics = pd.DataFrame()
+            meta_metrics = pd.DataFrame()
+        
+        
+        # ------------------------------------------------------
+        # 3) NORMAL CV/OOF (SKIP_CV=0)
+        # ------------------------------------------------------
+        else:
+            print("\n🔎 Evaluating base + OOF (with progress)…")
+            base_metrics, Z, base_names, oof_map = cv_oof_and_metrics(
+                base_pipes, train_X, train_y, cv, cv_jobs=CV_JOBS
+            )
+            meta_metrics = evaluate_meta_on_oof(Z, train_y)
+        
+            best_row = meta_metrics.sort_values("pr_auc", ascending=False).iloc[0]
+            chosen_meta = "lgb" if ("LightGBM" in best_row["model"]) else "logreg"
+        
+            meta_name, proba_cols, _, thr = fit_full_models_and_export(
+                base_pipes, pre, train_X, train_y, choose_meta=chosen_meta
+            )
+        
+            mats = []
+            for name in proba_cols:
+                mdl = base_pipes[name]
+                if hasattr(mdl, "predict_proba"):
+                    p = mdl.predict_proba(score_X)[:, 1]
+                else:
+                    d = mdl.decision_function(score_X)
+                    p = (d - d.min())/(d.max()-d.min()+1e-9)
+                mats.append(p.reshape(-1, 1))
+        
+            Z_full = np.hstack(mats)
+        
+            from joblib import load
+            stack_obj = load(out_models / f"stacking_{meta_name}.joblib")
+            meta = stack_obj["meta"]
+            p_stack = meta.predict_proba(Z_full)[:, 1] if hasattr(meta,"predict_proba") else meta.decision_function(Z_full)
+        
+            print(f"Saved models for {out_suffix}. Threshold ({meta_name}) = {thr:.4f}")
+
+        # ---- Saatlik & Günlük risk tablolarını üret ve kaydet (her koşulda) ----
+        _key_df = score_df.copy()
+        _key_df["date"] = pd.to_datetime(_key_df.get("date", pd.NaT), errors="coerce").dt.date
+        if _key_df["date"].isna().all():
+            fallback_date = pd.Timestamp.now(tz=FR_TZ).date()
+            _key_df["date"] = fallback_date
+        _key_df["date"] = _key_df["date"].astype("string")
+
+        if "event_hour" in _key_df.columns:
+            h = pd.to_numeric(_key_df["event_hour"], errors="coerce")
+        else:
+            h = _key_df.get("hour_range", "").astype(str).str.extract(r"^(\d{1,2})")[0]
+            h = pd.to_numeric(h, errors="coerce")
+        
+        # ✅ export anahtarı 3 saatlik bin string olmalı: "00-03" vs.
+        _key_df["hour_range"] = _hr_from_event_hour(h)
+        
+        grp_cols = ["GEOID", "date", "hour_range"]
+
+        _key_df["risk_p"] = p_stack.astype(np.float32, copy=False)
+        
+        # sadece grup ortalaması
+        agg = (
+            _key_df
+            .groupby(grp_cols, as_index=False)["risk_p"]
+            .mean()
+        )
+        
+        hourly_df = build_hourly(agg[grp_cols], proba=agg["risk_p"].to_numpy(), threshold=thr)
+
+        daily_df  = build_daily_from_hourly(hourly_df, threshold=thr)
+
+        hourly_path = Path(CRIME_DIR) / f"risk_hourly_grid_full_labeled{out_suffix}.csv"
+        daily_path  = Path(CRIME_DIR) / f"risk_daily_grid_full_labeled{out_suffix}.csv"
+
+        hourly_df.to_csv(hourly_path, index=False)
+        daily_df.to_csv(daily_path, index=False)
+
+        try:
+            hourly_df.to_parquet(hourly_path.with_suffix(".parquet"), index=False)
+            daily_df.to_parquet(daily_path.with_suffix(".parquet"), index=False)
+        except Exception:
+            pass
+
+        print(f"✅ Hourly → {hourly_path} (rows={len(hourly_df)})")
+        print(f"✅ Daily  → {daily_path}  (rows={len(daily_df)})")
+
+        patrol_path = None
+
+        try:
+            types_path = optional_top_crime_types()
+            if types_path:
+                print(f"Top crime types → {types_path}")
+        except Exception as e:
+            print(f"[WARN] optional_top_crime_types failed: {e}")
+
+        try:
+            base_metrics["group"] = "base"
+            meta_metrics["group"] = "stacking"
+            m_all = pd.concat([base_metrics, meta_metrics], ignore_index=True)
+            m_all.to_csv(os.path.join(CRIME_DIR, f"metrics_all{out_suffix}.csv"), index=False)
+            all_metrics_concat.append(m_all.assign(dataset_suffix=out_suffix))
+        except Exception as e:
+            print(f"[WARN] metrics merge failed for {out_suffix}: {e}")
+
+        summary_rows.append({
+            "dataset_path": data_path,
+            "suffix": out_suffix,
+            "risk_hourly_csv": str(hourly_path),
+            "risk_daily_csv":  str(daily_path),
+            "patrol_recs_csv": patrol_path,
+            "metrics_all_csv": os.path.join(CRIME_DIR, f"metrics_all{out_suffix}.csv")
+        })
+
+    print(f"[DEBUG] Son feature sayısı: {len(feature_cols)}")
+    print(f"[DEBUG] İlk 10 feature: {feature_cols[:10]}")
+  
+    # --- 2) Global özet/manifest ---
+    if summary_rows:
+        manifest = pd.DataFrame(summary_rows)
+        manifest.to_csv(os.path.join(CRIME_DIR, "stacking_manifest.csv"), index=False)
+        print("🗂️ stacking_manifest.csv yazıldı")
+
+    if all_metrics_concat:
+        big = pd.concat(all_metrics_concat, ignore_index=True)
+        big.to_csv(os.path.join(CRIME_DIR, "metrics_all_multi.csv"), index=False)
+        big.to_csv(os.path.join(CRIME_DIR, "metrics_all.csv"), index=False)
+        print("🧾 metrics_all_multi.csv ve metrics_all.csv yazıldı")
