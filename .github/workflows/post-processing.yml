@@ -442,29 +442,37 @@ jobs:
           python -u stacking_risk_pipeline_fr.py
           echo "✅ Stacking training done."
 
-      # ─────────────────────────────────────────────────────────
-      # FR 11 — RİSK ÇIKTILARI (hourly + daily)
-      # ─────────────────────────────────────────────────────────
       - name: FR 11) Generate risk CSVs (hourly + daily)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          WX_LOCATION:    "paris"
-          WX_UNIT:        "metric"
         shell: bash
         run: |
           set -euo pipefail
+          DF="${CRIME_DATA_DIR}/fr_crime_10.csv"
+          PROBA="${CRIME_DATA_DIR}/stacking_proba_eval.csv"   # ← GERÇEK ADI NEYSE ONU YAZMAN LAZIM
+          THR="0.20"
+          PREFIX="_grid_full_labeled"
+
           echo "▶ risk_exports_fr.py çalıştırılıyor..."
           if [ -f risk_exports_fr.py ]; then
-            python -u risk_exports_fr.py
+            python -u risk_exports_fr.py \
+              --df "$DF" \
+              --proba "$PROBA" \
+              --threshold "$THR" \
+              --out-prefix "$PREFIX" \
+              --top3-window-days 30
           elif [ -f scripts/risk_exports_fr.py ]; then
-            python -u scripts/risk_exports_fr.py
+            python -u scripts/risk_exports_fr.py \
+              --df "$DF" \
+              --proba "$PROBA" \
+              --threshold "$THR" \
+              --out-prefix "$PREFIX" \
+              --top3-window-days 30
           else
             echo "❌ risk_exports_fr.py bulunamadı"
             exit 1
           fi
-          echo "📂 Üretilen risk dosyaları:"
-          ls -lah "${CRIME_DATA_DIR}" | grep -E 'risk_(hourly|daily)_grid_full_labeled' || true
 
       - name: FR 12) Assert risk outputs exist
         if: ${{ steps.gate.outputs.proceed == 'true' }}
