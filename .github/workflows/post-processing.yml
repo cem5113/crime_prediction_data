@@ -416,7 +416,7 @@ jobs:
         env:
           CRIME_DATA_DIR:   ${{ env.CRIME_DATA_DIR }}
           GEOID_LEN:        ${{ env.GEOID_LEN || '11' }}
-          STACKING_DATASET: ${{ env.CRIME_DATA_DIR }}/fr_crime_10.csv
+          STACKING_DATASET: ${{ env.CRIME_DATA_DIR }}/fr_crime_09.csv
           ENABLE_SPATIAL_TE: "1"
           TE_ALPHA: "50"
           NEIGHBOR_FILE:    ${{ env.CRIME_DATA_DIR }}/neighbors.csv
