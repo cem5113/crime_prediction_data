@@ -1,28 +1,4 @@
 # update_weather.py 
-import streamlit as st
-import os
-import requests
-
-API_KEY = os.getenv("VISUAL_CROSSING_API_KEY")
-
-if not API_KEY:
-    try:
-        import streamlit as st
-        API_KEY = st.secrets["VISUAL_CROSSING_API_KEY"]
-    except Exception:
-        raise RuntimeError(
-            "VISUAL_CROSSING_API_KEY ne ortam değişkeninde ne de Streamlit secrets içinde bulunamadı."
-        )
-
-url = (
-    "https://weather.visualcrossing.com/VisualCrossingWebServices/"
-    "rest/services/timeline/san francisco"
-    f"?unitGroup=us&key={API_KEY}&contentType=json"
-)
-
-response = requests.get(url)
-response.raise_for_status()
-data = response.json()
 
 from datetime import datetime, timedelta, date, timezone
 import os
