@@ -25,12 +25,14 @@ permissions:
 concurrency:
   group: full-pipeline-${{ github.ref }}
   cancel-in-progress: true
-
 env:
   CRIME_DATA_DIR: ${{ github.workspace }}
   GEOID_LEN: "11"
+  ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
+  DEMOG_WHITELIST: ${{ vars.DEMOG_WHITELIST || '' }}
+  CENSUS_GEO_LEVEL: ${{ vars.CENSUS_GEO_LEVEL || 'tract' }} 
 
-  BACKFILL_DAYS: "0"   # ← Mevcut satır KALDI; override aşağıda yapılıyor
+  BACKFILL_DAYS: "0"
   SF_SODA_FETCH_STRATEGY: ${{ vars.SF_SODA_FETCH_STRATEGY || 'bulk' }}
   SF_SODA_PAGE_LIMIT: ${{ vars.SF_SODA_PAGE_LIMIT || '50000' }}
   SF_SODA_MAX_PAGES: ${{ vars.SF_SODA_MAX_PAGES || '100' }}
@@ -45,10 +47,6 @@ env:
   PATROL_HORIZON_DAYS: "1"
   WX_LOCATION: "san francisco"
   WX_UNIT: "us"
-
-  ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
-  DEMOG_WHITELIST: ${{ vars.DEMOG_WHITELIST || '' }}
-  CENSUS_GEO_LEVEL: ${{ vars.CENSUS_GEO_LEVEL || 'auto' }}
 
 jobs:
   run:
@@ -232,6 +230,7 @@ jobs:
           python -u update_crime.py
 
       - name: 02) 911 → sf_crime_01.csv
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
           set -e
           if [ -f update_911.py ]; then
@@ -240,8 +239,54 @@ jobs:
             python -u scripts/update_911.py
           fi
 
-      # -------------------- 311 --------------------
+      - name: 02.fix) Move & normalize 911 CSVs into CRIME_DATA_DIR
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${CRIME_DATA_DIR}"
+
+          # 1) Olası kaynak konumlarından kopyala
+          CANDS=(
+            "sf_911_last_5_year.csv" "sf_911_last_5_year_y.csv"
+            "sf_911_last_5_year.csv.gz" "sf_911_last_5_year_y.csv.gz"
+            "_tmp_911.csv" "sf_911_recent.csv"  #  ← görülen isimler
+            "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
+            "${CRIME_DATA_DIR}/sf_911_last_5_year_y.csv"
+            "data/sf_911_last_5_year.csv" "data/sf_911_last_5_year_y.csv"
+            "data/_tmp_911.csv" "data/sf_911_recent.csv"
+            "outputs/sf_911_last_5_year.csv" "outputs/sf_911_last_5_year_y.csv"
+            "outputs/_tmp_911.csv" "outputs/sf_911_recent.csv"
+          )
+          for p in "${CANDS[@]}"; do
+            if [ -f "$p" ]; then
+              base="$(basename "$p")"
+              if [ -e "${CRIME_DATA_DIR}/${base}" ] && [ "$p" -ef "${CRIME_DATA_DIR}/${base}" ]; then
+                echo "skip (same file): $p"
+                continue
+              fi
+              cp -f "$p" "${CRIME_DATA_DIR}/"
+              echo "✅ 911 kopyalandı: $p → ${CRIME_DATA_DIR}/${base}"
+            fi
+          done
+
+          # 2) İsim normalize: _tmp_911.csv veya sf_911_recent.csv → sf_911_last_5_year.csv
+          if [ ! -f "${CRIME_DATA_DIR}/sf_911_last_5_year.csv" ]; then
+            if [ -f "${CRIME_DATA_DIR}/_tmp_911.csv" ]; then
+              mv -f "${CRIME_DATA_DIR}/_tmp_911.csv" "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
+              echo "🔧 rename: _tmp_911.csv → sf_911_last_5_year.csv"
+            elif [ -f "${CRIME_DATA_DIR}/sf_911_recent.csv" ]; then
+              cp -f "${CRIME_DATA_DIR}/sf_911_recent.csv" "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
+              echo "🔧 copy: sf_911_recent.csv → sf_911_last_5_year.csv"
+            fi
+          fi
+
+          # 3) Head’ler
+          echo "---- 911 heads ----"
+          head -n 3 "${CRIME_DATA_DIR}/sf_911_last_5_year.csv" || true
+          head -n 3 "${CRIME_DATA_DIR}/sf_911_last_5_year_y.csv" || true
+
       - name: 03) 311 → sf_crime_02.csv
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
           set -e
           if [ -f update_311.py ]; then
@@ -249,12 +294,58 @@ jobs:
           else
             python -u scripts/update_311.py
           fi
+
+      - name: 03.fix) Move & normalize 311 CSVs into CRIME_DATA_DIR
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${CRIME_DATA_DIR}"
+
+          # 1) Olası kaynak konumlarından kopyala (tekil/çoğul tüm varyantlar)
+          CANDS=(
+            "sf_311_last_5_years.csv"      "sf_311_last_5_years_y.csv"
+            "sf_311_last_5_year.csv"       "sf_311_last_5_year_y.csv"   # ← listede tekil var
+            "sf_311_last_5_years.csv.gz"   "sf_311_last_5_years_y.csv.gz"
+            "sf_311_last_5_year.csv.gz"    "sf_311_last_5_year_y.csv.gz"
+            "${CRIME_DATA_DIR}/sf_311_last_5_years.csv"    "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv"
+            "${CRIME_DATA_DIR}/sf_311_last_5_year.csv"     "${CRIME_DATA_DIR}/sf_311_last_5_year_y.csv"
+            "data/sf_311_last_5_years.csv" "data/sf_311_last_5_years_y.csv"
+            "data/sf_311_last_5_year.csv"  "data/sf_311_last_5_year_y.csv"
+            "outputs/sf_311_last_5_years.csv" "outputs/sf_311_last_5_years_y.csv"
+            "outputs/sf_311_last_5_year.csv"  "outputs/sf_311_last_5_year_y.csv"
+          )
+          for p in "${CANDS[@]}"; do
+            if [ -f "$p" ]; then
+              base="$(basename "$p")"
+              if [ -e "${CRIME_DATA_DIR}/${base}" ] && [ "$p" -ef "${CRIME_DATA_DIR}/${base}" ]; then
+                echo "skip (same file): $p"
+                continue
+              fi
+              cp -f "$p" "${CRIME_DATA_DIR}/"
+              echo "✅ 311 kopyalandı: $p → ${CRIME_DATA_DIR}/${base}"
+            fi
+          done
+
+          # 2) İsim normalize: tekil → çoğul
+          if [ ! -f "${CRIME_DATA_DIR}/sf_311_last_5_years.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_311_last_5_year.csv" ]; then
+            cp -f "${CRIME_DATA_DIR}/sf_311_last_5_year.csv" "${CRIME_DATA_DIR}/sf_311_last_5_years.csv"
+            echo "🔧 copy: sf_311_last_5_year.csv → sf_311_last_5_years.csv"
+          fi
+          if [ ! -f "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_311_last_5_year_y.csv" ]; then
+            cp -f "${CRIME_DATA_DIR}/sf_311_last_5_year_y.csv" "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv"
+            echo "🔧 copy: sf_311_last_5_year_y.csv → sf_311_last_5_years_y.csv"
+          fi
+
+          # 3) Head’ler
+          echo "---- 311 heads ----"
+          head -n 3 "${CRIME_DATA_DIR}/sf_311_last_5_years.csv" || true
+          head -n 3 "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv" || true
           
       - name: 04) Nüfus → sf_crime_03.csv (demografi + nüfus)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           POPULATION_PATH: ${{ env.CRIME_DATA_DIR }}/sf_population.csv
-          CENSUS_GEO_LEVEL: ${{ env.CENSUS_GEO_LEVEL }}
+          CENSUS_GEO_LEVEL: ${{ env.CENSUS_GEO_LEVEL }}  # global env'de "tract"
           ACS_YEAR: ${{ env.ACS_YEAR }}
           DEMOG_WHITELIST: ${{ env.DEMOG_WHITELIST }}
         run: |
@@ -576,7 +667,217 @@ jobs:
 
           echo "neighbors.csv (ilk 10 satır):"
           head -n 10 "${DEST}" || true
-          
+
+      - name: 10.6) sf_crime_07 → sf_crime_08 (komşuluk ekleme)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          NEIGH_FILE: ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+        run: |
+          set -e
+          [ -f "${CRIME_DATA_DIR}/sf_crime_07.csv" ] || { echo "❌ sf_crime_07.csv yok"; exit 2; }
+          [ -f "${NEIGH_FILE}" ] || { echo "❌ neighbors.csv yok: ${NEIGH_FILE}"; exit 3; }
+
+          # Doğru betik yolunu bul ve çalıştır
+          if [ -f scripts/make_neighbors.py ]; then
+            PY=scripts/make_neighbors.py
+          elif [ -f make_neighbors.py ]; then
+            PY=make_neighbors.py
+          else
+            echo "❌ make_neighbors.py bulunamadı (scripts/ altında olmalı)."
+            exit 4
+          fi
+
+          python -u "$PY"
+
+          # Çıktıyı doğrula
+          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv oluşmadı"; exit 5; }
+          echo "---- sf_crime_08.csv (head) ----"
+          head -n 10 "${CRIME_DATA_DIR}/sf_crime_08.csv" || true
+
+      - name: 10.7) Install feature-analysis deps
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          python -m pip install -U pip wheel setuptools
+          # shap + rapor üretimi için tipik bağımlılıklar
+          pip install shap==0.46.0 matplotlib==3.9.2 scikit-learn joblib pandas numpy
+          # model tabanlı önem için opsiyonel booster'lar
+          pip install xgboost lightgbm || true
+
+      - name: 10.8) Feature analysis (XGB + SHAP)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          FEATURE_DATASET: ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
+          NUMERIC_ACCEPT: "0.99"
+          NUMERIC_SOFT: "0.85"
+          MAX_CATS: "50"
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+      
+          INP = os.environ.get("FEATURE_DATASET")
+          OUT = Path(os.environ.get("CRIME_DATA_DIR","crime_prediction_data"))
+          OUT.mkdir(parents=True, exist_ok=True)
+      
+          TH_STRICT = float(os.environ.get("NUMERIC_ACCEPT", "0.99"))
+          TH_SOFT   = float(os.environ.get("NUMERIC_SOFT",   "0.85"))
+          MAX_CATS  = int(os.environ.get("MAX_CATS", "50"))
+      
+          df = pd.read_csv(INP, low_memory=False)
+          ycol = "Y_label" if "Y_label" in df.columns else ("Y" if "Y" in df.columns else None)
+          if ycol is None:
+              raise SystemExit("Y_label kolonu yok — feature analysis atlandı.")
+      
+          y = pd.to_numeric(df[ycol], errors="coerce").fillna(0).astype(int).clip(0,1)
+          X0 = df.drop(columns=[ycol]).copy()
+      
+          _NUM_RE = re.compile(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?')
+      
+          def _first_float(text: str):
+              if text is None:
+                  return np.nan
+              m = _NUM_RE.search(str(text))
+              return float(m.group()) if m else np.nan
+      
+          def to_numeric_loose(s: pd.Series) -> pd.Series:
+              # Metin kolonları: liste/array görünümlerini ve unicode tireleri temizle
+              if s.dtype == object or str(s.dtype).startswith("string"):
+                  ss = s.astype(str).str.strip()
+                  ss = ss.str.replace("â€“", "-", regex=False).str.replace("–", "-", regex=False)
+                  # Dış köşeli parantezleri soy
+                  ss = ss.str.replace(r'^\s*\[\s*', '', regex=True).str.replace(r'\s*\]\s*$', '', regex=True)
+                  # Birden çok sayı içeriyorsa ilkini al
+                  return ss.map(_first_float)
+              # Sayısal görünümlerde klasik dönüşüm
+              return pd.to_numeric(s, errors="coerce")
+      
+          def is_multivalue_series(s: pd.Series) -> bool:
+              if s.dtype != object and not str(s.dtype).startswith("string"):
+                  return False
+              ss = s.astype(str)
+              return bool(ss.str.contains(r",").any() or ss.str.contains(r"\s+", regex=True).any())
+      
+          def is_mostly_integer(sn: pd.Series, tol=1e-9, min_ratio=0.98) -> bool:
+              sn = sn.dropna()
+              if sn.empty: return False
+              frac = (np.abs(sn - np.round(sn)) <= tol).mean()
+              return frac >= min_ratio
+      
+          strict_numeric_cols, soft_numeric_cols, cat_cols_encoded = {}, {}, {}
+          decisions = []
+      
+          for c in X0.columns:
+              s = X0[c]
+              sn = to_numeric_loose(s)
+              numeric_ratio = sn.notna().mean()
+              multivalue = is_multivalue_series(s)
+      
+              decision, note = "CAT", ""
+              if numeric_ratio >= TH_STRICT and not multivalue:
+                  decision = "STRICT_NUM"
+                  v = sn.fillna(0.0)
+                  if is_mostly_integer(v):
+                      v = np.rint(v).astype(float)
+                      note = "strict_numeric_intlike"
+                  strict_numeric_cols[c] = v
+              elif numeric_ratio >= TH_SOFT:
+                  decision = "SOFT_NUM"
+                  v = sn
+                  med = float(np.nanmedian(v)) if np.isfinite(np.nanmedian(v)) else 0.0
+                  v = v.fillna(med)
+                  if is_mostly_integer(v):
+                      v = np.rint(v).astype(float)
+                      note = "soft_numeric_intlike"
+                  soft_numeric_cols[c] = v
+              else:
+                  decision = "CAT"
+                  ss = s.astype(str)
+                  vc = ss.value_counts(dropna=False)
+                  if len(vc) > MAX_CATS:
+                      keep = set(vc.head(MAX_CATS).index.tolist())
+                      ss = ss.where(ss.isin(keep), other="__OTHERS__")
+                      note = f"freq_enc_top{MAX_CATS}"
+                  freq = ss.value_counts(dropna=False)
+                  enc = ss.map(freq).astype(float)
+                  cat_cols_encoded[c] = enc
+      
+              decisions.append({
+                  "column": c,
+                  "numeric_ratio": float(numeric_ratio),
+                  "multivalue": bool(multivalue),
+                  "decision": decision,
+                  "note": note
+              })
+      
+          dec_df = pd.DataFrame(decisions).sort_values(
+              ["decision","numeric_ratio","column"], ascending=[True,False,True]
+          )
+          dec_df.to_csv(OUT/"feature_type_decision.csv", index=False)
+          pd.DataFrame({"dropped_column": [
+              d["column"] for d in decisions if d["decision"] == "CAT" and d["note"] == ""
+          ]}).to_csv(OUT/"feature_dropped_for_strict_numeric.csv", index=False)
+      
+          parts = []
+          if strict_numeric_cols: parts.append(pd.DataFrame(strict_numeric_cols))
+          if soft_numeric_cols:   parts.append(pd.DataFrame(soft_numeric_cols))
+          if cat_cols_encoded:    parts.append(pd.DataFrame(cat_cols_encoded))
+          if not parts:
+              raise SystemExit("Hiçbir kolon kullanılamadı; veri tiplerini kontrol edin.")
+          X = pd.concat(parts, axis=1)
+      
+          # 🔧 ZORLA SAYISAL → SHAP/XGB hatasını engeller
+          X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0).astype(float)
+      
+          from xgboost import XGBClassifier
+          mdl = XGBClassifier(
+              n_estimators=300, max_depth=6, learning_rate=0.06,
+              subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
+              tree_method="hist", n_jobs=-1, random_state=42
+          )
+          mdl.fit(X, y)
+      
+          imp = getattr(mdl, "feature_importances_", None)
+          if imp is not None:
+              imp_rows = sorted(zip(X.columns.tolist(), np.asarray(imp, dtype=float).tolist()),
+                                key=lambda t: t[1], reverse=True)
+              pd.DataFrame(imp_rows, columns=["feature","importance"]).to_csv(OUT/"feature_importance_xgb.csv", index=False)
+              pd.DataFrame(imp_rows[:20], columns=["feature","importance"]).to_csv(OUT/"feature_top20_xgb.csv", index=False)
+      
+          try:
+              import shap
+              # Yeni/Eski SHAP sürümleriyle uyumlu çağrı
+              try:
+                  explainer = shap.TreeExplainer(mdl)
+                  ns = min(len(X), 2000)
+                  S = X.sample(n=ns, random_state=42) if len(X) > ns else X
+                  sv = explainer.shap_values(S.values)
+              except Exception:
+                  explainer = shap.Explainer(mdl)
+                  ns = min(len(X), 2000)
+                  S = X.sample(n=ns, random_state=42) if len(X) > ns else X
+                  sv = explainer(S).values
+              vals = np.abs(sv).mean(axis=0).ravel().tolist()
+              shap_rows = sorted(zip(X.columns.tolist(), vals), key=lambda t: t[1], reverse=True)
+              pd.DataFrame(shap_rows, columns=["feature","mean_abs_shap"]).to_csv(OUT/"shap_feature_importance.csv", index=False)
+              pd.DataFrame(shap_rows[:20], columns=["feature","mean_abs_shap"]).to_csv(OUT/"shap_top20.csv", index=False)
+          except Exception as e:
+              print(f"[WARN] SHAP atlandı: {e}")
+      
+          print(f"✅ Feature analysis tamamlandı. STRICT={len(strict_numeric_cols)} SOFT={len(soft_numeric_cols)} CAT(enc)={len(cat_cols_encoded)}  → {OUT/'feature_type_decision.csv'}")
+          PY
+      
+      - name: 10.8b) Prepare SHAP CSV for quartiles (discover & normalize)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${CRIME_DATA_DIR}"
+          python -u scripts/prepare_shap_csv.py
+
+
       - name: 11) Install ML deps for stacking
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
@@ -604,18 +905,6 @@ jobs:
             exit 2
           fi
           python -u stacking_risk_pipeline.py
-      
-      - name: 12.1) Inspect risk_hourly dates
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        run: |
-          echo "---- risk_hourly.csv (dates) ----"
-          if [ -f "${CRIME_DATA_DIR}/risk_hourly.csv" ]; then
-            cut -d, -f1 "${CRIME_DATA_DIR}/risk_hourly.csv" | head -n 30
-            echo "---- unique dates (summary) ----"
-            cut -d, -f1 "${CRIME_DATA_DIR}/risk_hourly.csv" | tail -n +2 | sort | uniq -c
-          else
-            echo "risk_hourly.csv bulunamadı"
-          fi
 
       - name: 13) Produce yarin.csv & week.csv (Visual Crossing)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -682,7 +971,7 @@ jobs:
           echo "---- yarin.csv (head) ----"; head -n 5 "${CRIME_DATA_DIR}/yarin.csv" || true
           echo "---- week.csv (head) ----";  head -n 5 "${CRIME_DATA_DIR}/week.csv" || true
 
-      - name: 15) Run post_patrol.py (uses risk_hourly + yarin/week)
+      - name: 15) Run post_patrol.py (uses risk_hourly_grid_full_labeled + yarin/week)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -690,7 +979,7 @@ jobs:
           PATROL_HORIZON_DAYS: ${{ env.PATROL_HORIZON_DAYS }}
         run: |
           set -e
-          test -f "${CRIME_DATA_DIR}/risk_hourly.csv" || { echo "❌ risk_hourly.csv bulunamadı (stacking çıktılarını kontrol et)"; exit 2; }
+          test -f "${CRIME_DATA_DIR}/risk_hourly_grid_full_labeled.csv" || { echo "❌ risk_hourly_grid_full_labeled.csv bulunamadı (stacking çıktılarını kontrol et)"; exit 2; }
           python -u scripts/post_patrol.py
           echo "---- patrol_recs_multi.csv (head) ----"
           head -n 20 "${CRIME_DATA_DIR}/patrol_recs_multi.csv" || true
@@ -698,8 +987,8 @@ jobs:
       - name: 14) Quick preview (stacking outputs)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
-          echo "risk_hourly* (ilk 5)"
-          head -n 5 ${CRIME_DATA_DIR}/risk_hourly*.csv 2>/dev/null || true
+          echo "risk_hourly_grid_full_labeled* (ilk 5)"
+          head -n 5 ${CRIME_DATA_DIR}/risk_hourly_grid_full_labeled.csv.csv 2>/dev/null || true
           echo "patrol_recs* (ilk 5)"
           head -n 5 ${CRIME_DATA_DIR}/patrol_recs*.csv 2>/dev/null || true
           echo "metrics_* (ilk 5)"
@@ -725,66 +1014,103 @@ jobs:
             --stats
 
       # ======================= NEW: FRESHNESS GUARDS & METADATA =======================
-      - name: Emit single-row “latest date” CSVs (with header)
+      - name: Emit single-row “latest date” CSVs (robust, full-scan + 365d window)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, pandas as pd
+          import os, pandas as pd, numpy as np
           from pathlib import Path
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
 
           base = Path(os.environ.get("CRIME_DATA_DIR","crime_prediction_data"))
+          SF   = ZoneInfo("America/Los_Angeles")
+          today_sf = datetime.now(SF).date()
 
-          # Hedef dosyalar + olası tarih kolonları
           targets = [
-            ("sf_crime.csv",                    ["incident_datetime","datetime","date"]),
-            ("sf_911_last_5_year.csv",          ["call_datetime","incident_datetime","date"]),
-            ("sf_311_last_5_years.csv",         ["requested_datetime","opened_date","date"]),
-            ("sf_weather_5years.csv",           ["date"]),
-            ("sf_crime_grid_full_labeled.csv",  ["date"]),
-            ("risk_hourly.csv",                 ["date"]),
+            ("sf_crime.csv",                   ["incident_datetime","datetime","date"]),
+            ("sf_911_last_5_year.csv",         ["call_datetime","incident_datetime","date"]),
+            ("sf_311_last_5_years.csv",        ["requested_datetime","opened_date","date","datetime"]),
+            ("sf_weather_5years.csv",          ["date","datetime"]),
+            ("sf_crime_grid_full_labeled.csv", ["date"]),
+            ("risk_hourly_grid_full_labeled.csv", ["date"]),
+            ("risk_daily_grid_full_labeled.csv",  ["date"]),
+            ("risk_types_top3.csv",            ["date"]),
           ]
+
+          def coerce_dates(series):
+            """DMY/MDY/YMD farklarını tolere ederek tarihe çevir."""
+            # İlk deneme: dayfirst=True
+            d = pd.to_datetime(series, errors="coerce", dayfirst=True, utc=False, infer_datetime_format=True)
+            if d.notna().any():
+              return d
+            # İkinci deneme: dayfirst=False
+            d = pd.to_datetime(series, errors="coerce", dayfirst=False, utc=False, infer_datetime_format=True)
+            if d.notna().any():
+              return d
+            # Son çare: pandas’ın genel parser’ı (yavaş olabilir)
+            return pd.to_datetime(series.astype(str), errors="coerce", utc=False)
 
           overview = []
           for fname, candidates in targets:
             fpath = base / fname
             if not fpath.exists():
               continue
-            try:
-              df_head = pd.read_csv(fpath, nrows=5000, low_memory=False)
-              rowcount = sum(1 for _ in open(fpath, 'r', encoding='utf-8', errors='ignore')) - 1
-            except Exception:
+
+            maxd = None
+            # Tüm dosyayı chunk chunk tara (yalnızca aday kolonları çek)
+            for col in candidates:
+              try:
+                for chunk in pd.read_csv(
+                    fpath, usecols=lambda c: c==col, chunksize=200_000,
+                    dtype=str, low_memory=False, encoding_errors="ignore"
+                ):
+                  ds = coerce_dates(chunk[col])
+                  if ds.notna().any():
+                    m = ds.dt.date.max()
+                    if m is not None and (maxd is None or m > maxd):
+                      maxd = m
+                if maxd is not None:
+                  break  # uygun kolonu bulduk
+              except Exception:
+                continue
+
+            if maxd is None:
+              # hiçbir kolon parse edilemediyse geç
               continue
 
-            col = next((c for c in candidates if c in df_head.columns), None)
-            if col is None:
-              continue
+            # Geleceğe taşan tarihleri bugüne kırp (güvenlik)
+            if maxd > today_sf:
+              maxd = today_sf
 
-            mx = pd.to_datetime(df_head[col], errors="coerce").dt.date.max()
-            if pd.isna(mx):
-              continue
+            # Tek satırlık *_latest.csv
+            latest_path = fpath.with_name(f"{fpath.stem}_latest.csv")
+            pd.DataFrame([{"date": maxd.isoformat()}]).to_csv(latest_path, index=False)
 
-            latest_path = fpath.with_name(fpath.stem + "_latest.csv")
-            pd.DataFrame([{col: mx.isoformat()}]).to_csv(latest_path, index=False)
+            # 365 günlük pencere: [end-364, end]
+            start_365 = (maxd - timedelta(days=364))
+            latest365 = fpath.with_name(f"{fpath.stem}_latest_365.csv")
+            pd.DataFrame([{"start_date": start_365.isoformat(), "end_date": maxd.isoformat()}]).to_csv(latest365, index=False)
 
+            # özet tablosu için kayıt
             overview.append({
-              "file": fname,
-              "date_column": col,
-              "max_date": mx.isoformat(),
-              "rows_total_approx": rowcount if rowcount >= 0 else ""
+              "file": fname, "date_column": ",".join(candidates),
+              "max_date": maxd.isoformat()
             })
 
           if overview:
-            pd.DataFrame(overview, columns=["file","date_column","max_date","rows_total_approx"]).to_csv(base / "latest_overview.csv", index=False)
+            pd.DataFrame(overview, columns=["file","date_column","max_date"]).to_csv(base/"latest_overview.csv", index=False)
+
+          print("✅ latest_* dosyaları üretildi.")
           PY
 
+          echo "— produced *_latest*.csv —"
+          ls -1 "${CRIME_DATA_DIR}"/*_latest*.csv 2>/dev/null || true
           echo "— latest_overview.csv (head) —"
-          head -n 10 "${CRIME_DATA_DIR}/latest_overview.csv" || true
-
-          echo "— produced *_latest.csv —"
-          ls -1 "${CRIME_DATA_DIR}"/*_latest.csv 2>/dev/null || true
+          head -n 10 "${CRIME_DATA_DIR}/latest_overview.csv" 2>/dev/null || true
 
       - name: Sanity packlist (mtime + head)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -800,7 +1126,15 @@ jobs:
           ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.csv
           ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.csv
           ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_daily_grid_full_labeled.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_types_top3.csv
           ${{ env.CRIME_DATA_DIR }}/risk_hourly.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_hourly_grid_full_labeled.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_daily.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_daily_grid_full_labeled.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_hourly*.csv
+          ${{ env.CRIME_DATA_DIR }}/risk_daily*.csv
+          ${{ env.CRIME_DATA_DIR }}/patrol_recs*.csv
           EOF
 
           echo "== quick heads =="
@@ -828,8 +1162,77 @@ jobs:
           set -euo pipefail
           find . -type f -name 'sf_911_last_5_year*.csv' ! -path "./${{ env.CRIME_DATA_DIR }}/*" -delete || true
           find . -type f -name 'sf_311_last_5_years*.csv' ! -path "./${{ env.CRIME_DATA_DIR }}/*" -delete || true
-      # ======================= /NEW =======================
 
+      - name: risk outputs existence check
+        run: |
+          set -euo pipefail
+          echo "== risk outputs existence =="
+          for f in "risk_hourly_grid_full_labeled.csv" "risk_daily_grid_full_labeled.csv" "risk_types_top3.csv"; do
+            p="${CRIME_DATA_DIR}/$f"
+            if [ -f "$p" ]; then
+              echo "✅ $f found: $p"; head -n 3 "$p" || true
+            else
+              echo "❌ $f missing at $p"
+            fi
+          done
+
+      - name: Pre-upload assert (911/311 must exist)
+        run: |
+          set -euo pipefail
+          echo "=== Listing ${CRIME_DATA_DIR} ==="
+          ls -lah "${CRIME_DATA_DIR}" || true
+
+          # Son kez normalize: 311 tekil → çoğul
+          if [ ! -f "${CRIME_DATA_DIR}/sf_311_last_5_years.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_311_last_5_year.csv" ]; then
+            cp -f "${CRIME_DATA_DIR}/sf_311_last_5_year.csv" "${CRIME_DATA_DIR}/sf_311_last_5_years.csv"
+            echo "🔧 (pre-upload) copy: year → years (311 base)"
+          fi
+          if [ ! -f "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_311_last_5_year_y.csv" ]; then
+            cp -f "${CRIME_DATA_DIR}/sf_311_last_5_year_y.csv" "${CRIME_DATA_DIR}/sf_311_last_5_years_y.csv"
+            echo "🔧 (pre-upload) copy: year → years (311 _y)"
+          fi
+          # 911: tmp/recent → final
+          if [ ! -f "${CRIME_DATA_DIR}/sf_911_last_5_year.csv" ]; then
+            if [ -f "${CRIME_DATA_DIR}/_tmp_911.csv" ]; then
+              mv -f "${CRIME_DATA_DIR}/_tmp_911.csv" "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
+              echo "🔧 (pre-upload) rename: _tmp_911.csv → sf_911_last_5_year.csv"
+            elif [ -f "${CRIME_DATA_DIR}/sf_911_recent.csv" ]; then
+              cp -f "${CRIME_DATA_DIR}/sf_911_recent.csv" "${CRIME_DATA_DIR}/sf_911_last_5_year.csv"
+              echo "🔧 (pre-upload) copy: sf_911_recent.csv → sf_911_last_5_year.csv"
+            fi
+          fi
+
+          # Esnek doğrulama: ya final ad ya varyantlar
+          declare -A WANT
+          WANT["sf_911_last_5_year.csv"]=0
+          WANT["sf_311_last_5_years.csv"]=0
+
+          miss=0
+          for f in "${!WANT[@]}"; do
+            if [ ! -f "${CRIME_DATA_DIR}/${f}" ]; then
+              echo "❌ missing final: ${CRIME_DATA_DIR}/${f}"
+              miss=$((miss+1))
+            else
+              echo "✅ found final: ${CRIME_DATA_DIR}/${f}"
+              head -n 2 "${CRIME_DATA_DIR}/${f}" || true
+            fi
+          done
+
+          # _y dosyalarını “önerilen” sayalım; varsa kontrol et, yoksa uyarı
+          for opt in "sf_911_last_5_year_y.csv" "sf_311_last_5_years_y.csv"; do
+            if [ -f "${CRIME_DATA_DIR}/${opt}" ]; then
+              echo "✅ optional found: ${CRIME_DATA_DIR}/${opt}"
+              head -n 2 "${CRIME_DATA_DIR}/${opt}" || true
+            else
+              echo "⚠️ optional missing: ${CRIME_DATA_DIR}/${opt}"
+            fi
+          done
+
+          if [ "$miss" -gt 0 ]; then
+            echo "❌ Pre-upload assert failed ($miss missing required base files)."
+            exit 66
+          fi
+          
       # Parquet'leri ayrı artifact olarak yükle
       - name: Upload Parquet artifact (opsiyonel)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
@@ -839,42 +1242,76 @@ jobs:
           path: parquet_out/
           if-no-files-found: warn
 
+      # CSV'leri ayrı artifact olarak yükle
+      - name: Upload CSV artifact (opsiyonel)
+        if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf-crime-csv
+          path: csv_out/
+          if-no-files-found: warn
+          
       # ---- ÇIKTILAR ----
       - name: Upload artifact (varsayılan)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         uses: actions/upload-artifact@v4
         with:
           name: sf-crime-pipeline-output
+          if-no-files-found: error
+          retention-days: 14
           path: |
             ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
             ${{ env.CRIME_DATA_DIR }}/sf_population.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_01.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years*.csv
+            ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.csv
             ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years*.csv
             ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.csv
             ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year*.csv
             ${{ env.CRIME_DATA_DIR }}/sf_bus_stops_with_geoid.csv
             ${{ env.CRIME_DATA_DIR }}/sf_train_stops_with_geoid.csv
             ${{ env.CRIME_DATA_DIR }}/sf_pois_cleaned_with_geoid.csv
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.csv
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years_y.csv
             ${{ env.CRIME_DATA_DIR }}/*.geojson
+            ${{ env.CRIME_DATA_DIR }}/risk_hourly_grid_full_labeled.csv
+            ${{ env.CRIME_DATA_DIR }}/risk_daily_grid_full_labeled.csv
+            ${{ env.CRIME_DATA_DIR }}/risk_types_top3.csv
             ${{ env.CRIME_DATA_DIR }}/risk_hourly*.csv
+            ${{ env.CRIME_DATA_DIR }}/risk_daily*.csv
             ${{ env.CRIME_DATA_DIR }}/patrol_recs*.csv
+            ${{ env.CRIME_DATA_DIR }}/models/**
             ${{ env.CRIME_DATA_DIR }}/metrics_*.csv
-            ${{ env.CRIME_DATA_DIR }}/models/*.joblib
-            ${{ env.CRIME_DATA_DIR }}/ablation_spatial_te.csv
+            ${{ env.CRIME_DATA_DIR }}/metrics_all.csv             
             ${{ env.CRIME_DATA_DIR }}/oof_base_probs*.npz
+            ${{ env.CRIME_DATA_DIR }}/ablation_spatial_te.csv
+            ${{ env.CRIME_DATA_DIR }}/feature_importance_xgb.csv
+            ${{ env.CRIME_DATA_DIR }}/feature_top20_xgb.csv
+            ${{ env.CRIME_DATA_DIR }}/shap_feature_importance.csv
+            ${{ env.CRIME_DATA_DIR }}/shap_top20.csv
+            ${{ env.CRIME_DATA_DIR }}/feature_type_decision.csv
+            ${{ env.CRIME_DATA_DIR }}/shap_quartiles.csv
+            ${{ env.CRIME_DATA_DIR }}/shap_quartiles_summary.txt
+            ${{ env.CRIME_DATA_DIR }}/shap_missing_in_grid.txt
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_Q1.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_Q1Q2.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_Q1Q2Q3.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_Q1Q2Q3Q4.csv
             ${{ env.CRIME_DATA_DIR }}/yarin.csv
             ${{ env.CRIME_DATA_DIR }}/week.csv
-          if-no-files-found: warn
-          retention-days: 14
+            ${{ env.CRIME_DATA_DIR }}/*_latest.csv
+            ${{ env.CRIME_DATA_DIR }}/latest_overview.csv
+            ${{ env.CRIME_DATA_DIR }}/_build_info.txt
+      
