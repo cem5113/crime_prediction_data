@@ -392,17 +392,19 @@ def build_preprocessor(count_features, num_features, cat_features) -> ColumnTran
         ("scaler", StandardScaler(with_mean=False, with_std=True)),
     ])
 
+    # 🔴 ÖNEMLİ: OHE artık DENSE üretecek
     try:
         ohe = OneHotEncoder(
             handle_unknown="ignore",
-            sparse_output=True, 
+            sparse_output=False,   # önce True idi → HGB ile çakışıyordu
             min_frequency=100,
             dtype=np.float32,
         )
     except TypeError:
+        # Eski sklearn sürümleri için fallback
         ohe = OneHotEncoder(
             handle_unknown="ignore",
-            sparse=False,
+            sparse=False,          # yine dense
             dtype=np.float32,
         )
 
@@ -432,7 +434,7 @@ def build_preprocessor(count_features, num_features, cat_features) -> ColumnTran
     pre = ColumnTransformer(
         transformers=transformers,
         remainder="drop",
-        sparse_threshold=1.0,
+        sparse_threshold=0.0,   # 🔴 önce 1.0 idi → sparse üretmeye yatkındı
     )
     return pre
 
