@@ -434,6 +434,55 @@ def export_risk_tables(df, y, proba, threshold, out_prefix=""):
     return hourly_path, patrol_path
 
 # =========================================================
+# Backwards-compatible wrappers (for stacking_risk_pipeline_fr)
+# =========================================================
+def build_hourly(df, y, proba, threshold, out_prefix=""):
+    """
+    stacking_risk_pipeline_fr.py tarafından çağrılan wrapper.
+    Asıl işi export_risk_tables yapıyor.
+
+    Parametreler:
+      - df: kimlik + zaman + GEOID içeren grid / eval DataFrame
+      - y: gerçek label (şu an kullanılmıyor; sadece imza uyumu için)
+      - proba: model tahmin olasılıkları (len(proba) == len(df))
+      - threshold: risk eşiği (OOF thr)
+      - out_prefix: çıktı dosya isimlerine eklenecek suffix (örn. "_fr")
+    """
+    hourly_path, patrol_path = export_risk_tables(
+        df=df,
+        y=y,
+        proba=proba,
+        threshold=threshold,
+        out_prefix=out_prefix,
+    )
+    # stacking pipeline genelde path'lere ihtiyaç duyuyor
+    return hourly_path, patrol_path
+
+
+def build_daily_from_hourly(*args, **kwargs):
+    """
+    Günlük risk çıktısı export_risk_tables içinde zaten üretiliyor.
+    Bu fonksiyon sadece stacking_risk_pipeline_fr ile uyum için
+    'risk_daily{out_prefix}.csv' path'ini döner.
+
+    Çağrı imzası esnek bırakıldı (*args, **kwargs) ki
+    stacking_risk_pipeline_fr ister 'build_daily_from_hourly(out_prefix)'
+    ister 'build_daily_from_hourly(df, y, proba, thr, out_prefix)'
+    gibi çağırsın, sorun olmasın.
+    """
+    # out_prefix'i pozisyonel veya keyword argümanlarından çekmeye çalış
+    out_prefix = ""
+    if "out_prefix" in kwargs:
+        out_prefix = kwargs["out_prefix"]
+    elif len(args) >= 1:
+        # çoğu senaryoda ilk argüman out_prefix olacak şekilde uyumlu olur
+        out_prefix = args[-1]  # son argümanı prefix gibi kabul et
+    out_prefix = str(out_prefix)
+
+    daily_path = os.path.join(CRIME_DIR, f"risk_daily{out_prefix}.csv")
+    return daily_path
+
+# =========================================================
 # Optional Top-3 crime types
 # =========================================================
 def optional_top_crime_types(window_days: int = 365, out_name: str = "risk_types_top3.csv"):
