@@ -24,7 +24,15 @@ jobs:
       ARTIFACT_DIR: artifact
       FR_OUTPUT_DIR: ${{ github.workspace }}/crime_prediction_data
       FALLBACK_DIRS: ${{ github.workspace }},${{ github.workspace }}/crime_prediction_data
-      FR_LABEL_PATH: ${{ github.workspace }}/crime_prediction_data/sf_crime_grid_full_labeled.csv
+
+      # 🔽 ÖNEMLİ: FR script için env değişkenleri
+      FR_EVENTS_PATH: ${{ github.workspace }}/artifact/sf_crime_y.csv
+      FR_LABEL_PATH:  ${{ github.workspace }}/artifact/sf_crime_L.csv
+      FR_OUT_PATH:    ${{ github.workspace }}/fr_crime.csv
+      FR_MIRROR_DIR:  ${{ github.workspace }}/crime_prediction_data
+      FR_YCOL:        Y_label
+      FR_AUTOFIND_LABEL: "1"
+
       WX_LOCATION: "paris"
       WX_UNIT: "metric"
       GEOID_LEN: "11"
@@ -98,9 +106,6 @@ jobs:
           echo "=== artifact/ (after optional unzip) ==="
           ls -lahR artifact || true
 
-      # ─────────────────────────────────────────────────────────
-      # FR 00..09 — Mevcut üretim adımlarınız (dosyalar varsa çalışır)
-      # ─────────────────────────────────────────────────────────
       - name: FR 00) Base grid / event label merge
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -108,6 +113,14 @@ jobs:
           ARTIFACT_DIR:   ${{ env.ARTIFACT_DIR }}
           FR_OUTPUT_DIR:  ${{ env.FR_OUTPUT_DIR }}
           FALLBACK_DIRS:  ${{ env.FALLBACK_DIRS }}
+
+          # Bu adımda da FR_* env'leri görünür olsun (opsiyonel ama net):
+          FR_EVENTS_PATH: ${{ env.FR_EVENTS_PATH }}
+          FR_LABEL_PATH:  ${{ env.FR_LABEL_PATH }}
+          FR_OUT_PATH:    ${{ env.FR_OUT_PATH }}
+          FR_MIRROR_DIR:  ${{ env.FR_MIRROR_DIR }}
+          FR_YCOL:        ${{ env.FR_YCOL }}
+          FR_AUTOFIND_LABEL: ${{ env.FR_AUTOFIND_LABEL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -121,7 +134,7 @@ jobs:
           fi
           python -u "$PY"
           echo "HEAD sf_crime_grid_full_labeled.csv:"; head -n 5 "./sf_crime_grid_full_labeled.csv" || true
-          echo "HEAD fr_crime.csv:"; head -n 5 "$GITHUB_WORKSPACE/crime_prediction_data/fr_crime.csv" || true
+          echo "HEAD fr_crime.csv (mirror):"; head -n 5 "$GITHUB_WORKSPACE/crime_prediction_data/fr_crime.csv" || true
 
       - name: FR 01) 911
         env:
