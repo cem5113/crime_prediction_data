@@ -90,47 +90,6 @@ if ABLASYON_BASIS not in {"ohe", "te"}:
 def phase_is_select() -> bool:
     return TRAIN_PHASE == "select"
 
-# -------------------- Baseline (GEOID × season × hour_range) export --------------------
-def export_baseline_geo_season_hour(
-    df: pd.DataFrame,
-    proba: np.ndarray,
-    out_dir: str,
-    out_suffix: str = "",
-):
-    """
-    Tarihten bağımsız (kronik) mevsimsel baseline risk yüzeyi üretir:
-      GEOID × season × hour_range  → risk_mean, risk_p90, n_obs
-
-    df: ensure_date_hour_on_df uygulanmış veri (season ve hour_range içerir)
-    proba: stacking olasılığı (p_stack)
-    """
-    if df is None or len(df) == 0:
-        print("[WARN] Baseline export skipped: df boş.")
-        return None
-
-    if "season" not in df.columns or "hour_range" not in df.columns or "GEOID" not in df.columns:
-        print("[WARN] Baseline export skipped: season/hour_range/GEOID yok.")
-        return None
-
-    tmp = df.copy()
-    tmp["risk_score"] = pd.to_numeric(proba, errors="coerce")
-
-    baseline = (
-        tmp.groupby(["GEOID", "season", "hour_range"], as_index=False)
-           .agg(
-               risk_mean=("risk_score", "mean"),
-               risk_p90=("risk_score", lambda x: x.quantile(0.90)),
-               n_obs=("risk_score", "size"),
-           )
-           .sort_values(["season", "hour_range", "risk_mean"], ascending=[True, True, False])
-           .reset_index(drop=True)
-    )
-
-    out_path = os.path.join(out_dir, f"risk_baseline_geo_season_hour{out_suffix}.csv")
-    baseline.to_csv(out_path, index=False)
-    print(f"✅ Baseline risk surface yazıldı → {out_path}")
-    return out_path
-
 # -------------------- Helpers: date/hour --------------------
 def _hour_from_range(s: str) -> int:
     # "00-03" → 0; "21-00" → 21
@@ -151,7 +110,10 @@ def ensure_date_hour_on_df(df: pd.DataFrame) -> pd.DataFrame:
     elif "hr_key" in out.columns:
         s = out["hr_key"].astype(str)
         dt = pd.to_datetime(s, errors="coerce")
+        # En yaygın kalıplar: 'YYYY-MM-DD HH', 'YYYY-MM-DD', 'YYYYMMDDHH', 'YYYYMMDD'
+        # Önce doğrudan parse etmeyi dene:
         if dt.notna().mean() <= 0.5:
+            # Temizle → sadece rakamlar
             z = s.str.replace(r"[^0-9]", "", regex=True)
             def _to_iso(z_):
                 if len(z_) >= 10:  # YYYYMMDDHH
@@ -172,66 +134,29 @@ def ensure_date_hour_on_df(df: pd.DataFrame) -> pd.DataFrame:
         return start.map(lambda x: f"{x:02d}") + "-" + end.map(lambda x: f"{x:02d}")
 
     if "hour_range" in out.columns:
-        hr = (
-            out["hour_range"].astype(str)
-            .str.replace("\u2013","-", regex=False)
-            .str.replace("\u2014","-", regex=False)
-            .str.extract(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
-        )
+        hr = out["hour_range"].astype(str).str.extract(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
         ok = hr.notna().all(axis=1)
-        if ok.any():
-            h0 = pd.to_numeric(hr.loc[ok,0], errors="coerce").fillna(0).astype(int) % 24
-            h1 = pd.to_numeric(hr.loc[ok,1], errors="coerce").fillna(0).astype(int) % 24
-            out.loc[ok,"hour_range"] = h0.map("{:02d}".format) + "-" + h1.map("{:02d}".format)
-
-        miss = ~ok
-        if miss.any():
-            if "event_hour" in out.columns:
-                out.loc[miss,"hour_range"] = _hr_from_event_hour(out.loc[miss,"event_hour"])
-            elif "hr_key" in out.columns:
-                hh = out.loc[miss,"hr_key"].astype(str).str.extract(r"\b(\d{1,2})\b")[0]
-                out.loc[miss,"hour_range"] = _hr_from_event_hour(hh)
-            else:
-                out.loc[miss,"hour_range"] = "00-03"
-
+        out.loc[ok, "hour_range"] = (
+            hr[0].astype(float).astype(int).map("{:02d}".format) + "-" +
+            hr[1].astype(float).astype(int).map("{:02d}".format)
+        )
+        miss = out["hour_range"].isna()
+        if miss.any() and "event_hour" in out.columns:
+            out.loc[miss, "hour_range"] = _hr_from_event_hour(out.loc[miss, "event_hour"])
     elif "event_hour" in out.columns:
         out["hour_range"] = _hr_from_event_hour(out["event_hour"])
-    elif "hr_key" in out.columns:
-        hh = out["hr_key"].astype(str).str.extract(r"\b(\d{1,2})\b")[0]
-        out["hour_range"] = _hr_from_event_hour(hh)
     else:
-        out["hour_range"] = "00-03"
+        # hr_key biçimi 'YYYY-MM-DD HH' ise buradan saat çıkar
+        if "hr_key" in out.columns:
+            hh = out["hr_key"].astype(str).str.extract(r"\b(\d{1,2})\b")[0]
+            if hh.notna().any():
+                out["hour_range"] = _hr_from_event_hour(hh)
+            else:
+                out["hour_range"] = np.nan
+        else:
+            out["hour_range"] = np.nan
 
     return out
-
-# -------------------- Column Normalizer --------------------
-def normalize_temporal_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    season_x / season_y → season
-    day_of_week_x / day_of_week_y → day_of_week
-    month_x / month_y → month
-    """
-    if df is None:
-        raise ValueError("normalize_temporal_columns() içine df=None geldi.")
-
-    rename_map = {}
-
-    for col in ["season", "season_x", "season_y"]:
-        if col in df.columns:
-            rename_map[col] = "season"
-            break
-
-    for col in ["day_of_week", "day_of_week_x", "day_of_week_y"]:
-        if col in df.columns:
-            rename_map[col] = "day_of_week"
-            break
-
-    for col in ["month", "month_x", "month_y"]:
-        if col in df.columns:
-            rename_map[col] = "month"
-            break
-
-    return df.rename(columns=rename_map)
   
 def _load_neighbors(path: str):
     """
@@ -398,9 +323,7 @@ def ensure_sf_crime_09() -> str:
 def build_feature_lists(df: pd.DataFrame):
     drop_cols = {"Y_label", "id", "datetime", "time"}
     count_like = [c for c in df.columns if any(k in c.lower() for k in ["_count", "911_", "311_"])]
-    num_cands = [c for c in df.columns
-                 if pd.api.types.is_numeric_dtype(df[c])
-                 and c not in count_like and c not in drop_cols]
+    num_cands  = [c for c in df.columns if df[c].dtype.kind in "fc" and c not in count_like and c not in drop_cols]
     cat_cands  = [c for c in df.columns if df[c].dtype == "object" and c not in drop_cols]
     return count_like, num_cands, cat_cands
 
@@ -720,9 +643,7 @@ if __name__ == "__main__":
         if "Y_label" not in df.columns:
             raise ValueError(f"{data_path} içinde Y_label kolonu yok.")
         df = ensure_date_hour_on_df(df)
-        df = normalize_temporal_columns(df)
-        print("[DEBUG] after ensure_date_hour_on_df:", type(df), df.shape)
-      
+
         if phase_is_select():
             before = df.shape
             min_pos = int(os.getenv("SUBSET_MIN_POS", "10000"))
@@ -788,13 +709,6 @@ if __name__ == "__main__":
             out_prefix=out_suffix
         )
 
-        baseline_path = export_baseline_geo_season_hour(
-            df=df,
-            proba=p_stack,
-            out_dir=CRIME_DIR,
-            out_suffix=out_suffix
-        )
-      
         try:
             types_path = optional_top_crime_types()
             if types_path:
@@ -814,9 +728,8 @@ if __name__ == "__main__":
         summary_rows.append({
             "dataset_path": data_path,
             "suffix": out_suffix,
-            "risk_hourly_csv": risk_hourly_path,
+            "risk_hourly_csv": risk_hourly_path,  # <-- düzeltildi
             "risk_daily_csv": os.path.join(CRIME_DIR, f"risk_daily{out_suffix}.csv"),
-            "risk_baseline_geo_season_hour_csv": baseline_path,  # <-- NEW
             "patrol_recs_csv": patrol_path,
             "metrics_base_csv": os.path.join(CRIME_DIR, f"metrics_base{out_suffix}.csv"),
             "metrics_stacking_csv": os.path.join(CRIME_DIR, f"metrics_stacking{out_suffix}.csv"),
