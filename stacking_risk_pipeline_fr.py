@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from risk_exports_fr import build_hourly, build_daily_from_hourly
+from risk_exports_fr import export_risk_tables, optional_top_crime_types
 from risk_exports import optional_top_crime_types
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
@@ -1089,32 +1090,47 @@ if __name__ == "__main__":
         grp_cols = ["GEOID", "date", "hour_range"]
 
         _key_df["risk_p"] = p_stack.astype(np.float32, copy=False)
-        
-        # sadece grup ortalaması
+
+        # sadece grup ortalaması (GEOID × date × hour_range)
         agg = (
             _key_df
             .groupby(grp_cols, as_index=False)["risk_p"]
             .mean()
         )
-        
-        hourly_df = build_hourly(agg[grp_cols], proba=agg["risk_p"].to_numpy(), threshold=thr)
 
-        daily_df  = build_daily_from_hourly(hourly_df, threshold=thr)
+        # export_risk_tables:
+        #  - risk_hourly{out_prefix}.csv
+        #  - risk_daily{out_prefix}.csv
+        #  - patrol_recs{out_prefix}.csv
+        out_prefix = f"_grid_full_labeled{out_suffix}"
 
-        hourly_path = Path(CRIME_DIR) / f"risk_hourly_grid_full_labeled{out_suffix}.csv"
-        daily_path  = Path(CRIME_DIR) / f"risk_daily_grid_full_labeled{out_suffix}.csv"
+        hourly_path_str, patrol_path_str = export_risk_tables(
+            df=agg[grp_cols],
+            y=None,
+            proba=agg["risk_p"].to_numpy(),
+            threshold=thr,
+            out_prefix=out_prefix,
+        )
 
-        hourly_df.to_csv(hourly_path, index=False)
-        daily_df.to_csv(daily_path, index=False)
+        hourly_path = Path(hourly_path_str)
+        daily_path  = Path(CRIME_DIR) / f"risk_daily{out_prefix}.csv"
+        patrol_path = Path(patrol_path_str) if patrol_path_str else None
 
+        # İsteğe bağlı: Parquet üret (varsa oku, yoksa pas geç)
         try:
-            hourly_df.to_parquet(hourly_path.with_suffix(".parquet"), index=False)
-            daily_df.to_parquet(daily_path.with_suffix(".parquet"), index=False)
-        except Exception:
-            pass
+            hourly_df = pd.read_csv(hourly_path, low_memory=False)
+            daily_df  = pd.read_csv(daily_path, low_memory=False)
 
-        print(f"✅ Hourly → {hourly_path} (rows={len(hourly_df)})")
-        print(f"✅ Daily  → {daily_path}  (rows={len(daily_df)})")
+            try:
+                hourly_df.to_parquet(hourly_path.with_suffix(".parquet"), index=False)
+                daily_df.to_parquet(daily_path.with_suffix(".parquet"), index=False)
+            except Exception:
+                pass
+
+            print(f"✅ Hourly → {hourly_path} (rows={len(hourly_df)})")
+            print(f"✅ Daily  → {daily_path}  (rows={len(daily_df)})")
+        except Exception as e:
+            print(f"[WARN] Hourly/Daily parquet export skipped: {e}")
 
         patrol_path = None
 
