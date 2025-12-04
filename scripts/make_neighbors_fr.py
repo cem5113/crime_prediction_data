@@ -117,7 +117,7 @@ BASE_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
 FR_IN_ENV  = os.environ.get("FR_CRIME_IN",  "fr_crime_08.csv")
 FR_OUT_ENV = os.environ.get("FR_CRIME_OUT", "fr_crime_09.csv")
 
-# neighbors.csv için: env verilmemişse BASE_DIR / "neighbors.csv" kullan
+# neighbors.csv için: env verilmemişse çalışma dizinindeki neighbors.csv
 NEIGH_PATH = Path(
     os.environ.get("NEIGH_FILE", "neighbors.csv")
 )
@@ -127,12 +127,14 @@ GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 # ---------- core ----------
 def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataFrame:
     """
-    base: GEOID×date×base_cnt
+    base: GEOID×date×base_cnt (her GEOID-gün için olay sayısı)
     neigh: geoid, neighbor
+
     Adımlar:
       - neighbors ⨯ base (neighbor→date→count)
       - geoid×date toplamla → neighbor_cnt_day
-      - geoid bazında tarihe göre sırala, shift(1) ve rolling(3,7)
+      - geoid bazında tarihe göre sırala, shift(1) ve rolling(3,7):
+          neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d
     """
     b = base.copy()
     b["GEOID"]    = _norm_geoid(b["GEOID"], GEOID_LEN)
@@ -179,7 +181,7 @@ def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataF
     for W in (3,7):
         day_sum[f"nb_last{W}d"] = (
             day_sum.groupby("geoid")["neighbor_cnt_day"]
-                   .shift(1)  # sızıntı yok
+                   .shift(1)  # sızıntı yok, bugünü hariç tutuyoruz
                    .rolling(W, min_periods=1).sum()
         ).fillna(0)
 
@@ -226,24 +228,17 @@ def main() -> int:
     df = df.dropna(subset=["GEOID","date"])
     log(f"🧹 Normalize sonrası satır: {len(df):,}")
 
-    # ---- base_cnt üret ----
-    base_cols = [c for c in ["crime_count","Y_day","Y_label"] if c in df.columns]
+    # ---- base_cnt: TÜM SATIRLAR OLAY KABUL, Y_label ÖNEMSİZ ----
+    df_events = df.copy()
+    log(f"🔍 Tüm satırlar olay olarak kabul edildi: {len(df_events):,}")
 
-    if base_cols:
-        for c in base_cols:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype("int64")
-        df["__base__"] = df[base_cols].sum(axis=1)
-        base = (
-            df.groupby(["GEOID","date"], dropna=False)["__base__"]
-              .sum().reset_index(name="base_cnt")
-        )
-    else:
-        base = (
-            df.groupby(["GEOID","date"], dropna=False)
-              .size().reset_index(name="base_cnt")
-        )
+    # GEOID×date için günlük olay sayısı (base_cnt)
+    base = (
+        df_events.groupby(["GEOID","date"], dropna=False)
+                 .size().reset_index(name="base_cnt")
+    )
 
-    log(f"🧮 base_cnt hazır: {len(base):,} satır (GEOID×date)")
+    log(f"🧮 base_cnt hazır: {len(base):,} satır (GEOID×date, tüm satırlardan)")
 
     # ---- neighbor features ----
     feats = neighbor_daily_features(base, neigh)
@@ -252,7 +247,7 @@ def main() -> int:
         f"[neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d]"
     )
 
-    # ---- merge back to original ----
+    # ---- merge back to original (her satıra) ----
     feats["GEOID"] = _norm_geoid(feats["GEOID"], GEOID_LEN)
     feats["date"]  = _as_date64(feats["date"])
 
