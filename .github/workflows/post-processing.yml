@@ -457,8 +457,8 @@ jobs:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
-          test -f "${CRIME_DATA_DIR}/risk_hourly_grid_full_labeled.csv"
-          test -f "${CRIME_DATA_DIR}/risk_daily_grid_full_labeled.csv"
+          test -f "${CRIME_DATA_DIR}/risk_hourly_grid_full_labeled_10.csv"
+          test -f "${CRIME_DATA_DIR}/risk_daily_grid_full_labeled_10.csv"
           echo "✅ risk CSV’leri mevcut."
 
       - name: FR 13) Build 2 ZIPs with EXACT files
@@ -481,8 +481,8 @@ jobs:
           
           WANT = [
               "fr_crime_09.csv","fr_crime_09.parquet",
-              "risk_hourly_grid_full_labeled.csv","risk_hourly_grid_full_labeled.parquet",
-              "risk_daily_grid_full_labeled.csv","risk_daily_grid_full_labeled.parquet",
+              "risk_hourly_grid_full_labeled_10.csv","risk_hourly_grid_full_labeled_10.parquet",
+              "risk_daily_grid_full_labeled_10.csv","risk_daily_grid_full_labeled_10.parquet",
               "metrics_stacking.csv","metrics_stacking.parquet",
               "metrics_all.csv","metrics_all.parquet",
               "stacking_manifest.csv","stacking_manifest.parquet",
@@ -509,8 +509,8 @@ jobs:
           
           # eksik olan eş dosyaları dönüştür
           pairs = [
-              ("risk_hourly_grid_full_labeled.csv","risk_hourly_grid_full_labeled.parquet"),
-              ("risk_daily_grid_full_labeled.csv","risk_daily_grid_full_labeled.parquet"),
+              ("risk_hourly_grid_full_labeled_10.csv","risk_hourly_grid_full_labeled_10.parquet"),
+              ("risk_daily_grid_full_labeled_10.csv","risk_daily_grid_full_labeled_10.parquet"),
               ("fr_crime_09.csv","fr_crime_09.parquet"),
               ("metrics_stacking.csv","metrics_stacking.parquet"),
               ("metrics_all.csv","metrics_all.parquet"),
