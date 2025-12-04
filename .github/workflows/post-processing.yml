@@ -331,7 +331,7 @@ jobs:
           path: ${{ env.CRIME_DATA_DIR }}/models
           if_no_artifact_found: ignore
 
-      - name: FR 09.5) Feature analysis → fr_crime_10.csv
+      - name: FR 09.5) Feature analysis → fr_crime_10_FA.csv
         shell: bash
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -358,7 +358,7 @@ jobs:
           elif [ -f "scripts/run_feature_analysis_fr.py" ]; then
             PY="scripts/run_feature_analysis_fr.py"
           else
-            echo "⚠️ run_feature_analysis_fr.py bulunamadı, fr_crime_09.csv → fr_crime_10.csv kopyalanıyor."
+            echo "⚠️ run_feature_analysis_fr.py bulunamadı, fallback: fr_crime_09.csv → fr_crime_10.csv kopyalanıyor."
             cp -f "${CRIME_DATA_DIR}/fr_crime_09.csv" "${CRIME_DATA_DIR}/fr_crime_10.csv"
             exit 0
           fi
@@ -366,19 +366,24 @@ jobs:
           echo "🚀 Özellik analizi çalışıyor: $PY"
           python -u "$PY"
 
-          # Script fr_crime_10.csv'yi yazdı mı?
-          if [ -s "${CRIME_DATA_DIR}/fr_crime_10.csv" ]; then
-            echo "✅ fr_crime_10.csv hazır (run_feature_analysis_fr.py çıktısı)."
+          # Öncelik: fr_crime_10_FA.csv (supervised FA dataseti)
+          if [ -s "${CRIME_DATA_DIR}/fr_crime_10_FA.csv" ]; then
+            echo "✅ fr_crime_10_FA.csv hazır (supervised FA dataseti)."
+            # Eski kodların bozulmaması için kopya da üret:
+            cp -f "${CRIME_DATA_DIR}/fr_crime_10_FA.csv" "${CRIME_DATA_DIR}/fr_crime_10.csv"
           else
-            echo "⚠️ fr_crime_10.csv bulunamadı, güvenlik için fr_crime_09.csv kopyalanıyor."
+            echo "⚠️ fr_crime_10_FA.csv bulunamadı, güvenlik için fr_crime_09.csv → fr_crime_10.csv kopyalanıyor."
             cp -f "${CRIME_DATA_DIR}/fr_crime_09.csv" "${CRIME_DATA_DIR}/fr_crime_10.csv"
           fi
+
+          echo "HEAD fr_crime_10_FA.csv:"
+          head -n 5 "${CRIME_DATA_DIR}/fr_crime_10_FA.csv" || true
 
           echo "HEAD fr_crime_10.csv:"
           head -n 5 "${CRIME_DATA_DIR}/fr_crime_10.csv" || true
 
       # ─────────────────────────────────────────────────────────
-      # Gate + stacking (fr_crime_10.csv ile)
+      # Gate + stacking (FA dataseti ile: fr_crime_10_FA.csv)
       # ─────────────────────────────────────────────────────────
       - name: Gate (always proceed)
         id: gate
@@ -410,13 +415,13 @@ jobs:
           pip install scikit-learn==1.4.2 joblib pandas numpy
           pip install lightgbm xgboost || true
 
-      - name: FR 10.2) Run stacking (select + final) on fr_crime_10.csv
+      - name: FR 10.2) Run stacking (select + final) on fr_crime_10_FA.csv
         if: ${{ steps.gate.outputs.proceed == 'true' && steps.need_train.outputs.need == 'true' }}
         shell: bash
         env:
           CRIME_DATA_DIR:   ${{ env.CRIME_DATA_DIR }}
           GEOID_LEN:        ${{ env.GEOID_LEN || '11' }}
-          STACKING_DATASET: ${{ env.CRIME_DATA_DIR }}/crime_prediction_data/fr_crime_10_FA.csv
+          STACKING_DATASET: ${{ env.CRIME_DATA_DIR }}/fr_crime_10_FA.csv
           ENABLE_SPATIAL_TE: "1"
           TE_ALPHA: "50"
           NEIGHBOR_FILE:    ${{ env.CRIME_DATA_DIR }}/neighbors.csv
@@ -434,45 +439,16 @@ jobs:
             export ENABLE_SPATIAL_TE=0
             unset NEIGHBOR_FILE
           fi
+
           echo "🚀 TRAIN_PHASE=select"
           export TRAIN_PHASE=select
           python -u stacking_risk_pipeline_fr.py
+
           echo "🚀 TRAIN_PHASE=final"
           export TRAIN_PHASE=final
           python -u stacking_risk_pipeline_fr.py
-          echo "✅ Stacking training done."
 
-      - name: FR 11) Generate risk CSVs (hourly + daily)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          DF="${CRIME_DATA_DIR}/fr_crime_10.csv"
-          PROBA="${CRIME_DATA_DIR}/stacking_proba_eval.csv"   # ← GERÇEK ADI NEYSE ONU YAZMAN LAZIM
-          THR="0.20"
-          PREFIX="_grid_full_labeled"
-
-          echo "▶ risk_exports_fr.py çalıştırılıyor..."
-          if [ -f risk_exports_fr.py ]; then
-            python -u risk_exports_fr.py \
-              --df "$DF" \
-              --proba "$PROBA" \
-              --threshold "$THR" \
-              --out-prefix "$PREFIX" \
-              --top3-window-days 30
-          elif [ -f scripts/risk_exports_fr.py ]; then
-            python -u scripts/risk_exports_fr.py \
-              --df "$DF" \
-              --proba "$PROBA" \
-              --threshold "$THR" \
-              --out-prefix "$PREFIX" \
-              --top3-window-days 30
-          else
-            echo "❌ risk_exports_fr.py bulunamadı"
-            exit 1
-          fi
+          echo "✅ Stacking training done (FR + risk CSV'ler üretildi)."
 
       - name: FR 12) Assert risk outputs exist
         if: ${{ steps.gate.outputs.proceed == 'true' }}
