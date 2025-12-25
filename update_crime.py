@@ -18,15 +18,13 @@ import requests
 import zoneinfo
 import json
 
-# --------------------------
 # ENV / Config
-# --------------------------
 SF_TZ = zoneinfo.ZoneInfo("America/Los_Angeles")
 SF_TZ_NAME = "America/Los_Angeles"
 
-AGGR_Y_THRESHOLD   = int(os.getenv("AGGR_Y_THRESHOLD", "6"))     # takvim grid label eşiği
-DAILY_Y_THRESHOLD  = int(os.getenv("DAILY_Y_THRESHOLD", "1"))    # günlük grid label eşiği
-DEFAULT_GEOID_LEN  = int(os.getenv("GEOID_LEN", "11"))           # tract GEOID uzunluğu
+AGGR_Y_THRESHOLD   = int(os.getenv("AGGR_Y_THRESHOLD", "6"))     
+DAILY_Y_THRESHOLD  = int(os.getenv("DAILY_Y_THRESHOLD", "1"))   
+DEFAULT_GEOID_LEN  = int(os.getenv("GEOID_LEN", "11"))          
 SF_BBOX            = (-123.2, 37.6, -122.3, 37.9)
 
 # Günlük arşiv yazımı (opsiyonel)
@@ -53,9 +51,7 @@ TMP_BASE_Y = RUN_TMP_DIR / "sf_crime_y.csv"
 TMP_BASE_CSV = RUN_TMP_DIR / "sf_crime.csv"
 TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime.csv.gz"
 
-# --------------------------
 # Kaynak URL/Token
-# --------------------------
 # ➜ İstediğin akış: 1) Artifact'tan sf_crime_y.csv, 2) releases/latest sf_crime.csv
 CRIME_BASE_URL = os.getenv(
     "CRIME_CSV_URL",
@@ -90,9 +86,7 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "cem5113/crime_prediction_data")   # owne
 GH_TOKEN = os.getenv("GH_TOKEN", "")
 ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output")
 
-# --------------------------
 # Helpers
-# --------------------------
 def _to_date_series(x):
     try:
         s = pd.to_datetime(x, utc=True, errors="coerce").dt.tz_convert(SF_TZ).dt.date
@@ -169,12 +163,9 @@ def _mix(df, keys):
     top3["txt"] = top3.apply(lambda r: f"{r['category']}({r['share']:.0%})", axis=1)
     out = top3.groupby(keys)["txt"].agg(", ".join).reset_index(name="crime_mix")
     return out
-
 FALLBACK_CRIME_URL = CRIME_BASE_URL
 
-# --------------------------
 # Artifact indirme yardımcıları
-# --------------------------
 def _gh_headers():
     if not GH_TOKEN:
         return None
@@ -216,9 +207,7 @@ def fetch_file_from_latest_artifact(pick_names: List[str], artifact_name: str = 
     except Exception:
         return None
 
-# --------------------------
 # Mevcut veri (artifact-first) — SFCRIME_Y → release sf_crime.csv
-# --------------------------
 def _is_valid_csv_bytes(b: bytes, min_bytes: int = 5_000) -> bool:
     if not b or len(b) < min_bytes:
         return False
@@ -324,9 +313,9 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
         print(f"\u26A0\ufe0f Mevcut sf_crime okunamadı: {e}")
         return None
 
-# --------------------------
+
 # Başla: veri yükle & eksik günler
-# --------------------------
+
 today = datetime.now(SF_TZ).date()
 start_date = today - timedelta(days=5 * 365)
 
@@ -363,9 +352,9 @@ if os.path.exists(blocks_path):
 else:
     print(f"ℹ️ {blocks_path} bulunamadı; GEOID eşlemesi atlanacak.")
 
-# --------------------------
+
 # API çekme (gün/gün veya aralık)
-# --------------------------
+
 headers = {"X-App-Token": SFCRIME_APP_TOKEN} if SFCRIME_APP_TOKEN else {}
 
 def _try_small_crime_request(params):
@@ -442,9 +431,8 @@ def fetch_crime_range_all_chunks(start_day: datetime.date, end_day: datetime.dat
         offset += CHUNK_LIMIT; page += 1; time.sleep(SLEEP_BETWEEN_REQS)
     return None if not pieces else pd.concat(pieces, ignore_index=True)
 
-# --------------------------
+
 # İndir & temizle & GEOID eşle
-# --------------------------
 FORCE_FULL = os.getenv("CRIME_FORCE_FULL", "0").lower() in ("1","true","yes","on")
 
 if missing_dates or FORCE_FULL:
@@ -586,9 +574,7 @@ else:
 log_shape(df_new, "CRIME yeni (indirilen)")
 log_date_range(df_new, "date", "Suç (yeni)")
 
-# --------------------------
 # Birleştir & zamanda özellikler
-# --------------------------
 if "time" not in df_old.columns:
     df_old["time"] = "00:00:00"
 _before_merge = df_old.shape
@@ -681,9 +667,7 @@ try:
 except Exception as e:
     print("Kopya uyarısı:", e)
 
-# --------------------------
 # Takvim grid + Y_label
-# --------------------------
 group_cols = ["GEOID","season","day_of_week","event_hour"]
 agg_dict = {"latitude":"mean", "longitude":"mean", "is_holiday":"mean", "id":"count"}
 
@@ -756,9 +740,9 @@ df_final["sf_wet_season"] = df_final["season"].map({"Winter":1,"Spring":1,"Summe
 df_final["sf_dry_season"] = df_final["season"].map({"Winter":0,"Spring":0,"Summer":1,"Fall":1}).fillna(0).astype(int)
 df_final["sf_fog_season"] = df_final["season"].map({"Winter":0,"Spring":0,"Summer":1,"Fall":0}).fillna(0).astype(int)
 
-# --------------------------
+
 # Son 3g/7g + Komşu GEOID toplamları
-# --------------------------
+
 d_series = pd.to_datetime(df_all_valid["date"], errors="coerce").dt.normalize()
 ref_max  = d_series.max()
 
@@ -814,9 +798,7 @@ for col in ["crime_last_3d","crime_last_7d","neigh_crime_last_3d","neigh_crime_l
     if col in df_final.columns:
         df_final[col] = pd.to_numeric(df_final[col], errors="coerce").fillna(0).astype(int)
 
-# --------------------------
 # Centroid ile koordinat doldurma
-# --------------------------
 if gdf_blocks is not None:
     try:
         tracts = gdf_blocks[["GEOID","geometry"]].drop_duplicates("GEOID")
@@ -872,9 +854,7 @@ except Exception as e:
 print(f"🔢 Toplam satır (GRID): {len(df_final):,}")
 print(f"🧮 crime_count>0 satır: {(df_final['crime_count']>0).sum():,}")
 
-# --------------------------
 # Günlük grid (opsiyonel)
-# --------------------------
 if WRITE_DAILY_ARCHIVE:
     d_all = pd.to_datetime(df_all_valid["date"], errors="coerce").dt.normalize()
     end_ts   = d_all.max()
