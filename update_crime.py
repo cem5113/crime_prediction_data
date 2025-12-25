@@ -38,6 +38,21 @@ OVERWRITE_DAILY     = os.getenv("OVERWRITE_DAILY", "0").lower() in ("1","true","
 NEIGHBOR_METHOD   = os.getenv("NEIGHBOR_METHOD", "touches")  # touches | radius
 NEIGHBOR_RADIUS_M = float(os.getenv("NEIGHBOR_RADIUS_M", "500"))
 
+# --- Remote-first base davranışı ---
+PREFER_REMOTE_BASE = os.getenv("PREFER_REMOTE_BASE", "1").lower() in ("1","true","yes","on")
+
+# base veriyi repo içine yazma (default kapalı → statik dosyayı ezme)
+WRITE_BASE_TO_REPO = os.getenv("WRITE_BASE_TO_REPO", "0").lower() in ("1","true","yes","on")
+
+# sadece run içinde kullanılacak geçici klasör
+RUN_TMP_DIR = Path(os.getenv("RUNNER_TEMP", "/tmp")) / "sfcrime_runtime"
+RUN_TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# remote base dosya isimleri (temp)
+TMP_BASE_Y = RUN_TMP_DIR / "sf_crime_y.csv"
+TMP_BASE_CSV = RUN_TMP_DIR / "sf_crime.csv"
+TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime.csv.gz"
+
 # --------------------------
 # Kaynak URL/Token
 # --------------------------
@@ -204,56 +219,88 @@ def fetch_file_from_latest_artifact(pick_names: List[str], artifact_name: str = 
 # --------------------------
 # Mevcut veri (artifact-first) — SFCRIME_Y → release sf_crime.csv
 # --------------------------
-def ensure_local_base_csv() -> Path | None:
+def _is_valid_csv_bytes(b: bytes, min_bytes: int = 5_000) -> bool:
+    if not b or len(b) < min_bytes:
+        return False
+    head = b[:300].decode("utf-8", errors="ignore")
+    # LFS pointer kontrolü
+    if "git-lfs.github.com/spec/v1" in head:
+        return False
+    return True
+
+def _is_valid_local_csv(p: Path, min_bytes: int = 5_000) -> bool:
+    if not p.exists():
+        return False
+    if p.stat().st_size < min_bytes:
+        return False
+    if p.suffix == ".csv" and is_lfs_pointer(p):
+        return False
+    return True
+
+def _write_bytes_atomic(dst: Path, content: bytes) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    tmp.write_bytes(content)
+    tmp.replace(dst)
+
+def download_url_to_file(url: str, dst: Path, timeout: int = 120) -> bool:
+    try:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        if not _is_valid_csv_bytes(r.content):
+            return False
+        _write_bytes_atomic(dst, r.content)
+        return True
+    except Exception:
+        return False
+
+def ensure_base_csv_remote_first() -> Path | None:
     """
-    Tercih sırası:
-      1) Artifact/çalışma alanında sf_crime_y.csv (önceki full pipeline'dan)
-      2) Yerelde sf_crime.csv / sf_crime.csv.gz
-      3) Release fallback (CRIME_BASE_URL)
+    Sıra:
+      1) GitHub Actions artifact içinden sf_crime_y.csv (GH_TOKEN şart)
+      2) releases/latest/download/sf_crime.csv (CRIME_BASE_URL)
+      3) repo/local: sf_crime_y.csv veya sf_crime.csv
+
+    Remote dosyalar RUNNER_TEMP (/tmp) altına yazılır → run-bitince zaten kalıcı repo dosyasını ezmez.
     """
-    # 1) Önce Y tabanını dene
-    y_candidates = [
+    # 1) Artifact → TMP_BASE_Y
+    if PREFER_REMOTE_BASE and GH_TOKEN:
+        blob = fetch_file_from_latest_artifact(
+            pick_names=[Y_CSV_NAME, "sf_crime_y.csv", "sf_crime.csv"],
+            artifact_name=ARTIFACT_NAME,
+        )
+        if blob and _is_valid_csv_bytes(blob):
+            _write_bytes_atomic(TMP_BASE_Y, blob)
+            print(f"📦 Base (artifact) indirildi → {TMP_BASE_Y}")
+            return TMP_BASE_Y
+        else:
+            print("⚠️ Artifact base bulunamadı/uygun değil (boş/küçük/LFS).")
+
+    # 2) Release latest → TMP_BASE_CSV veya TMP_BASE_GZ
+    if PREFER_REMOTE_BASE and CRIME_BASE_URL:
+        dst = TMP_BASE_GZ if CRIME_BASE_URL.endswith(".gz") else TMP_BASE_CSV
+        ok = download_url_to_file(CRIME_BASE_URL, dst)
+        if ok:
+            print(f"⬇️ Base (release latest) indirildi → {dst}")
+            return dst
+        else:
+            print(f"⚠️ Release latest base indirilemedi/uygun değil: {CRIME_BASE_URL}")
+
+    # 3) Local fallback (repo içi)
+    local_candidates = [
         Path("crime_prediction_data/sf_crime_y.csv"),
         Path("sf_crime_y.csv"),
-        Path("outputs/sf_crime_y.csv"),
-    ]
-    for p in y_candidates:
-        if p.exists():
-            # LFS pointer güvenliği sadece .csv için kontrol edelim
-            if p.suffix == ".csv" and is_lfs_pointer(p):
-                continue
-            print(f"📦 Base (preferred Y) bulundu: {p}")
-            return p
-
-    # 2) Klasik sf_crime.{csv,csv.gz}
-    candidates = [
         Path("sf_crime.csv"),
         Path("crime_prediction_data/sf_crime.csv"),
         Path("crime_prediction_data/sf_crime.csv.gz"),
     ]
-    for p in candidates:
-        if p.exists():
-            if p.suffix == ".csv" and is_lfs_pointer(p):
-                continue
-            print(f"📦 Base (regular) bulundu: {p}")
+    for p in local_candidates:
+        if _is_valid_local_csv(p):
+            print(f"📦 Base (local fallback) bulundu: {p}")
             return p
 
-    # 3) Release fallback
-    if not CRIME_BASE_URL:
-        print("⚠️ Ne local base var ne de CRIME_CSV_URL ayarlı.")
-        return None
-    try:
-        Path("crime_prediction_data").mkdir(exist_ok=True)
-        out = Path("crime_prediction_data/sf_crime.csv.gz") if CRIME_BASE_URL.endswith(".gz") else Path("crime_prediction_data/sf_crime.csv")
-        print(f"⬇️ Release fallback indiriliyor → {out.name}")
-        r = requests.get(CRIME_BASE_URL, timeout=60)
-        r.raise_for_status()
-        out.write_bytes(r.content)
-        print(f"✅ İndirildi: {out}")
-        return out
-    except Exception as e:
-        print(f"⚠️ Release fallback indirilemedi: {e}")
-        return None
+    print("❌ Base bulunamadı (artifact/release/local).")
+    return None
 
 def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
     if not p or not p.exists():
@@ -283,7 +330,7 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
 today = datetime.now(SF_TZ).date()
 start_date = today - timedelta(days=5 * 365)
 
-base_path = ensure_local_base_csv()
+base_path = ensure_base_csv_remote_first()
 if base_path is None:
     raise SystemExit(1)
 
@@ -612,22 +659,25 @@ except Exception:
     pass
 
 # Çıkış hedefini seç: cache modda sadece Y dosyasına yaz
-_out_target = y_csv_path if CACHE_WRITE_Y_ONLY else csv_path
-safe_save(df_all.drop(columns=["date_only"], errors="ignore"), _out_target)
+# Her koşulda event-level cache üret (run çıktısı)
+event_out = Path(y_csv_path)  # default sf_crime_y.csv
+safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
+print(f"💾 Event-level cache yazıldı → {event_out}")
 
-try:
-    print(f"{Path(_out_target).name} — ilk 5 satır")
-    print(df_all.head(5).to_string(index=False))
-except Exception:
-    pass
-
-# crime_prediction_data/ kopyaları:
 try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
-    if CACHE_WRITE_Y_ONLY:
-        shutil.copy2(_out_target, "crime_prediction_data/sf_crime_y.csv")
+
+    # Artifact / çıktı klasörüne her zaman koy (workflow upload-artifact için)
+    shutil.copy2(event_out, "crime_prediction_data/sf_crime_y.csv")
+
+    # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI)
+    if WRITE_BASE_TO_REPO:
+        shutil.copy2(event_out, "crime_prediction_data/sf_crime.csv")
+        shutil.copy2(event_out, "sf_crime.csv")
+        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv güncellendi (repo workspace).")
     else:
-        shutil.copy2(_out_target, "crime_prediction_data/sf_crime.csv")
+        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece sf_crime_y artifact çıktı).")
+
 except Exception as e:
     print("Kopya uyarısı:", e)
 
@@ -697,20 +747,6 @@ _before_grid_merge = full_grid.shape
 df_final = full_grid.merge(grouped, on=group_cols, how="left")
 log_delta(_before_grid_merge, df_final.shape, "FULL GRID ⨯ GROUPED")
 log_shape(df_final, "GRID (merge sonrası)")
-
-# koruyucu temizlik
-if "crime_mix" not in df_final.columns:
-    df_final["crime_mix"] = ""
-df_final["crime_mix"] = df_final["crime_mix"].fillna("").astype(str)
-
-for col in ("crime_count","Y_label","is_holiday"):
-    if col not in df_final.columns:
-        df_final[col] = np.nan
-
-df_final["crime_count"] = pd.to_numeric(df_final["crime_count"], errors="coerce").fillna(0).astype(int)
-df_final["Y_label"]     = (df_final["crime_count"] >= AGGR_Y_THRESHOLD).astype(int)
-df_final["is_holiday"]  = pd.to_numeric(df_final["is_holiday"], errors="coerce").fillna(0).round().astype(int)
-df_final.loc[df_final["crime_count"] == 0, "crime_mix"] = "0"
 
 # hour_range & sezon bayrakları
 df_final["hr_key"]     = (df_final["event_hour"] // 3) * 3
@@ -833,12 +869,8 @@ try:
 except Exception as e:
     print("GRID ön izleme okunamadı:", e)
 
-# Dağılım
-lbl = df_final["Y_label"].value_counts(dropna=False).rename_axis("Y_label").reset_index(name="count")
-lbl["percent"] = (lbl["count"] / lbl["count"].sum() * 100).round(2)
-print("\n\U0001F4CA Y_label dağılımı (GRID):")
-print(lbl.to_string(index=False))
-print(f"\U0001F522 Toplam satır (GRID): {len(df_final):,}")
+print(f"🔢 Toplam satır (GRID): {len(df_final):,}")
+print(f"🧮 crime_count>0 satır: {(df_final['crime_count']>0).sum():,}")
 
 # --------------------------
 # Günlük grid (opsiyonel)
@@ -970,7 +1002,8 @@ except Exception as e:
 try:
     _df_chk = pd.read_csv(full_path)
     print(_df_chk.shape)
-    print((_df_chk["Y_label"].value_counts(normalize=True) * 100).round(2))
+    if "crime_count" in _df_chk.columns:
+        print("crime_count>0 oranı (%):", round((_df_chk["crime_count"] > 0).mean() * 100, 2))
 except Exception as e:
     print("\u26A0\ufe0f Grid tekrar okuma kontrolü başarısız:", e)
 
