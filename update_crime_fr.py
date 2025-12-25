@@ -6,14 +6,20 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import shutil
+import hashlib
 
 # =========================
 # Ayarlar (ENV ile özelleştirilebilir)
 # =========================
-EVENTS_PATH = Path(os.getenv("FR_EVENTS_PATH", "sf_crime_y.csv"))     # olay bazlı kaynak (suç_id içermeli)
+EVENTS_PATH = Path(os.getenv("FR_EVENTS_PATH", "sf_crime.csv")) 
 LABEL_PATH  = Path(os.getenv("FR_LABEL_PATH", "sf_crime_L.csv"))    # grid etiket kaynağı
 OUT_PATH    = Path(os.getenv("FR_OUT_PATH",   "fr_crime.csv"))      # hedef: olay bazlı çıktı
 MIRROR_DIR  = Path(os.getenv("FR_MIRROR_DIR", "crime_prediction_data"))
+MIRROR_ENABLED = os.getenv("FR_MIRROR_ENABLED", "0") == "1"
+EVENTS_URL = os.getenv(
+    "FR_EVENTS_URL",
+    "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime.csv"
+)
 
 # Otomatik label bulma açık/kapalı (1/0) – kapatmak isterseniz FR_AUTOFIND_LABEL=0
 AUTOFIND_LABEL = os.getenv("FR_AUTOFIND_LABEL", "1") == "1"
@@ -24,7 +30,7 @@ GEOID_ONLY = ["GEOID"]
 
 # Çekilecek etiket kolonu adı
 YCOL = os.getenv("FR_YCOL", "Y_label")
-
+SKIP_IF_NO_CHANGE = os.getenv("FR_SKIP_IF_NO_CHANGE", "1") == "1"
 
 # =========================
 # Yardımcılar
@@ -33,7 +39,19 @@ def _abs(p: Path) -> Path:
     """Absolute & expanded path."""
     return p.expanduser().resolve()
 
-def safe_read_csv(p: Path) -> pd.DataFrame:
+def safe_read_csv(p) -> pd.DataFrame:
+    # URL desteği: EVENTS_URL gibi durumlarda Path yerine url string geçmeyeceğiz,
+    # ama burada güvenli olması için yine de kontrol edelim.
+    try:
+        ps = str(p)
+        if ps.startswith("http://") or ps.startswith("https://"):
+            df = pd.read_csv(ps, low_memory=False)
+            print(f"🌐 Okundu (URL): {ps}  ({len(df):,} satır, {df.shape[1]} sütun)")
+            return df
+    except Exception as e:
+        print(f"⚠️ URL okunamadı: {p} → {e}")
+        return pd.DataFrame()
+
     p = _abs(p)
     if not p.exists():
         print(f"ℹ️ Bulunamadı: {p}")
@@ -53,6 +71,21 @@ def safe_save_csv(df: pd.DataFrame, p: Path) -> None:
     df.to_csv(tmp, index=False)
     tmp.replace(p)
     print(f"💾 Kaydedildi: {p}  ({len(df):,} satır, {df.shape[1]} sütun)")
+
+def file_sha256(p: Path) -> str:
+    p = _abs(p)
+    if not p.exists():
+        return ""
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def df_sha256(df: pd.DataFrame) -> str:
+    # deterministik hash için: index yok, satır sırası stabil olmalı
+    b = df.to_csv(index=False).encode("utf-8")
+    return hashlib.sha256(b).hexdigest()
 
 def normalize_event_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -112,23 +145,28 @@ def resolve_label_path(initial: Path) -> Path | None:
             return _abs(c)
     return None
 
-
 # =========================
 # Akış
 # =========================
 def main() -> int:
     print("📂 CWD:", Path.cwd())
     print("🔧 ENV → FR_EVENTS_PATH:", _abs(EVENTS_PATH))
+    print("🔧 ENV → FR_EVENTS_URL :", EVENTS_URL)
     print("🔧 ENV → FR_LABEL_PATH :", _abs(LABEL_PATH))
     print("🔧 ENV → FR_OUT_PATH   :", _abs(OUT_PATH))
     print("🔧 ENV → FR_MIRROR_DIR :", _abs(MIRROR_DIR))
     print("🔧 ENV → FR_YCOL       :", YCOL)
     print("🔧 ENV → FR_AUTOFIND_LABEL:", AUTOFIND_LABEL)
-
+    print("🔧 ENV → FR_SKIP_IF_NO_CHANGE:", SKIP_IF_NO_CHANGE)
+    
     # 1) Olay verisini oku
-    events = safe_read_csv(EVENTS_PATH)
+    if EVENTS_URL.strip():
+        events = safe_read_csv(EVENTS_URL.strip())
+    else:
+        events = safe_read_csv(EVENTS_PATH)
     if events.empty:
-        print(f"❌ Olay verisi boş veya yok: {_abs(EVENTS_PATH)}")
+        src = EVENTS_URL.strip() if EVENTS_URL.strip() else str(_abs(EVENTS_PATH))
+        print(f"❌ Olay verisi boş veya yok: {src}")
         return 0
     if "id" not in events.columns:
         print("⚠️ Uyarı: 'id' kolonu bulunamadı. Yine de olay bazlı devam edilecek.")
@@ -166,21 +204,31 @@ def main() -> int:
         rate = round(missing / base_len * 100, 2) if base_len else 0.0
         print(f"ℹ️ Eşleşemeyen olay satırı: {missing:,} (%{rate}) → {YCOL} NaN. NaN'ları 0'a çeviriyorum.")
         out[YCOL] = out[YCOL].fillna(0).astype(int)
+        
+    sort_cols = [c for c in ["id","incident_datetime","datetime","date","GEOID","season","day_of_week","event_hour"] if c in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols, kind="mergesort").reset_index(drop=True)
 
-    # 5) İz bilgisi
-    out["fr_snapshot_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    out["fr_label_keys"]  = "+".join(used_keys or [])
-
-    # 6) Kaydet & mirror
+    if SKIP_IF_NO_CHANGE:
+        old_hash = file_sha256(OUT_PATH)
+        new_hash = df_sha256(out)
+        if old_hash and (old_hash == new_hash):
+            print("✅ Çıktı değişmedi → dosya yazılmadı / mirror yapılmadı.")
+            return 0
+            
+    # 5) Kaydet & mirror
     safe_save_csv(out, OUT_PATH)
-    try:
-        _abs(MIRROR_DIR).mkdir(parents=True, exist_ok=True)
-        shutil.copy2(_abs(OUT_PATH), _abs(MIRROR_DIR) / _abs(OUT_PATH).name)
-        print(f"📦 Mirror kopya: {_abs(MIRROR_DIR) / _abs(OUT_PATH).name}")
-    except Exception as e:
-        print(f"ℹ️ Mirror kopya atlandı/başarısız: {e}")
+    if MIRROR_ENABLED:
+        try:
+            _abs(MIRROR_DIR).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_abs(OUT_PATH), _abs(MIRROR_DIR) / _abs(OUT_PATH).name)
+            print(f"📦 Mirror kopya: {_abs(MIRROR_DIR) / _abs(OUT_PATH).name}")
+        except Exception as e:
+            print(f"ℹ️ Mirror kopya atlandı/başarısız: {e}")
+    else:
+        print("ℹ️ Mirror kapalı (FR_MIRROR_ENABLED=0).")
 
-    # 7) Hızlı özet
+    # 6) Hızlı özet
     if YCOL in out.columns:
         vc = out[YCOL].value_counts(normalize=True, dropna=False).mul(100).round(2)
         print("\n📊 Y_label oranları (%):")
@@ -191,7 +239,7 @@ def main() -> int:
         except Exception:
             print(vc)
 
-    # 8) Temel kalite kontrolleri
+    # 7) Temel kalite kontrolleri
     if "id" in out.columns:
         dup = int(out["id"].duplicated().sum())
         if dup:
