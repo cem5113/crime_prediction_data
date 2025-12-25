@@ -174,6 +174,7 @@ def _write_bytes_atomic(dst: Path, content: bytes) -> None:
 def download_url_to_file(url: str, dst: Path, timeout: int = 120) -> bool:
     try:
         r = requests.get(url, timeout=timeout)
+        print(f"⬇️ Release HTTP {r.status_code} → {url}")
         r.raise_for_status()
         if not _is_valid_csv_bytes(r.content):
             return False
@@ -252,13 +253,17 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
         print(f"\u26A0\ufe0f Mevcut sf_crime okunamadı: {e}")
         return None
 
-
 # Başla: veri yükle & eksik günler
 
 today = datetime.now(SF_TZ).date()
 
 base_path = ensure_base_csv_remote_first()
 if base_path is None:
+    raise SystemExit(1)
+
+print(f"📦 Base path seçildi: {base_path}")
+df_old = read_existing_crime_csv(base_path)
+if df_old is None:
     raise SystemExit(1)
 
 if "date" not in df_old.columns:
@@ -514,7 +519,6 @@ log_date_range(df_new, "date", "Suç (yeni)")
 # Birleştir & zamanda özellikler
 if "time" not in df_old.columns:
     df_old["time"] = "00:00:00"
-_before_merge = df_old.shape
 if "date" in df_old.columns:
     df_old["date"] = pd.to_datetime(df_old["date"], errors="coerce").dt.date
 
@@ -528,8 +532,6 @@ df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
 
-# 5y pencere + datetime
-# 5y pencere + datetime
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
 start_date_5y = today - timedelta(days=5*365)
 df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)]
