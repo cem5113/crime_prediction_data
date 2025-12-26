@@ -42,7 +42,7 @@ HOT_DAY_THRESHOLD_C = float(os.getenv("HOT_DAY_THRESHOLD_C", "25.0"))
 ENRICH_CRIME_WITH_WEATHER = os.getenv("ENRICH_CRIME_WITH_WEATHER", "1") in ("1", "true", "True")
 
 CRIME_IN_PATH  = os.getenv("CRIME_IN_PATH",  os.path.join(DATA_DIR, "sf_crime_07.csv"))
-CRIME_OUT_PATH = os.getenv("CRIME_OUT_PATH", os.path.join(DATA_DIR, "sf_crime_09.csv"))
+CRIME_OUT_PATH = os.getenv("CRIME_OUT_PATH", os.path.join(DATA_DIR, "sf_crime_08.csv"))
 
 # Crime'da tarih kolonu adayları (sende genelde 'date' var)
 CRIME_DATE_COL_CANDIDATES = [c.strip() for c in os.getenv(
@@ -199,9 +199,9 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
     # NaN raporu (özellikle yeni weather kolonları için)
     new_weather_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
     new_weather_cols = [c for c in new_weather_cols if c in out.columns]
-    nan_report(out, "sf_crime_09 yazılmadan önce (tüm kolonlar)")
+    nan_report(out, "sf_crime_08 yazılmadan önce (tüm kolonlar)")
     if new_weather_cols:
-        nan_report(out, "Weather kolonları (sf_crime_09 yazılmadan önce)", only_cols=new_weather_cols)
+        nan_report(out, "Weather kolonları (sf_crime_08 yazılmadan önce)", only_cols=new_weather_cols)
 
     # kaydet
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
