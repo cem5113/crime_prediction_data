@@ -39,6 +39,17 @@ GH_UPLOAD_MODE       = os.getenv("GH_UPLOAD_MODE", "skip_if_same").strip()
 LAT, LON = float(os.getenv("WX_LAT", "37.7749")), float(os.getenv("WX_LON", "-122.4194"))
 HOT_DAY_THRESHOLD_C = float(os.getenv("HOT_DAY_THRESHOLD_C", "25.0"))
 
+ENRICH_CRIME_WITH_WEATHER = os.getenv("ENRICH_CRIME_WITH_WEATHER", "1") in ("1", "true", "True")
+
+CRIME_IN_PATH  = os.getenv("CRIME_IN_PATH",  os.path.join(DATA_DIR, "sf_crime_07.csv"))
+CRIME_OUT_PATH = os.getenv("CRIME_OUT_PATH", os.path.join(DATA_DIR, "sf_crime_09.csv"))
+
+# Crime'da tarih kolonu adayları (sende genelde 'date' var)
+CRIME_DATE_COL_CANDIDATES = [c.strip() for c in os.getenv(
+    "CRIME_DATE_COL_CANDIDATES",
+    "date,datetime,time"
+).split(",") if c.strip()]
+
 # =====================================================================================
 # TARİH PENCERESİ
 # =====================================================================================
@@ -126,9 +137,77 @@ def read_existing_weather(path: str) -> pd.DataFrame:
         print("⚠️ Mevcut weather dosyası okunamadı, baştan çekilecek:", e)
         return pd.DataFrame(columns=["date","tavg","tmin","tmax","prcp","temp_range","is_rainy","is_hot_day"])
 
-# =====================================================================================
-# (YENİ) EKSİK GÜNLERİ PREV-YEAR SAME-WEEK MEAN İLE DOLDUR
-# =====================================================================================
+def find_first_existing_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    low = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c.lower() in low:
+            return low[c.lower()]
+    return None
+
+def nan_report(df: pd.DataFrame, title: str, only_cols: list[str] | None = None) -> None:
+    x = df[only_cols].copy() if only_cols else df
+    s = x.isna().sum()
+    s = s[s > 0].sort_values(ascending=False)
+    print(f"🔎 NaN sayıları ({title}):")
+    if s.empty:
+        print("✅ NaN yok.")
+    else:
+        print(s.to_string())
+
+def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.DataFrame) -> None:
+    if not os.path.exists(crime_path):
+        print(f"⚠️ Crime dosyası yok, merge atlandı: {crime_path}")
+        return
+
+    crime = pd.read_csv(crime_path, low_memory=False)
+    print(f"📊 CRIME (weather merge girdi): {crime.shape[0]} satır × {crime.shape[1]} sütun")
+
+    # crime'da tarih kolonu bul
+    dcol = find_first_existing_col(crime, CRIME_DATE_COL_CANDIDATES)
+    if dcol is None:
+        raise KeyError(f"❌ Crime içinde tarih kolonu bulunamadı. Denenenler: {CRIME_DATE_COL_CANDIDATES}")
+
+    # crime date -> date (sadece gün)
+    crime["_date_"] = pd.to_datetime(crime[dcol], errors="coerce").dt.date
+    if crime["_date_"].isna().all():
+        raise ValueError(f"❌ Crime tarih kolonu parse edilemedi: {dcol}")
+
+    # weather df hazırla
+    w = weather_df.copy()
+    if "date" not in w.columns:
+        raise KeyError("❌ Weather DF içinde 'date' yok.")
+    w["date"] = pd.to_datetime(w["date"], errors="coerce").dt.date
+    w = w.dropna(subset=["date"]).drop_duplicates("date").sort_values("date")
+
+    # çakışma olmasın diye kolonları prefix'le (istersen prefixsiz de bırakabilirsin)
+    # Burada prefix KULLANMIYORUM çünkü senin pipeline'da isimler zaten bekleniyor olabilir:
+    wcols = ["date", "tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
+    wcols = [c for c in wcols if c in w.columns]
+    w = w[wcols].copy()
+
+    # merge
+    before = crime.shape
+    out = crime.merge(w, left_on="_date_", right_on="date", how="left")
+
+    # 'date' çifti oluştuysa: weather tarafındaki 'date' kolonu redundant; drop et
+    # (crime'ın orijinal 'date' kolonu durur)
+    out.drop(columns=["date"], errors="ignore", inplace=True)
+    out.drop(columns=["_date_"], errors="ignore", inplace=True)
+
+    print(f"🔗 CRIME ⨯ WEATHER (date-merge): {before[0]}×{before[1]} → {out.shape[0]}×{out.shape[1]} (Δr={out.shape[0]-before[0]}, Δc={out.shape[1]-before[1]})")
+
+    # NaN raporu (özellikle yeni weather kolonları için)
+    new_weather_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
+    new_weather_cols = [c for c in new_weather_cols if c in out.columns]
+    nan_report(out, "sf_crime_09 yazılmadan önce (tüm kolonlar)")
+    if new_weather_cols:
+        nan_report(out, "Weather kolonları (sf_crime_09 yazılmadan önce)", only_cols=new_weather_cols)
+
+    # kaydet
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    out.to_csv(out_path, index=False)
+    print(f"✅ Weather eklendi → {out_path} | Satır: {len(out):,} | Sütun: {out.shape[1]}")
+
 def fill_missing_prev_year_same_week(allw: pd.DataFrame) -> pd.DataFrame:
     """
     5Y pencere içinde tam tarih evreni kurar.
@@ -347,3 +426,11 @@ _WEATHER_LATEST = allw.copy()
 # GitHub durumu raporla + gerekirse yükle
 if Github is not None and (PROBE_GH_STATUS or UPLOAD_WEATHER_TO_GH):
     upsert_github_csv_smart(allw, WEATHER_TARGET_PATH)
+
+if ENRICH_CRIME_WITH_WEATHER:
+    try:
+        enrich_crime_with_weather(CRIME_IN_PATH, CRIME_OUT_PATH, _WEATHER_LATEST)
+    except Exception as e:
+        print(f"❌ Crime-weather merge hatası: {e}")
+else:
+    print("ℹ️ ENRICH_CRIME_WITH_WEATHER=0 → Crime merge atlandı.")
