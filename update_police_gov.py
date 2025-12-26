@@ -241,6 +241,27 @@ log_delta(_before, df.shape, "CRIME ⨯ GEOID(polis+gov)")
 # -----------------------------------------------------------------------------
 # KAYDET
 # -----------------------------------------------------------------------------
+nan_counts = df.isna().sum()
+nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+print("🔎 NaN sayıları (sf_crime_07 yazılmadan önce):")
+if nan_counts.empty:
+    print("✅ NaN yok.")
+else:
+    print(nan_counts.to_string())
+
+# İsteğe bağlı: sadece PG (polis+gov) kolonlarının NaN'ı
+pg_cols = [
+    "distance_to_police", "distance_to_police_range",
+    "distance_to_government_building", "distance_to_government_building_range",
+    "is_near_police", "is_near_government",
+]
+pg_cols = [c for c in pg_cols if c in df.columns]
+if pg_cols:
+    print("🔎 Police/Gov kolonları NaN sayıları:")
+    print(df[pg_cols].isna().sum().to_string())
+# -----------------------------------------------
+
 safe_save_csv(df, CRIME_OUT)
 print(f"✅ Kaydedildi: {CRIME_OUT} | Satır: {len(df):,} | Sütun: {df.shape[1]}")
 
