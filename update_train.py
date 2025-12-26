@@ -86,8 +86,8 @@ TRAIN_SUMMARY_NAME     = os.path.join(BASE_DIR, os.getenv("TRAIN_SUMMARY_NAME", 
 
 # Census GeoJSON adayları
 CENSUS_CANDIDATES = [
-    os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson"),
-    os.path.join(".",      "sf_census_blocks_with_population.geojson"),
+    os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
+    os.path.join(".",      "sf_census_blocks.geojson"),
 ]
 
 # GTFS kaynakları (BART)
@@ -354,6 +354,18 @@ log_shape(crime_enriched, "CRIME (train enrich sonrası)")
 # =========================
 # 9) Kaydet & önizleme
 # =========================
+
+# -------- NaN raporu (kayıttan hemen önce) --------
+nan_counts = crime_enriched.isna().sum()
+nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+print("🔎 NaN sayıları (sf_crime_05 yazılmadan önce):")
+if nan_counts.empty:
+    print("✅ NaN yok.")
+else:
+    print(nan_counts.to_string())
+# -----------------------------------------------
+
 safe_save_csv(crime_enriched, CRIME_OUTPUT)
 print("📦 Yeni sütunlar eklendi (örnek):", ["distance_to_train","distance_to_train_range","train_stop_count","train_stop_count_range"])
 print(f"✅ Güncellenmiş veri kaydedildi → {CRIME_OUTPUT}")
