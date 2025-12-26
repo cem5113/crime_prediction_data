@@ -585,10 +585,39 @@ except Exception:
     pass
 
 print(f"🧾 Y output hedefi: {y_csv_path}")
+print("\n🧩 [QC] sf_crime_y (df_all) güncel özet")
+print(f"🧮 Shape: {df_all.shape[0]} satır × {df_all.shape[1]} sütun")
+
+nan_counts = df_all.isna().sum().sort_values(ascending=False)
+print("\n🕳️ [QC] Sütun bazında NaN sayıları (azalan):")
+for col, cnt in nan_counts.items():
+    print(f"  - {col}: {int(cnt)}")
+
+# Rastgele 5 satır (tekrarlanabilir olsun diye random_state verdim)
+print("\n🎲 [QC] Rastgele 5 satır örneği (df_all):")
+with pd.option_context("display.max_columns", 200, "display.width", 200):
+    print(df_all.sample(n=min(5, len(df_all)), random_state=42))
+    
 event_out = Path(y_csv_path)  # default sf_crime_y.csv
 safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
 
+try:
+    _tmp = pd.read_csv(event_out, dtype={"GEOID": str}, low_memory=False)
+    print("\n📄 [QC] Dosyadan okunan sf_crime_y.csv özeti")
+    print(f"🧮 Shape(file): {_tmp.shape[0]} satır × {_tmp.shape[1]} sütun")
+
+    nan_counts_file = _tmp.isna().sum().sort_values(ascending=False)
+    print("\n🕳️ [QC] Dosya sütun bazında NaN sayıları (azalan):")
+    for col, cnt in nan_counts_file.items():
+        print(f"  - {col}: {int(cnt)}")
+
+    print("\n🎲 [QC] Dosyadan rastgele 5 satır:")
+    with pd.option_context("display.max_columns", 200, "display.width", 200):
+        print(_tmp.sample(n=min(5, len(_tmp)), random_state=42))
+except Exception as e:
+    print("⚠️ [QC] Dosyadan okuma kontrolü başarısız:", e)
+    
 try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
 
