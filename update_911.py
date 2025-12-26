@@ -691,7 +691,13 @@ crime = pd.read_csv(crime_grid_path, dtype={"GEOID": str}, low_memory=False)
 log(f"📥 Suç grid yüklendi: {len(crime)} satır ({crime_grid_path})")
 log_shape(crime, "CRIME grid — ham")
 
+before = len(crime)
 crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
+crime = crime[crime["GEOID"].notna()].copy()
+dropped = before - len(crime)
+if dropped:
+    log(f"🧹 crime grid: GEOID boş/bozuk satır atıldı: {dropped}")
+
 if "event_hour" not in crime.columns:
     raise ValueError("❌ Suç grid dosyasında 'event_hour' yok.")
 crime["hr_key"] = ((pd.to_numeric(crime["event_hour"], errors="coerce").fillna(0).astype(int)) // 3) * 3
@@ -730,9 +736,11 @@ else:
 fill_cols = [
     "911_request_count_hour_range",
     "911_request_count_daily(before_24_hours)",
+    "hr_cnt", "daily_cnt",               # 👈 SADECE BUNU EKLEDİK
     "911_geo_last3d","911_geo_last7d",
     "911_geo_hr_last3d","911_geo_hr_last7d",
 ] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
+
 for c in fill_cols:
     if c in merged.columns:
         merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype("int32")
