@@ -166,8 +166,8 @@ BUS_SUMMARY_NAME   = os.path.join(BASE_DIR, os.getenv("BUS_SUMMARY_NAME", "bus.c
 
 # census geojson adayları
 CENSUS_CANDIDATES = [
-    os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson"),
-    os.path.join(".",      "sf_census_blocks_with_population.geojson"),
+    os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
+    os.path.join(".",      "sf_census_blocks.geojson"),
 ]
 
 # Socrata dataset ve token
@@ -356,6 +356,15 @@ crime["bus_stop_count"] = crime["bus_stop_count"].fillna(0).astype(int)
 
 log_delta(_before, crime.shape, "CRIME ⨯ BUS (GEOID enrich)")
 log_shape(crime, "CRIME (bus enrich sonrası)")
+
+nan_counts = crime.isna().sum()
+nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+print("🔎 NaN sayıları (sf_crime_04 yazılmadan önce):")
+if nan_counts.empty:
+    print("✅ NaN yok.")
+else:
+    print(nan_counts.to_string())
 
 # ========== 8) kayıtlar ==========
 safe_save_csv(crime, CRIME_OUTPUT)
