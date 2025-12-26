@@ -92,7 +92,7 @@ CENSUS_CANDIDATES = [
 
 # GTFS kaynakları (BART)
 GTFS_URLS = [
-    os.getenv("BART_GTFS_URL", "https://transitfeeds.com/p/bart/58/latest/download"),
+    os.getenv("BART_GTFS_URL", "https://files.mobilitydatabase.org/mdb-53/mdb-53-202512180015/mdb-53-202512180015.zip"),
     # Dilersen alternatifler için env üzerinden ek string verebilirsin:
     os.getenv("BART_GTFS_URL_ALT1", "").strip(),
     os.getenv("BART_GTFS_URL_ALT2", "").strip(),
@@ -119,8 +119,14 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                     print(f"⚠️ Geçici hata (HTTP {r.status_code}) → {attempt+1}. deneme, {sleep_s:.1f}s bekleme…")
                     time.sleep(sleep_s); continue
                 r.raise_for_status()
-                # İçerik zip olmalı
-                buf = io.BytesIO(r.content)
+                
+                content = r.content
+                # ZIP dosyaları genelde "PK\x03\x04" ile başlar
+                if not content.startswith(b"PK"):
+                    snippet = content[:200].decode("utf-8", errors="ignore")
+                    raise ValueError(f"ZIP gelmedi (ilk 200 char): {snippet}")
+                
+                buf = io.BytesIO(content)
                 with zipfile.ZipFile(buf, "r") as zf:
                     members = [m for m in zf.namelist() if m.lower().endswith("stops.txt")]
                     if not members:
