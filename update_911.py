@@ -61,6 +61,20 @@ def log_date_range(df, date_col="date", label="911"):
         return
     log(f"🧭 {label} tarihi aralığı: {s.min()} → {s.max()} (gün={s.nunique()})")
 
+def log_nan_report(df: pd.DataFrame, label: str, top_n: int = 200):
+    """Sadece NaN içeren sütunları ve NaN adetlerini basar (0 olanları yazmaz)."""
+    if df is None or df.empty:
+        log(f"⚠️ {label}: DataFrame boş; NaN raporu yok.")
+        return
+    na = df.isna().sum()
+    na = na[na > 0].sort_values(ascending=False)
+    if na.empty:
+        log(f"✅ {label}: NaN yok (tüm sütunlar dolu).")
+        return
+    log(f"🧾 {label}: NaN olan sütun sayısı = {len(na)} (top {min(top_n,len(na))} listeleniyor)")
+    for col, cnt in na.head(top_n).items():
+        log(f"   - {col}: {int(cnt):,} NaN")
+        
 def normalize_geoid(s: pd.Series, target_len: int) -> pd.Series:
     """Sadece rakamları al, soldan L karaktere kes ve zfill(L) yap (panel ile uyumlu)."""
     s = s.astype(str).str.extract(r"(\d+)", expand=False)
@@ -612,7 +626,13 @@ final_911["season"] = final_911["month"].map(_season_map).astype("category")
 
 log_shape(final_911, "911 summary (normalize)")
 log_date_range(final_911, "date", "911")
-
+log_nan_report(final_911, "911 summary (normalize)")
+try:
+    log("🔎 911 summary örnek 5 satır:")
+    print(final_911.head(5).to_string(index=False))
+except Exception as e:
+    log(f"⚠️ 911 head(5) yazdırılamadı: {e}")
+    
 # =========================
 # ROLLING (3g/7g) — GEOID ve GEOID×hr_key
 # =========================
@@ -701,6 +721,15 @@ for c in fill_cols:
 safe_save_csv(merged, str(merged_output_path))
 log_shape(merged, "CRIME⨯911 (kayıt öncesi)")
 log(f"✅ Suç + 911 birleştirmesi tamamlandı → {merged_output_path}")
+log_nan_report(merged, "sf_crime_01 (CRIME⨯911 merged)")
+
+# İstersen 5 satır örnek de ayrı yazsın (zaten en altta var, ama burada log’u netleştiriyoruz)
+try:
+    log("🔎 sf_crime_01 örnek 5 satır:")
+    print(merged.head(5).to_string(index=False))
+except Exception as e:
+    log(f"⚠️ merged head(5) yazdırılamadı: {e}")
+
 
 # === Normalize: kritik dosyaların OUT_DIR altında olduğundan emin ol (no-op olabilir)
 try:
