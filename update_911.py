@@ -722,6 +722,27 @@ for c in fill_cols:
     if c in merged.columns:
         merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype("int32")
 
+try:
+    nan_counts = merged.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+    log(f"🧪 NaN raporu: NaN içeren sütun sayısı = {len(nan_counts)}")
+
+    if len(nan_counts) > 0:
+        # Konsolda okunaklı liste
+        for col, cnt in nan_counts.items():
+            log(f"   - {col}: {int(cnt):,} NaN")
+
+        # İstersen dosyaya da yaz (OUT_DIR altına)
+        nan_report_path = OUT_DIR / "nan_report_sf_crime_01.csv"
+        nan_counts.rename("nan_count").reset_index().rename(columns={"index": "column"}) \
+                  .to_csv(nan_report_path, index=False)
+        log(f"📄 NaN raporu kaydedildi → {nan_report_path}")
+    else:
+        log("✅ NaN yok.")
+except Exception as e:
+    log(f"⚠️ NaN raporu üretilemedi: {e}")
+
 # YAZ — OUT_DIR’e (artifact kökü) 
 safe_save_csv(merged, str(merged_output_path))
 log_shape(merged, "CRIME⨯911 (kayıt öncesi)")
