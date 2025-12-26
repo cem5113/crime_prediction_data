@@ -136,11 +136,6 @@ RAW_911_URL_CANDIDATES = [
     "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
 ]
 
-# Komşu ayarları
-ENABLE_NEIGHBORS  = os.getenv("ENABLE_NEIGHBORS", "1").lower() in ("1","true","yes","on")
-NEIGHBOR_METHOD   = os.getenv("NEIGHBOR_METHOD", "touches")  # touches | radius
-NEIGHBOR_RADIUS_M = float(os.getenv("NEIGHBOR_RADIUS_M", "500"))
-
 # SF BBOX (lat/lon temizliği için)
 SF_BBOX = (-123.2, 37.6, -122.3, 37.9)
 
@@ -638,53 +633,10 @@ for W in (3, 7):
     ).astype("float32")
 
 # =========================
-# KOMŞU GEOID ÖZELLİKLERİ (günlük baz)
-# =========================
-def build_neighbors(method: str = "touches", radius_m: float = 500.0) -> pd.DataFrame:
-    gdf_blocks, _ = _load_blocks()
-    tracts = gdf_blocks.dissolve(by="GEOID", as_index=False)
-    if method == "radius":
-        tr_utm = tracts.to_crs("EPSG:26910")
-        buf = tr_utm.buffer(radius_m)
-        g_buf = gpd.GeoDataFrame(tr_utm[["GEOID"]].copy(), geometry=buf, crs=tr_utm.crs)
-        join = gpd.sjoin(g_buf, tr_utm[["GEOID","geometry"]].rename(columns={"GEOID":"nbr"}), predicate="intersects")
-        edges = join[["GEOID","nbr"]]
-    else:
-        join = gpd.sjoin(tracts[["GEOID","geometry"]], tracts[["GEOID","geometry"]].rename(columns={"GEOID":"nbr"}), predicate="touches")
-        edges = join[["GEOID","nbr"]]
-    edges = edges[edges["GEOID"] != edges["nbr"]].copy()
-    edges["pair"] = edges.apply(lambda r: tuple(sorted((r["GEOID"], r["nbr"]))), axis=1)
-    edges = edges.drop_duplicates("pair").drop(columns=["pair"])
-    edges["GEOID"] = normalize_geoid(edges["GEOID"], DEFAULT_GEOID_LEN)
-    edges["nbr"] = normalize_geoid(edges["nbr"], DEFAULT_GEOID_LEN)
-    return pd.DataFrame(edges)
-
-neighbors_df = None
-if ENABLE_NEIGHBORS:
-    try:
-        neighbors_df = build_neighbors(NEIGHBOR_METHOD, NEIGHBOR_RADIUS_M)
-        log_shape(neighbors_df, f"Komşu haritası ({NEIGHBOR_METHOD})")
-    except Exception as e:
-        log(f"⚠️ Komşu haritası üretilemedi: {e}")
-        neighbors_df = None
-
-_neighbor_roll = None
-if neighbors_df is not None and not neighbors_df.empty:
-    day_nbr = neighbors_df.merge(_day_unique.rename(columns={"GEOID":"nbr"}), on="nbr", how="left")
-    day_nbr = day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"].sum().rename(columns={"daily_cnt":"nbr_daily_cnt"})
-    _neighbor_roll = day_nbr.sort_values(["GEOID","date"]).reset_index(drop=True)
-    for W in (3, 7):
-        _neighbor_roll[f"911_neighbors_last{W}d"] = (
-            _neighbor_roll.groupby("GEOID")["nbr_daily_cnt"].transform(lambda s: s.rolling(W, min_periods=1).sum().shift(1))
-        ).astype("float32")
-
-# =========================
 # MERGE STRATEJİSİ
 # =========================
 _enriched = final_911.merge(_hr_unique, on=["GEOID","hr_key","date"], how="left")
 _enriched = _enriched.merge(_day_unique, on=["GEOID","date"], how="left")
-if _neighbor_roll is not None:
-    _enriched = _enriched.merge(_neighbor_roll[["GEOID","date"] + [f"911_neighbors_last{W}d" for W in (3, 7)]], on=["GEOID","date"], how="left")
 
 # Crime grid arama — OUT_DIR öncelikli
 CRIME_GRID_CANDIDATES = [
@@ -720,7 +672,7 @@ else:
         "911_request_count_daily(before_24_hours)",
         "911_geo_last3d","911_geo_last7d",
         "911_geo_hr_last3d","911_geo_hr_last7d",
-    ] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
+    ]
     cal_agg = (_enriched.groupby(cal_keys, as_index=False, observed=True)[agg_cols]
                         .median(numeric_only=True))
     if "day_of_week" not in crime.columns:
@@ -740,7 +692,7 @@ fill_cols = [
     "911_request_count_daily(before_24_hours)",
     "911_geo_last3d","911_geo_last7d",
     "911_geo_hr_last3d","911_geo_hr_last7d",
-] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
+] 
 for c in fill_cols:
     if c in merged.columns:
         merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype("int32")
