@@ -54,7 +54,7 @@ BULK_RANGE          = os.getenv("SFCRIME_BULK_RANGE", "1").lower() in ("1","true
 
 # Yol/çıktılar
 save_dir   = "."
-blocks_path = os.path.join(save_dir, "sf_census_blocks_with_population.geojson")
+blocks_path = os.path.join(save_dir, "sf_census_blocks.geojson")
 
 # ---- CACHE/Y-only çıkış ----
 Y_CSV_NAME = os.getenv("Y_CSV_NAME", "sf_crime_y.csv")
