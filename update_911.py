@@ -663,6 +663,21 @@ _enriched = _enriched.merge(_day_unique, on=["GEOID","date"], how="left")
 if _neighbor_roll is not None:
     _enriched = _enriched.merge(_neighbor_roll[["GEOID","date"] + [f"911_neighbors_last{W}d" for W in (3, 7)]], on=["GEOID","date"], how="left")
 
+KEEP_911_COLS = [
+    "GEOID", "date", "hr_key",
+    "911_request_count_hour_range",
+    "911_request_count_daily(before_24_hours)",
+    "hr_cnt", "daily_cnt",
+    "911_geo_last3d", "911_geo_last7d",
+    "911_geo_hr_last3d", "911_geo_hr_last7d",
+]
+if _neighbor_roll is not None:
+    KEEP_911_COLS += ["911_neighbors_last3d", "911_neighbors_last7d"]
+
+# _enriched içinde olmayanları otomatik ele
+KEEP_911_COLS = [c for c in KEEP_911_COLS if c in _enriched.columns]
+_enriched = _enriched[KEEP_911_COLS].copy()
+
 # Crime grid arama — OUT_DIR öncelikli
 CRIME_GRID_CANDIDATES = [
     OUT_DIR / "sf_crime_y.csv",
