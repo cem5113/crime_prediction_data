@@ -675,12 +675,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
-          python -u "$PY"
-          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
-
-          # script seç
+      
+          # script seç (ÖNCE)
           if [ -f scripts/make_neighbors.py ]; then
             PY="scripts/make_neighbors.py"
           elif [ -f make_neighbors.py ]; then
@@ -689,20 +685,21 @@ jobs:
             echo "⚠️ make_neighbors.py bulunamadı, adım atlanıyor."
             exit 0
           fi
-
+      
+          echo "✅ Using PY=$PY"
+          ls -lah "$PY" || true
+      
+          # input kontrol
+          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
+      
+          # çalıştır
           python -u "$PY"
-
-          # çıktı kontrolü: hangisi oluştu?
-          if [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ]; then
-            OUT="${CRIME_DATA_DIR}/sf_crime_09.csv"
-          else
-            echo "❌ Ne sf_crime_08.csv ne de sf_crime_09.csv oluştu. make_neighbors.py çıktısını kontrol et."
-            exit 5
-          fi
-
-          echo "✅ Neighbors çıktı: ${OUT}"
-          echo "HEAD (${OUT}):"
-          head -n 5 "${OUT}" || true
+      
+          # output kontrol
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
+      
+          echo "✅ Neighbors çıktı: ${CRIME_DATA_DIR}/sf_crime_09.csv"
+          head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
 
       - name: 10.7) Install feature-analysis deps
         if: ${{ steps.gate.outputs.proceed == 'true' }}
