@@ -383,11 +383,32 @@ if __name__ == "__main__":
     log_delta(before_enrich, out_df.shape, "CRIME ⨯ POI (final)")
 
     # 5) Kaydet
+
+    # -------- NaN raporu (kayıttan hemen önce) --------
+    nan_counts = out_df.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+    print("🔎 NaN sayıları (sf_crime_06 yazılmadan önce):")
+    if nan_counts.empty:
+        print("✅ NaN yok.")
+    else:
+        print(nan_counts.to_string())
+
+    # İsteğe bağlı: sadece POI ile ilgili yeni sütunların NaN'ı
+    poi_cols = [
+        "poi_total_count","poi_risk_score","poi_dominant_type",
+        "poi_total_count_range","poi_risk_score_range"
+    ]
+    poi_cols = [c for c in poi_cols if c in out_df.columns]
+    if poi_cols:
+        print("🔎 POI kolonları NaN sayıları:")
+        print(out_df[poi_cols].isna().sum().to_string())
+    # -----------------------------------------------
+
     _safe_save_csv(out_df, CRIME_OUT)  # <-- düzeltildi
     log_shape(out_df, "CRIME (POI enrich sonrası)")
     print(f"✅ Yazıldı: {CRIME_OUT}  |  Satır: {len(out_df):,}")
-    
-    # Örnek satırlar (olan POI sütunlarıyla) — İLK 3 SATIR
+
     try:
         cols = [c for c in ["GEOID","poi_total_count","poi_risk_score","poi_dominant_type"] if c in out_df.columns]
         preview = out_df[cols].head(3) if cols else out_df.head(3)
