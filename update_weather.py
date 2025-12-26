@@ -320,6 +320,23 @@ allw = allw[(allw["date"] >= win_start) & (allw["date"] <= win_end)].copy()
 allw = fill_missing_prev_year_same_week(allw)
 
 # Kaydet (local)
+nan_counts = allw.isna().sum()
+nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+print("🔎 NaN sayıları (sf_weather_5years yazılmadan önce):")
+if nan_counts.empty:
+    print("✅ NaN yok.")
+else:
+    print(nan_counts.to_string())
+
+# İsteğe bağlı: kritik weather kolonları özel rapor
+wx_cols = ["date", "tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
+wx_cols = [c for c in wx_cols if c in allw.columns]
+if wx_cols:
+    print("🔎 Weather kolonları NaN sayıları:")
+    print(allw[wx_cols].isna().sum().to_string())
+# -----------------------------------------------
+
 os.makedirs(os.path.dirname(WEATHER_CSV), exist_ok=True)
 allw.to_csv(WEATHER_CSV, index=False)
 print(f"💾 Weather kaydedildi: {WEATHER_CSV} — {len(allw)} satır, {allw['date'].min()} → {allw['date'].max()}")
