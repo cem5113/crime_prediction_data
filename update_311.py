@@ -73,7 +73,7 @@ DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-
 SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
 
 # GeoJSON adayları
-GEOJSON_NAME = os.getenv("SF_BLOCKS_GEOJSON", "sf_census_blocks_with_population.geojson")
+GEOJSON_NAME = os.getenv("SF_BLOCKS_GEOJSON", "sf_census_blocks.geojson")
 GEOJSON_CANDIDATES = [
     os.path.join(SAVE_DIR, GEOJSON_NAME),
     os.path.join("crime_prediction_data", GEOJSON_NAME),
@@ -622,6 +622,15 @@ def main():
             merged["311_request_count"] = pd.to_numeric(merged["311_request_count"], errors="coerce").fillna(0).astype(int)
         else:
             merged["311_request_count"] = 0
+
+        nan_counts = merged.isna().sum()
+        nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+        
+        print("🔎 Final NaN kontrolü (sf_crime_02 yazılmadan önce):")
+        if len(nan_counts) == 0:
+            print("✅ NaN yok.")
+        else:
+            print(nan_counts.to_string())
 
         log_shape(merged, "CRIME⨯311 (kayıt öncesi)")
         save_atomic(merged, os.path.join(SAVE_DIR, "sf_crime_02.csv"))
