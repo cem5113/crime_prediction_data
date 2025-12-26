@@ -723,7 +723,6 @@ log_shape(merged, "CRIME⨯911 (kayıt öncesi)")
 log(f"✅ Suç + 911 birleştirmesi tamamlandı → {merged_output_path}")
 log_nan_report(merged, "sf_crime_01 (CRIME⨯911 merged)")
 
-# İstersen 5 satır örnek de ayrı yazsın (zaten en altta var, ama burada log’u netleştiriyoruz)
 try:
     log("🔎 sf_crime_01 örnek 5 satır:")
     print(merged.head(5).to_string(index=False))
