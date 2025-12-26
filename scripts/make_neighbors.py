@@ -113,8 +113,8 @@ def bump_version_name(p: Path) -> Path:
 # ---------- config ----------
 BASE_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
 
-FR_IN_ENV  = os.environ.get("sf_cRIME_IN",  "sf_crime_09.csv")
-FR_OUT_ENV = os.environ.get("sf_cRIME_OUT", "sf_crime_10.csv")
+FR_IN_ENV  = os.environ.get("sf_CRIME_IN",  "sf_crime_08.csv")
+FR_OUT_ENV = os.environ.get("sf_CRIME_OUT", "sf_crime_09.csv")
 
 # neighbors.csv için: env verilmemişse çalışma dizinindeki neighbors.csv
 NEIGH_PATH = Path(
@@ -198,7 +198,7 @@ def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataF
     return out
 
 def main() -> int:
-    log("🚀 enrich_with_neighbors_fr.py (sf_crime_09 → sf_crime_10)")
+    log("🚀 enrich_with_neighbors_fr.py (sf_crime_08 → sf_crime_09)")
     
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     
