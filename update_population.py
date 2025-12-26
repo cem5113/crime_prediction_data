@@ -162,10 +162,17 @@ ok_crime = _len_ok(cc["_key"], join_len)
 print(f"🔎 GEO normalize: level={_level_name(join_len)} (L={join_len}) | pop_ok={ok_pop:.2%} | crime_ok={ok_crime:.2%}")
 
 out = cc.merge(pp, how="left", on="_key", suffixes=("", "_demog"))
+out[crime_geoid_col] = _key(out[crime_geoid_col], join_len)
+
 out.drop(columns=["_key"], errors="ignore", inplace=True)
 
 # ----------------------------- Save & Logs -----------------------------
 Path(CRIME_OUTPUT).parent.mkdir(parents=True, exist_ok=True)
+
+# ✅ population NaN varsa raporla (normalde olmamalı; varsa pop eşleşmeyen GEOID vardır)
+nan_pop = int(out["population"].isna().sum()) if "population" in out.columns else -1
+print(f"🔎 population NaN: {nan_pop}")
+
 out.to_csv(CRIME_OUTPUT, index=False)
 print(f"✅ Kaydedildi → {CRIME_OUTPUT}")
 
