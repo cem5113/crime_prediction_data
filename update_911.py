@@ -107,9 +107,9 @@ log(f"📝 Writing sf_crime_01 → {merged_output_path}")
 
 # Census blocks (komşu/ensure_geoid için) — OUT_DIR öncelikli
 CENSUS_CANDIDATES = [
-    OUT_DIR / "sf_census_blocks_with_population.geojson",
-    Path(BASE_DIR) / "sf_census_blocks_with_population.geojson",
-    Path("./sf_census_blocks_with_population.geojson"),
+    OUT_DIR / "sf_census_blocks.geojson",
+    Path(BASE_DIR) / "sf_census_blocks.geojson",
+    Path("./sf_census_blocks.geojson"),
 ]
 
 # API / kaynak
