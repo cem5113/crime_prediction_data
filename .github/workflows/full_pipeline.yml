@@ -676,8 +676,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # input (senin dediğin akışta neighbors öncesi dosya sf_crime_09.csv ise)
-          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv yok"; exit 2; }
+          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
+          python -u "$PY"
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
 
           # script seç
           if [ -f scripts/make_neighbors.py ]; then
@@ -692,10 +693,8 @@ jobs:
           python -u "$PY"
 
           # çıktı kontrolü: hangisi oluştu?
-          if [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ]; then
+          if [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ]; then
             OUT="${CRIME_DATA_DIR}/sf_crime_09.csv"
-          elif [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ]; then
-            OUT="${CRIME_DATA_DIR}/sf_crime_08.csv"
           else
             echo "❌ Ne sf_crime_08.csv ne de sf_crime_09.csv oluştu. make_neighbors.py çıktısını kontrol et."
             exit 5
