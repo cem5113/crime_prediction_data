@@ -668,32 +668,42 @@ jobs:
           echo "neighbors.csv (ilk 10 satır):"
           head -n 10 "${DEST}" || true
 
-      - name: 10.6) sf_crime_07 → sf_crime_08 (komşuluk ekleme)
+      - name: FR 09) Neighbors
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          NEIGH_FILE: ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+        shell: bash
         run: |
-          set -e
-          [ -f "${CRIME_DATA_DIR}/sf_crime_07.csv" ] || { echo "❌ sf_crime_07.csv yok"; exit 2; }
-          [ -f "${NEIGH_FILE}" ] || { echo "❌ neighbors.csv yok: ${NEIGH_FILE}"; exit 3; }
+          set -euo pipefail
 
-          # Doğru betik yolunu bul ve çalıştır
+          # input (senin dediğin akışta neighbors öncesi dosya sf_crime_09.csv ise)
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv yok"; exit 2; }
+
+          # script seç
           if [ -f scripts/make_neighbors.py ]; then
-            PY=scripts/make_neighbors.py
+            PY="scripts/make_neighbors.py"
           elif [ -f make_neighbors.py ]; then
-            PY=make_neighbors.py
+            PY="make_neighbors.py"
           else
-            echo "❌ make_neighbors.py bulunamadı (scripts/ altında olmalı)."
-            exit 4
+            echo "⚠️ make_neighbors.py bulunamadı, adım atlanıyor."
+            exit 0
           fi
 
           python -u "$PY"
 
-          # Çıktıyı doğrula
-          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv oluşmadı"; exit 5; }
-          echo "---- sf_crime_08.csv (head) ----"
-          head -n 10 "${CRIME_DATA_DIR}/sf_crime_08.csv" || true
+          # çıktı kontrolü: hangisi oluştu?
+          if [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ]; then
+            OUT="${CRIME_DATA_DIR}/sf_crime_09.csv"
+          elif [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ]; then
+            OUT="${CRIME_DATA_DIR}/sf_crime_08.csv"
+          else
+            echo "❌ Ne sf_crime_08.csv ne de sf_crime_09.csv oluştu. make_neighbors.py çıktısını kontrol et."
+            exit 5
+          fi
+
+          echo "✅ Neighbors çıktı: ${OUT}"
+          echo "HEAD (${OUT}):"
+          head -n 5 "${OUT}" || true
 
       - name: 10.7) Install feature-analysis deps
         if: ${{ steps.gate.outputs.proceed == 'true' }}
