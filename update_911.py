@@ -327,21 +327,41 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
         std = std[std["date"] >= min_date]
     return std
 
-# LOCAL BASE / RELEASE SEÇİMİ
 def ensure_local_911_base() -> Optional[Path]:
-    """
-    Tercih sırası:
-      1) OUT_DIR/ sf_911_last_5_year_y.csv
-      2) BASE_DIR/ sf_911_last_5_year_y.csv
-      3) kök ./ alternatifleri
-      4) OUT_DIR/ ve BASE_DIR/ regular
-    """
+    crime_grid_candidates = [
+        OUT_DIR / "sf_crime_y.csv",
+        Path(BASE_DIR) / "sf_crime_y.csv",
+        Path("./sf_crime_y.csv"),
+        Path("crime_prediction_data/sf_crime_y.csv"),
+        OUT_DIR / "crime_prediction_data/sf_crime_y.csv",
+        Path(BASE_DIR) / "crime_prediction_data/sf_crime_y.csv",
+    ]
+    crime_grid_path = next((p for p in crime_grid_candidates if p.exists() and not is_lfs_pointer_file(p)), None)
+    crime_grid_dir = crime_grid_path.parent if crime_grid_path else None
+    
     y_candidates = [
+        # 1) OUT_DIR öncelik
         OUT_DIR / "sf_911_last_5_year_y.csv",
+
+        # 2) sf_crime_y.csv ile aynı klasör (artifact içi en kritik fix)
+        *( [crime_grid_dir / "sf_911_last_5_year_y.csv"] if crime_grid_dir else [] ),
+
+        # 3) BASE_DIR
         Path(BASE_DIR) / "sf_911_last_5_year_y.csv",
+
+        # 4) kök / outputs
         Path("./sf_911_last_5_year_y.csv"),
         Path("outputs/sf_911_last_5_year_y.csv"),
+
+        # 5) artifact klasik konumlar
+        Path("crime_prediction_data/sf_911_last_5_year_y.csv"),
+        OUT_DIR / "crime_prediction_data/sf_911_last_5_year_y.csv",
+        Path(BASE_DIR) / "crime_prediction_data/sf_911_last_5_year_y.csv",
     ]
+
+    seen = set()
+    y_candidates = [p for p in y_candidates if p and (str(p.resolve()) not in seen and not seen.add(str(p.resolve())))]
+
     for p in y_candidates:
         if p.exists():
             if p.suffix == ".csv" and is_lfs_pointer_file(p):
@@ -351,9 +371,17 @@ def ensure_local_911_base() -> Optional[Path]:
 
     regular_candidates = [
         OUT_DIR / "sf_911_last_5_year.csv",
+        *( [crime_grid_dir / "sf_911_last_5_year.csv"] if crime_grid_dir else [] ),
         Path(BASE_DIR) / "sf_911_last_5_year.csv",
         Path("./sf_911_last_5_year.csv"),
+        Path("crime_prediction_data/sf_911_last_5_year.csv"),
+        OUT_DIR / "crime_prediction_data/sf_911_last_5_year.csv",
+        Path(BASE_DIR) / "crime_prediction_data/sf_911_last_5_year.csv",
     ]
+
+    seen = set()
+    regular_candidates = [p for p in regular_candidates if p and (str(p.resolve()) not in seen and not seen.add(str(p.resolve())))]
+
     for p in regular_candidates:
         if p.exists():
             if p.suffix == ".csv" and is_lfs_pointer_file(p):
@@ -362,6 +390,7 @@ def ensure_local_911_base() -> Optional[Path]:
             return p
 
     return None
+
 
 # INCREMENTAL FETCH (RANGE)
 def try_small_request(params, headers):
