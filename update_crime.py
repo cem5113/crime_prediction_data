@@ -532,6 +532,26 @@ df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
 
+# ============================================================
+# ✅ NEW: category/subcategory NaN handling (Unknown + flags)
+# ============================================================
+if {"category", "subcategory"}.issubset(df_all.columns):
+    # "nan"/""/"None" gibi stringleri gerçek NaN'e çevir
+    for col in ["category", "subcategory"]:
+        df_all[col] = df_all[col].astype(str).replace({"nan": np.nan, "None": np.nan, "": np.nan})
+
+    # eksik bayrakları (istersen modele de girebilir)
+    df_all["is_category_missing"] = df_all["category"].isna().astype(int)
+    df_all["is_subcategory_missing"] = df_all["subcategory"].isna().astype(int)
+
+    # ikisi birden boşsa Unknown
+    both_nan = df_all["category"].isna() & df_all["subcategory"].isna()
+    df_all.loc[both_nan, ["category", "subcategory"]] = "Unknown"
+
+    # sadece subcategory boşsa Unknown (opsiyonel ama iyi)
+    only_sub_nan = df_all["subcategory"].isna() & df_all["category"].notna()
+    df_all.loc[only_sub_nan, "subcategory"] = "Unknown"
+
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
 start_date_5y = today - timedelta(days=5*365)
 df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)]
