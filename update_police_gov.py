@@ -1,9 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # update_police_gov.py
-# Amaç: Suç verisini POLICE & GOVERNMENT noktalarıyla YALNIZCA GEOID üzerinden zenginleştirmek.
-# Not: 'date' kullanılmaz; GEOID → centroid (veya lat/lon ortalaması) → en yakın polis/gov mesafesi hesaplanır.
-# Çıktı, giriş dosyasına göre 06→07 olarak belirlenir; aksi halde *_pg.csv uzantısı kullanılır.
 
 import os
 from pathlib import Path
@@ -11,9 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
 
-# -----------------------------------------------------------------------------
 # LOG/YARDIMCI
-# -----------------------------------------------------------------------------
 def log_shape(df: pd.DataFrame, label: str):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
@@ -161,14 +154,16 @@ lon_pref = find_col(df.columns, ["centroid_lon", "longitude", "lon", "x"])
 if lat_pref is None or lon_pref is None:
     raise KeyError("❌ 'latitude/longitude' veya 'centroid_lat/centroid_lon' benzeri kolonlar bulunamadı.")
 
-df["_lat_"] = pd.to_numeric(df[lat_pref], errors="coerce")
-df["_lon_"] = pd.to_numeric(df[lon_pref], errors="coerce")
+lat_tmp = pd.to_numeric(df[lat_pref], errors="coerce")
+lon_tmp = pd.to_numeric(df[lon_pref], errors="coerce")
+
+tmp = df.loc[lat_tmp.notna() & lon_tmp.notna(), ["GEOID"]].copy()
+tmp["centroid_lat"] = lat_tmp[lat_tmp.notna() & lon_tmp.notna()].astype(float).values
+tmp["centroid_lon"] = lon_tmp[lat_tmp.notna() & lon_tmp.notna()].astype(float).values
 
 geo = (
-    df.dropna(subset=["_lat_", "_lon_"])
-      .groupby("GEOID", as_index=False)[["_lat_", "_lon_"]]
-      .mean()
-      .rename(columns={"_lat_": "centroid_lat", "_lon_": "centroid_lon"})
+    tmp.groupby("GEOID", as_index=False)[["centroid_lat", "centroid_lon"]]
+       .mean()
 )
 log_shape(geo, "GEOID centroid (hazır)")
 
