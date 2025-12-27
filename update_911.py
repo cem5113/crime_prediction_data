@@ -708,9 +708,18 @@ if has_date_col:
         crime["date"] = pd.to_datetime(crime["datetime"], errors="coerce").dt.date
     else:
         crime["date"] = to_date(crime["date"])
-    keys = ["GEOID","date","hr_key"]
+
+    keys = ["GEOID", "date", "hr_key"]
+
+    # --- _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları düşür ---
+    overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
+    if overlap:
+        log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
+        _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
+
     merged = crime.merge(_enriched, on=keys, how="left")
     log("🔗 Join modu: DATE-BASED (GEOID, date, hr_key)")
+
 else:
     cal_keys = ["GEOID","hr_key","day_of_week","season"]
     agg_cols = [
