@@ -351,7 +351,14 @@ _before = crime.shape
 crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
 bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
 
+# 🔒 _x / _y oluşmasını kesin engelle
+_overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID"}
+if _overlap:
+    print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
+    bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
+
 crime = crime.merge(bus_feat, on="GEOID", how="left", validate="many_to_one")
+
 crime["bus_stop_count"] = crime["bus_stop_count"].fillna(0).astype(int)
 
 log_delta(_before, crime.shape, "CRIME ⨯ BUS (GEOID enrich)")
