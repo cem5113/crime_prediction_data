@@ -328,17 +328,23 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
     return std
 
 def ensure_local_911_base() -> Optional[Path]:
+    """
+    911 taban CSV'yi (önce _y) yerelden bulmaya çalışır.
+    Actions/artifact path farklılıklarına dayanıklı olması için:
+    - OUT_DIR / BASE_DIR / CWD altında recursive arar
+    - ARTIFACT_NAME ve sf-crime-pipeline-output* klasörlerini glob ile tarar
+    """
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
+    prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
 
+    # --- crime_grid_dir bul (varsa artifact içini yakalamak için iyi ipucu) ---
     crime_grid_candidates = [
-        # mevcut yollar
         OUT_DIR / "sf_crime_y.csv",
         Path(BASE_DIR) / "sf_crime_y.csv",
         Path("./sf_crime_y.csv"),
         Path("crime_prediction_data/sf_crime_y.csv"),
         OUT_DIR / "crime_prediction_data/sf_crime_y.csv",
         Path(BASE_DIR) / "crime_prediction_data/sf_crime_y.csv",
-
         Path(ARTIFACT_NAME) / "sf_crime_y.csv",
         Path(ARTIFACT_NAME) / "crime_prediction_data/sf_crime_y.csv",
     ]
@@ -348,68 +354,66 @@ def ensure_local_911_base() -> Optional[Path]:
     )
     crime_grid_dir = crime_grid_path.parent if crime_grid_path else None
 
-    y_candidates = [
-        # 1) OUT_DIR öncelik
-        OUT_DIR / "sf_911_last_5_year_y.csv",
+    def _ok(p: Path) -> bool:
+        if not p or not p.exists() or p.is_dir():
+            return False
+        if p.suffix.lower() != ".csv":
+            return False
+        if is_lfs_pointer_file(p):
+            return False
+        try:
+            if p.stat().st_size < 200:  # aşırı küçükse şüpheli
+                return False
+        except Exception:
+            return False
+        return True
 
-        # 2) sf_crime_y.csv ile aynı klasör (artifact içi kritik)
-        *( [crime_grid_dir / "sf_911_last_5_year_y.csv"] if crime_grid_dir else [] ),
+    # 1) Hızlı/deterministik adaylar
+    roots = [OUT_DIR, Path(BASE_DIR), Path.cwd()]
+    if crime_grid_dir:
+        roots.insert(0, crime_grid_dir)
 
-        # 3) BASE_DIR
-        Path(BASE_DIR) / "sf_911_last_5_year_y.csv",
+    # Artifact adıyla gelen klasör (varsa)
+    artifact_dir = Path(ARTIFACT_NAME)
+    if artifact_dir.exists() and artifact_dir.is_dir():
+        roots.insert(0, artifact_dir)
 
-        # 4) kök / outputs
-        Path("./sf_911_last_5_year_y.csv"),
-        Path("outputs/sf_911_last_5_year_y.csv"),
+    # sf-crime-pipeline-output* gibi klasörleri yakala (Actions download-artifact bazen farklı isimle açıyor)
+    for r in [Path.cwd(), Path(BASE_DIR), OUT_DIR]:
+        try:
+            for d in r.glob("sf-crime-pipeline-output*"):
+                if d.is_dir():
+                    roots.append(d)
+        except Exception:
+            pass
 
-        # 5) klasik konumlar
-        Path("crime_prediction_data/sf_911_last_5_year_y.csv"),
-        OUT_DIR / "crime_prediction_data/sf_911_last_5_year_y.csv",
-        Path(BASE_DIR) / "crime_prediction_data/sf_911_last_5_year_y.csv",
+    # 2) Önce köklerde direkt dosya var mı bak
+    for nm in prefer_names:
+        for rt in roots:
+            cand = rt / nm
+            if _ok(cand):
+                log(f"📦 911 base bulundu: {cand}")
+                return cand
+            # sık görülen alt path
+            cand2 = rt / "crime_prediction_data" / nm
+            if _ok(cand2):
+                log(f"📦 911 base bulundu: {cand2}")
+                return cand2
+            cand3 = rt / "outputs" / nm
+            if _ok(cand3):
+                log(f"📦 911 base bulundu: {cand3}")
+                return cand3
 
-        Path(ARTIFACT_NAME) / "sf_911_last_5_year_y.csv",
-        Path(ARTIFACT_NAME) / "crime_prediction_data/sf_911_last_5_year_y.csv",
-    ]
-
-    # dupe temizliği (aynı path tekrar etmesin)
-    seen = set()
-    y_candidates = [
-        p for p in y_candidates
-        if p and (str(p.resolve()) not in seen and not seen.add(str(p.resolve())))
-    ]
-
-    for p in y_candidates:
-        if p.exists():
-            if p.suffix == ".csv" and is_lfs_pointer_file(p):
+    # 3) Bulamadıysa: recursive tarama (sınırlı ama işe yarar)
+    for nm in prefer_names:
+        for rt in roots:
+            try:
+                for found in rt.rglob(nm):
+                    if _ok(found):
+                        log(f"📦 911 base bulundu (rglob): {found}")
+                        return found
+            except Exception:
                 continue
-            log(f"📦 911 base (preferred Y) bulundu: {p}")
-            return p
-            
-    regular_candidates = [
-        OUT_DIR / "sf_911_last_5_year.csv",
-        *( [crime_grid_dir / "sf_911_last_5_year.csv"] if crime_grid_dir else [] ),
-        Path(BASE_DIR) / "sf_911_last_5_year.csv",
-        Path("./sf_911_last_5_year.csv"),
-        Path("crime_prediction_data/sf_911_last_5_year.csv"),
-        OUT_DIR / "crime_prediction_data/sf_911_last_5_year.csv",
-        Path(BASE_DIR) / "crime_prediction_data/sf_911_last_5_year.csv",
-
-        Path(ARTIFACT_NAME) / "sf_911_last_5_year.csv",
-        Path(ARTIFACT_NAME) / "crime_prediction_data/sf_911_last_5_year.csv",
-    ]
-
-    seen = set()
-    regular_candidates = [
-        p for p in regular_candidates
-        if p and (str(p.resolve()) not in seen and not seen.add(str(p.resolve())))
-    ]
-
-    for p in regular_candidates:
-        if p.exists():
-            if p.suffix == ".csv" and is_lfs_pointer_file(p):
-                continue
-            log(f"📦 911 base (regular) bulundu: {p}")
-            return p
 
     return None
     
