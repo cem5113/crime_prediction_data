@@ -155,13 +155,15 @@ else:
 # ----------------------------- Prep Crime & Merge -----------------------------
 cc = crime.copy()
 cc["_key"] = _key(cc[crime_geoid_col], join_len)
-
+if "population" in cc.columns:
+    cc = cc.drop(columns=["population"], errors="ignore")
+    
 # Hızlı kalite göstergesi
 ok_pop   = _len_ok(pp["_key"], join_len)
 ok_crime = _len_ok(cc["_key"], join_len)
 print(f"🔎 GEO normalize: level={_level_name(join_len)} (L={join_len}) | pop_ok={ok_pop:.2%} | crime_ok={ok_crime:.2%}")
 
-out = cc.merge(pp, how="left", on="_key", suffixes=("", "_demog"))
+out = cc.merge(pp, how="left", on="_key")
 out[crime_geoid_col] = _key(out[crime_geoid_col], join_len)
 
 out.drop(columns=["_key"], errors="ignore", inplace=True)
