@@ -186,12 +186,17 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
     w = w[wcols].copy()
 
     # merge
+    
     before = crime.shape
+    weather_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
+    to_drop = [c for c in weather_cols if c in crime.columns]
+    if to_drop:
+        crime = crime.drop(columns=to_drop, errors="ignore")
     out = crime.merge(w, left_on="_date_", right_on="date", how="left")
 
     # 'date' çifti oluştuysa: weather tarafındaki 'date' kolonu redundant; drop et
     # (crime'ın orijinal 'date' kolonu durur)
-    out.drop(columns=["date"], errors="ignore", inplace=True)
+    out.drop(columns=["date", "date_x", "date_y"], errors="ignore", inplace=True)
     out.drop(columns=["_date_"], errors="ignore", inplace=True)
 
     print(f"🔗 CRIME ⨯ WEATHER (date-merge): {before[0]}×{before[1]} → {out.shape[0]}×{out.shape[1]} (Δr={out.shape[0]-before[0]}, Δc={out.shape[1]-before[1]})")
