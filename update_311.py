@@ -230,21 +230,147 @@ def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
     return df[keep + ["GEOID"] if "GEOID" in df.columns else keep].copy()
 
 # ================== DOSYA YOLLARI ==================
-RAW_CANDIDATES = [
-    os.path.join(SAVE_DIR, RAW_311_NAME_Y),
-    os.path.join(".",      RAW_311_NAME_Y),
-    os.path.join(SAVE_DIR, LEGACY_311_Y),
-    os.path.join(".",      LEGACY_311_Y),
-]
+def resolve_existing_raw_path():
+    """
+    Actions/artifact klasör adı değişse bile _y ham 311 dosyasını bulur.
+    Bulamazsa SAVE_DIR altında oluşturulacak yolu döndürür.
+    """
+    ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
+    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]  # önce yeni isim, sonra legacy
+
+    def _ok(p: Path) -> bool:
+        if not p or not p.exists() or p.is_dir():
+            return False
+        if p.suffix.lower() != ".csv":
+            return False
+        if is_lfs_pointer_file(p):
+            return False
+        try:
+            if p.stat().st_size < 200:  # aşırı küçükse şüpheli
+                return False
+        except Exception:
+            return False
+        return True
+
+    # Aranacak kök klasörler
+    roots = []
+    try:
+        roots.append(Path(SAVE_DIR).resolve())
+    except Exception:
+        roots.append(Path(SAVE_DIR))
+    roots += [Path.cwd(), Path(".")]
+
+    artifact_dir = Path(ARTIFACT_NAME)
+    if artifact_dir.exists() and artifact_dir.is_dir():
+        roots.append(artifact_dir)
+
+    # sf-crime-pipeline-output* gibi açılan klasörleri de tara
+    for r in [Path.cwd(), Path(".")]:
+        try:
+            for d in r.glob("sf-crime-pipeline-output*"):
+                if d.is_dir():
+                    roots.append(d)
+        except Exception:
+            pass
+
+    # 1) Deterministik: direkt bakılacak yerler
+    for nm in target_names:
+        for rt in roots:
+            for cand in [
+                rt / nm,
+                rt / "crime_prediction_data" / nm,
+                rt / "outputs" / nm,
+            ]:
+                if _ok(cand):
+                    print(f"🔎 Mevcut 311 _y CSV bulundu: {cand.resolve()}")
+                    return str(cand)
+
+    # 2) Son çare: recursive arama (artifact içinde farklı yere konmuşsa)
+    for nm in target_names:
+        for rt in roots:
+            try:
+                for found in rt.rglob(nm):
+                    if _ok(found):
+                        print(f"🔎 Mevcut 311 _y CSV bulundu (rglob): {found.resolve()}")
+                        return str(found)
+            except Exception:
+                continue
+
+    # 3) Bulunamadı → SAVE_DIR altında oluştur
+    preferred = Path(SAVE_DIR) / RAW_311_NAME_Y
+    print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
+    return str(preferred)
 
 def resolve_existing_raw_path():
-    for cand in RAW_CANDIDATES:
-        if os.path.exists(cand):
-            print(f"🔎 Mevcut 311 _y CSV bulundu (artifact veya çalışma dizini): {os.path.abspath(cand)}")
-            return cand
-    preferred = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
-    print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {os.path.abspath(preferred)}")
-    return preferred
+    """
+    Actions/artifact klasör adı değişse bile _y ham 311 dosyasını bulur.
+    Bulamazsa SAVE_DIR altında oluşturulacak yolu döndürür.
+    """
+    ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
+    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]  # önce yeni isim, sonra legacy
+
+    def _ok(p: Path) -> bool:
+        if not p or not p.exists() or p.is_dir():
+            return False
+        if p.suffix.lower() != ".csv":
+            return False
+        if is_lfs_pointer_file(p):
+            return False
+        try:
+            if p.stat().st_size < 200:  # aşırı küçükse şüpheli
+                return False
+        except Exception:
+            return False
+        return True
+
+    # Aranacak kök klasörler
+    roots = []
+    try:
+        roots.append(Path(SAVE_DIR).resolve())
+    except Exception:
+        roots.append(Path(SAVE_DIR))
+    roots += [Path.cwd(), Path(".")]
+
+    artifact_dir = Path(ARTIFACT_NAME)
+    if artifact_dir.exists() and artifact_dir.is_dir():
+        roots.append(artifact_dir)
+
+    # sf-crime-pipeline-output* gibi açılan klasörleri de tara
+    for r in [Path.cwd(), Path(".")]:
+        try:
+            for d in r.glob("sf-crime-pipeline-output*"):
+                if d.is_dir():
+                    roots.append(d)
+        except Exception:
+            pass
+
+    # 1) Deterministik: direkt bakılacak yerler
+    for nm in target_names:
+        for rt in roots:
+            for cand in [
+                rt / nm,
+                rt / "crime_prediction_data" / nm,
+                rt / "outputs" / nm,
+            ]:
+                if _ok(cand):
+                    print(f"🔎 Mevcut 311 _y CSV bulundu: {cand.resolve()}")
+                    return str(cand)
+
+    # 2) Son çare: recursive arama (artifact içinde farklı yere konmuşsa)
+    for nm in target_names:
+        for rt in roots:
+            try:
+                for found in rt.rglob(nm):
+                    if _ok(found):
+                        print(f"🔎 Mevcut 311 _y CSV bulundu (rglob): {found.resolve()}")
+                        return str(found)
+            except Exception:
+                continue
+
+    # 3) Bulunamadı → SAVE_DIR altında oluştur
+    preferred = Path(SAVE_DIR) / RAW_311_NAME_Y
+    print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
+    return str(preferred)
 
 def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
     """Önce _y dosyasını yükle; yoksa repo’daki base CSV ham ise seed olarak kullan."""
