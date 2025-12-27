@@ -729,7 +729,7 @@ jobs:
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         uses: actions/upload-artifact@v4
         with:
-          name: sf-crime-datasets-after-neighbors
+          name: sf-crime-pipeline-output 
           if-no-files-found: error
           retention-days: 14
           path: |
