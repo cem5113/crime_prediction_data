@@ -594,25 +594,32 @@ def main():
             else:
                 crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
             keys = ["GEOID", "date", "hour_range"]
+            _sum = summary[["GEOID","date","hour_range","311_request_count"]].copy()
+            _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
+            if _overlap:
+                print(f"🧹 DATE-BASED overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
+                _sum = _sum.drop(columns=list(_overlap), errors="ignore")
             _before = crime.shape
-            merged = crime.merge(
-                summary[["GEOID", "date", "hour_range", "311_request_count"]],
-                on=keys, how="left"
-            )
+            _sum = summary[["GEOID", "date", "hour_range", "311_request_count"]].copy()
+
+            _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
+            if _overlap:
+                print(f"🧹 DATE-BASED merge overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
+                _sum = _sum.drop(columns=list(_overlap), errors="ignore")
+            
+            merged = crime.merge(_sum, on=keys, how="left")
+            
             log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
             print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
         else:
             cal_keys = ["GEOID", "hr_key", "day_of_week", "season"]
             cal_agg = (summary.groupby(cal_keys, as_index=False)["311_request_count"].median())
-            if "day_of_week" not in crime.columns:
-                print("ℹ️ crime(day_of_week) yok → 0 atanıyor (fallback).")
-                crime["day_of_week"] = 0
-            if "season" not in crime.columns:
-                if "month" in crime.columns:
-                    crime["season"] = pd.to_numeric(crime["month"], errors="coerce").map(_smap).fillna("Summer")
-                else:
-                    crime["season"] = "Summer"
-            _before = crime.shape
+            
+            _overlap = (set(crime.columns) & set(cal_agg.columns)) - set(cal_keys)
+            if _overlap:
+                print(f"🧹 CALENDAR-BASED merge overlap bulundu, cal_agg'den düşürüldü: {sorted(_overlap)}")
+                cal_agg = cal_agg.drop(columns=list(_overlap), errors="ignore")
+            
             merged = crime.merge(cal_agg, on=cal_keys, how="left")
             log_merge_delta(_before, merged.shape, "crime ⨯ 311 (takvim)")
             print("🔗 Join modu: CALENDAR-BASED (GEOID, hr_key, day_of_week, season)")
