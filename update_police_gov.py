@@ -228,6 +228,9 @@ log_shape(geo, "GEOID metrikleri (polis+gov)")
 # -----------------------------------------------------------------------------
 # MERGE (sadece GEOID)
 # -----------------------------------------------------------------------------
+to_drop = [c for c in keep_cols if c != "GEOID" and c in df.columns]
+if to_drop:
+    df = df.drop(columns=to_drop, errors="ignore")
 _before = df.shape
 keep_cols = [
     "GEOID",
@@ -235,7 +238,7 @@ keep_cols = [
     "distance_to_government_building", "distance_to_government_building_range",
     "is_near_police", "is_near_government",
 ]
-df = df.merge(geo[keep_cols], on="GEOID", how="left")
+df = df.merge(geo[keep_cols], on="GEOID", how="left", suffixes=("", "_pg"))
 log_delta(_before, df.shape, "CRIME ⨯ GEOID(polis+gov)")
 
 # -----------------------------------------------------------------------------
