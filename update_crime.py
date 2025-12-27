@@ -238,7 +238,7 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
         compression = "gzip" if p.suffix == ".gz" else None
         df = pd.read_csv(p, dtype={"GEOID": str}, low_memory=False, compression=compression)
         if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
         elif "datetime" in df.columns:
             df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
         else:
@@ -532,7 +532,7 @@ df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
 
-df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
+df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.normalize()
 start_date_5y = today - timedelta(days=5*365)
 df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)].copy()
 df_all["time"] = df_all.get("time", "00:00:00")
@@ -546,13 +546,11 @@ df_all = df_all.dropna(subset=["datetime"]).copy()
 df_all["datetime"] = df_all["datetime"].dt.floor("h")
 
 # TZ sabitle
-try:
-    df_all["datetime"] = df_all["datetime"].dt.tz_localize(SF_TZ)
-except Exception:
-    try:
-        df_all["datetime"] = df_all["datetime"].dt.tz_convert(SF_TZ)
-    except Exception:
-        pass
+dt = df_all["datetime"]
+if getattr(dt.dt, "tz", None) is None:
+    df_all["datetime"] = dt.dt.tz_localize(SF_TZ)
+else:
+    df_all["datetime"] = dt.dt.tz_convert(SF_TZ)
 
 # türev alanlar
 df_all["event_hour"]  = df_all["datetime"].dt.hour
@@ -560,12 +558,12 @@ df_all["day_of_week"] = df_all["datetime"].dt.weekday
 df_all["month"]       = df_all["datetime"].dt.month
 
 # tatil
-df_all["date_only"] = df_all["date"].dt.normalize()
+df_all["date_only"] = df_all["datetime"].dt.normalize()
 if df_all["date_only"].notna().any():
     min_year = int(df_all.loc[df_all["date_only"].notna(), "date_only"].dt.year.min())
     max_year = int(df_all.loc[df_all["date_only"].notna(), "date_only"].dt.year.max())
     us_hol = holidays.US(years=range(min_year, max_year + 1))
-    hol_idx = pd.DatetimeIndex(pd.to_datetime(list(us_hol.keys()))).normalize()
+    hol_idx = pd.DatetimeIndex(list(us_hol.keys())).normalize()
     df_all["is_holiday"] = df_all["date_only"].isin(hol_idx).astype(int)
 else:
     df_all["is_holiday"] = 0
