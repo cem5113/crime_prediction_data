@@ -250,6 +250,8 @@ def main() -> int:
     feats["GEOID"] = _norm_geoid(feats["GEOID"], GEOID_LEN)
     feats["date"]  = _as_date64(feats["date"])
 
+    nb_cols = ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
+    df = df.drop(columns=[c for c in nb_cols if c in df.columns], errors="ignore")
     df_out = df.merge(feats, on=["GEOID","date"], how="left")
 
     for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]:
