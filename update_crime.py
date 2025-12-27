@@ -532,16 +532,12 @@ df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
 
-df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.normalize()
+df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
 start_date_5y = today - timedelta(days=5*365)
-df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)].copy()
-df_all["time"] = df_all.get("time", "00:00:00")
+df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)]
+df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce")
 df_all["time"] = df_all["time"].astype(str).fillna("00:00:00")
-df_all["datetime"] = pd.to_datetime(
-    df_all["date"].astype(str) + " " + df_all["time"],
-    errors="coerce"
-)
-
+df_all["datetime"] = pd.to_datetime(df_all["date"].dt.strftime("%Y-%m-%d") + " " + df_all["time"], errors="coerce")
 df_all = df_all.dropna(subset=["datetime"]).copy()
 df_all["datetime"] = df_all["datetime"].dt.floor("h")
 
