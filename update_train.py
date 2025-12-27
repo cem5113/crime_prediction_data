@@ -347,6 +347,11 @@ geo_metrics["GEOID"] = normalize_geoid(geo_metrics["GEOID"], DEFAULT_GEOID_LEN)
 # Yalnızca CRIME evrenindeki GEOID’ler
 geo_metrics = geo_metrics[geo_metrics["GEOID"].isin(crime["GEOID"].unique())].copy()
 
+_overlap = (set(crime.columns) & set(geo_metrics.columns)) - {"GEOID"}
+if _overlap:
+    print(f"🧹 TRAIN merge overlap bulundu, geo_metrics'ten düşürüldü: {sorted(_overlap)}")
+    geo_metrics = geo_metrics.drop(columns=list(_overlap), errors="ignore")
+    
 crime_enriched = crime.merge(
     geo_metrics,
     on="GEOID",
