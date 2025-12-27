@@ -318,6 +318,10 @@ def enrich_crime_by_geoid(df_crime: pd.DataFrame, geoid_poi: pd.DataFrame) -> pd
     out = out.drop(columns=[c for c in drop_cols if c in out.columns], errors="ignore")
 
     before = out.shape
+    _overlap = (set(out.columns) & set(geoid_poi.columns)) - {"GEOID"}
+    if _overlap:
+        print(f"🧹 POI merge overlap bulundu, geoid_poi'den düşürüldü: {sorted(_overlap)}")
+        geoid_poi = geoid_poi.drop(columns=list(_overlap), errors="ignore")
     out = out.merge(
         geoid_poi,
         on="GEOID",
