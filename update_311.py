@@ -335,6 +335,31 @@ def load_existing_raw(path):
     print(f"📁 Mevcut satır: {len(df):,} | max datetime={mx}")
     return df
 
+def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
+    # 1) artifact / mevcut ham dosya
+    if raw_path and os.path.exists(raw_path):
+        df = load_existing_raw(raw_path)
+        if df is not None and not df.empty:
+            return df
+
+    # 2) base seed: SAVE_DIR içinde ham olabilecek adaylar
+    seed_candidates = [
+        os.path.join(SAVE_DIR, AGG_BASENAME),   # bazen yanlışlıkla ham kaydedilmiş olabiliyor
+        os.path.join(SAVE_DIR, RAW_311_NAME_Y), # normalde ham adı
+        os.path.join(SAVE_DIR, LEGACY_311_Y),   # legacy ham adı
+        os.path.join(SAVE_DIR, LEGACY_311),     # legacy kısa ad
+    ]
+    for cand in seed_candidates:
+        if os.path.exists(cand):
+            df_seed = _load_raw_seed_from_base(cand)
+            if df_seed is not None and not df_seed.empty:
+                print(f"🌱 Seed (base ham) kullanıldı: {os.path.abspath(cand)}")
+                return df_seed
+
+    # 3) hiçbir şey yok
+    print("ℹ️ Ham 311 bulunamadı; boş seed ile başlanıyor.")
+    return pd.DataFrame()
+
 def decide_start_date(df_existing):
     if BACKFILL_DAYS > 0:
         start = TODAY - timedelta(days=BACKFILL_DAYS)
