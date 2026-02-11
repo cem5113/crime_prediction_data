@@ -25,6 +25,11 @@ except Exception:
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Suç Tahmin Modeli - Veri Güncelleme", layout="wide")
 
+DEBUG = st.sidebar.toggle("🧪 Debug modu", value=True)
+
+def dbg(msg: str):
+    if DEBUG:
+        st.sidebar.write(msg)
 try:
     ROOT = Path(__file__).resolve().parent
 except NameError:
@@ -1149,16 +1154,50 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 st.info("📌 Not: En son güncellenen/birleşen çıktı genellikle **sf_crime_09.csv** dosyasıdır. Analizde kullanılabilecek güncel veri kaynağıdır.")
 
 with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=False):
-    if st.checkbox("Aşama özetini hesapla (yavaş olabilir)", value=False):
-        df_stage = build_stage_summary(DATA_DIR)
-        st.dataframe(df_stage, use_container_width=True)
+    dbg("CKPT-STAGE-00: expander açıldı")
 
-        # küçük “etkili” özet
+    df_stage = None  # ✅ FIX: her durumda tanımlı
+
+    do_calc = st.checkbox("Aşama özetini hesapla (yavaş olabilir)", value=False)
+    dbg(f"CKPT-STAGE-01: do_calc={do_calc}")
+
+    if do_calc:
+        try:
+            dbg("CKPT-STAGE-02: build_stage_summary başlıyor")
+            df_stage = build_stage_summary(DATA_DIR)
+            dbg(f"CKPT-STAGE-03: df_stage üretildi shape={df_stage.shape}")
+            st.dataframe(df_stage, use_container_width=True)
+        except Exception as e:
+            st.error(f"🚨 Aşama özeti üretilemedi: {e}")
+            st.exception(e)
+            df_stage = None
+    else:
+        st.info("Kapalı: UI donmaması için hesap yapılmadı.")
+
+    # küçük “etkili” özet (df_stage varsa)
+    if df_stage is not None and not df_stage.empty:
+        dbg("CKPT-STAGE-04: last_ok hesaplanacak")
         last_ok = df_stage[(df_stage["Aşama"] == 9) & (df_stage["Durum"] == "✅ Var")]
         if not last_ok.empty:
             st.success("✅ En güncel nihai model girdisi hazır: **Aşama 9**")
         else:
             st.warning("⚠️ Nihai model girdisi (Aşama 9) henüz yok. Komşuluk/Near-Repeat adımı çalıştırılmalı.")
+
+        try:
+            tmp = df_stage[df_stage["Δ Sütun"] != "-"].copy()
+            if not tmp.empty:
+                tmp["Δ Sütun"] = pd.to_numeric(tmp["Δ Sütun"], errors="coerce")
+                top = tmp.sort_values("Δ Sütun", ascending=False).head(1)
+                if not top.empty:
+                    st.info(
+                        f"📌 En yüksek özellik artışı: **Aşama {int(top['Aşama'].iloc[0])}** "
+                        f"({top['Tanım'].iloc[0]}) → Δ Sütun: **{int(top['Δ Sütun'].iloc[0])}**"
+                    )
+        except Exception as e:
+            st.warning(f"Δ Sütun özeti hesaplanamadı: {e}")
+    else:
+        dbg("CKPT-STAGE-05: df_stage yok/boş, özet atlandı")
+        st.caption("ℹ️ Aşama tablosu üretilmediği için özet hesaplanmadı.")
 
         try:
             tmp = df_stage[df_stage["Δ Sütun"] != "-"].copy()
@@ -1261,12 +1300,14 @@ if st.button("⚙️ Güncelleme İşlemini Başlat"):
         # 1) Katman scriptleri
         for entry in PIPELINE:
             st.markdown(f"#### 🔹 {entry['title']}")
+            dbg(f"CKPT-PIPE-ENTRY: {entry['name']} | {entry['title']}")
             sp = resolve_script(entry, locale="default")
             if not sp:
                 st.warning("⏭️ Script bulunamadı, adım atlandı.")
                 all_ok = False
                 continue
             ok = run_script(sp)
+            dbg(f"CKPT-PIPE-DONE: {entry['name']} ok={ok}")
             all_ok = all_ok and ok
 
         # 2) Komşuluk + nihai çıktı (opsiyonel, varsa)
