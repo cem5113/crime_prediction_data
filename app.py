@@ -23,7 +23,7 @@ except Exception:
 # -----------------------------------------------------------------------------
 # Global Kurulum
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Veri Güncelleme", layout="wide")
+st.set_page_config(page_title="Suç Tahmin Modeli - Veri Güncelleme", layout="wide")
 
 try:
     ROOT = Path(__file__).resolve().parent
@@ -37,50 +37,16 @@ SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 SEARCH_DIRS = [SCRIPTS_DIR, ROOT]
 
 PIPELINE = [
-    {"name": "update_crime",      "alts": ["build_crime_grid", "crime_grid_build"]},
-    {"name": "update_911",        "alts": ["enrich_911"]},
-    {"name": "update_311",        "alts": ["enrich_311"]},
-    {"name": "update_population", "alts": ["enrich_population"]},
-    {"name": "update_bus",        "alts": ["enrich_bus"]},
-    {"name": "update_train",      "alts": ["enrich_train"]},
-    {"name": "update_poi",        "alts": ["pipeline_make_sf_crime_06", "app_poi_to_06", "enrich_poi"]},
-    {"name": "update_police_gov", "alts": ["enrich_police_gov_06_to_07", "enrich_police_gov", "enrich_police"]},
-    {"name": "update_weather",    "alts": ["enrich_weather"]},
+    {"title": "Suç Olay Verisi (Temel) + Grid", "name": "update_crime",      "alts": ["build_crime_grid", "crime_grid_build"]},
+    {"title": "911 Çağrıları (Polis İlişkili)", "name": "update_911",        "alts": ["enrich_911"]},
+    {"title": "311 Şikayetleri (Kolluk İlişkili)", "name": "update_311",     "alts": ["enrich_311"]},
+    {"title": "Nüfus & Demografi",             "name": "update_population", "alts": ["enrich_population"]},
+    {"title": "Otobüs Durakları",              "name": "update_bus",        "alts": ["enrich_bus"]},
+    {"title": "Tren Durakları (BART)",         "name": "update_train",      "alts": ["enrich_train"]},
+    {"title": "POI (İlgi Noktaları)",          "name": "update_poi",        "alts": ["pipeline_make_sf_crime_06", "app_poi_to_06", "enrich_poi"]},
+    {"title": "Polis & Kamu Binaları",         "name": "update_police_gov", "alts": ["enrich_police_gov_06_to_07", "enrich_police_gov", "enrich_police"]},
+    {"title": "Hava Durumu",                   "name": "update_weather",    "alts": ["enrich_weather"]},
 ]
-
-# -----------------------------------------------------------------------------
-# AĞIR BAĞIMLILIKLAR İÇİN LAZY IMPORT
-# -----------------------------------------------------------------------------
-def _load_ml_deps():
-    try:
-        import shap
-        from sklearn.model_selection import TimeSeriesSplit
-        from sklearn.metrics import roc_auc_score, brier_score_loss, mean_absolute_error
-        from sklearn.calibration import CalibratedClassifierCV
-        from sklearn.inspection import PartialDependenceDisplay
-        from lightgbm import LGBMClassifier, LGBMRegressor
-        from lime.lime_tabular import LimeTabularExplainer
-        return {
-            "np": np,
-            "shap": shap,
-            "TimeSeriesSplit": TimeSeriesSplit,
-            "roc_auc_score": roc_auc_score,
-            "brier_score_loss": brier_score_loss,
-            "mean_absolute_error": mean_absolute_error,
-            "CalibratedClassifierCV": CalibratedClassifierCV,
-            "PartialDependenceDisplay": PartialDependenceDisplay,
-            "LGBMClassifier": LGBMClassifier,
-            "LGBMRegressor": LGBMRegressor,
-            "LimeTabularExplainer": LimeTabularExplainer,
-        }
-    except ModuleNotFoundError as e:
-        missing = getattr(e, "name", "bir paket")
-        st.error(
-            f"🧱 Gerekli paket eksik: **{missing}**. "
-            "Lütfen sol menüden **'0) Gereklilikleri yükle'** düğmesini kullanın "
-            "ve kurulumdan sonra **Rerun** yapın."
-        )
-        st.stop()
 
 # -----------------------------------------------------------------------------
 # Yardımcılar
@@ -196,6 +162,76 @@ def run_script(path: Path) -> bool:
     except Exception as e:
         st.error(f"🚨 {path.name} çağrılamadı: {e}")
         return False
+        
+def _human_mb(n_bytes: int) -> float:
+    if n_bytes is None:
+        return 0.0
+    return round(n_bytes / (1024**2), 3)
+
+def _file_rows_cols(p: Path) -> tuple[int | None, int | None]:
+    """Satır (header hariç) + sütun sayısı."""
+    try:
+        n_cols = len(pd.read_csv(p, nrows=0).columns)
+        with p.open("rb") as f:
+            n_lines = sum(1 for _ in f)
+        n_rows = max(n_lines - 1, 0)
+        return n_rows, n_cols
+    except Exception:
+        return None, None
+
+def build_stage_summary(data_dir: Path) -> pd.DataFrame:
+    STAGES = [
+        (0, "Suç Olay Verisi (Ham)", "sf_crime.csv"),
+        (1, "Zaman Özellikleri Eklenmiş", "sf_crime_01.csv"),
+        (2, "911 Çağrıları (Polis İlişkili) Eklenmiş", "sf_crime_02.csv"),
+        (3, "311 Şikayetleri (Kolluk İlişkili) Eklenmiş", "sf_crime_03.csv"),
+        (4, "Nüfus & Demografi Eklenmiş", "sf_crime_04.csv"),
+        (5, "Ulaşım (Otobüs + Tren) Özellikleri Eklenmiş", "sf_crime_05.csv"),
+        (6, "POI (İlgi Noktaları) + Risk Skoru Eklenmiş", "sf_crime_06.csv"),
+        (7, "Polis & Kamu Binaları Mesafe/Yakınlık Eklenmiş", "sf_crime_07.csv"),
+        (8, "Hava Durumu Eklenmiş", "sf_crime_08.csv"),
+        (9, "Komşuluk & Near-Repeat Özellikleri Eklenmiş Nihai Model Girdisi", "sf_crime_09.csv"),
+    ]
+
+    rows = []
+    prev_cols = None
+    prev_mb = None
+
+    for stage_no, title, fname in STAGES:
+        p = data_dir / fname
+        exists = p.exists()
+
+        if exists:
+            n_rows, n_cols = _file_rows_cols(p)
+            size_mb = _human_mb(p.stat().st_size)
+        else:
+            n_rows, n_cols, size_mb = None, None, None
+
+        d_cols = (n_cols - prev_cols) if (exists and prev_cols is not None and n_cols is not None) else None
+        if exists and prev_mb is not None and size_mb is not None:
+            d_mb = round(size_mb - prev_mb, 3)
+            pct = round((d_mb / prev_mb * 100.0), 2) if prev_mb > 0 else None
+        else:
+            d_mb, pct = None, None
+
+        rows.append({
+            "Aşama": stage_no,
+            "Tanım": title,
+            "Dosya": fname,
+            "Durum": "✅ Var" if exists else "⚠️ Yok",
+            "Satır Sayısı": n_rows if n_rows is not None else "-",
+            "Sütun Sayısı": n_cols if n_cols is not None else "-",
+            "Δ Sütun": d_cols if d_cols is not None else "-",
+            "Boyut (MB)": size_mb if size_mb is not None else "-",
+            "Δ Boyut (MB)": d_mb if d_mb is not None else "-",
+            "% Artış": f"%{pct}" if pct is not None else "-",
+        })
+
+        if exists and (n_cols is not None) and (size_mb is not None):
+            prev_cols = n_cols
+            prev_mb = size_mb
+
+    return pd.DataFrame(rows)
 
 # -----------------------------------------------------------------------------
 # ENV ve URL’ler
@@ -309,60 +345,6 @@ def make_sf_crime_L(data_dir: Path, unique_per_geoid: bool = True) -> Path:
     out.to_csv(dest, index=False)
     return dest
 
-
-def _gh_headers():
-    token = st.secrets.get("GH_TOKEN") or os.environ.get("GH_TOKEN")
-    if not token:
-        raise RuntimeError("GH_TOKEN gerekli (Streamlit secrets veya env).")
-    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-
-def fetch_file_from_latest_artifact(pick_names: List[str], artifact_names: Optional[List[str]] = None) -> bytes | None:
-    names_to_try = artifact_names or ARTIFACT_NAMES
-    runs_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs?per_page=20"
-    runs = requests.get(runs_url, headers=_gh_headers(), timeout=30).json()
-    run_ids = [r["id"] for r in runs.get("workflow_runs", []) if r.get("conclusion") == "success"]
-
-    for rid in run_ids:
-        arts_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs/{rid}/artifacts"
-        arts = requests.get(arts_url, headers=_gh_headers(), timeout=30).json().get("artifacts", [])
-        for a in arts:
-            if a.get("expired", False):
-                continue
-            if a.get("name") not in names_to_try:
-                continue
-            dl = requests.get(a["archive_download_url"], headers=_gh_headers(), timeout=60)
-            zf = zipfile.ZipFile(io.BytesIO(dl.content))
-            names = zf.namelist()
-
-            # 1) Doğrudan dosya araması
-            for pick in pick_names:
-                for cand in (pick, f"crime_prediction_data/{pick}"):
-                    if cand in names:
-                        return zf.read(cand)
-
-            # 2) "paquet_run_*.zip" içinden ara (artifact ZIP'i içinde ikinci bir zip olabilir)
-            paquet_inner = [n for n in names if re.search(r"^paquet_run_\d+\.zip$", n)]
-            for pin in paquet_inner:
-                with zf.open(pin) as inner_blob:
-                    with zipfile.ZipFile(io.BytesIO(inner_blob.read())) as inner_zip:
-                        inner_names = inner_zip.namelist()
-                        for pick in pick_names:
-                            # hem düz ad hem de fr_eda/ altından eşleşme
-                            exacts = [pick, f"fr_eda/{pick}", f"crime_prediction_data/{pick}"]
-                            for ex in exacts:
-                                if ex in inner_names:
-                                    return inner_zip.read(ex)
-                        # adın sonu eşleşsin (fallback)
-                        for n in inner_names:
-                            if any(n.endswith(p) for p in pick_names):
-                                return inner_zip.read(n)
-
-            # 3) Son-çare: isim sonu eşleşmesi
-            for n in names:
-                if any(n.endswith(p) for p in pick_names):
-                    return zf.read(n)
-    return None
-
 def _resolve_workflow_id(target: str):
     import requests, os
     url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows?per_page=100"
@@ -377,131 +359,6 @@ def _resolve_workflow_id(target: str):
         if str(w.get("name","")).strip().lower() == target.strip().lower():
             return w.get("id")
     return None
-
-def dispatch_workflow(persist="artifact", force=True, ref="main", variant=None, top_k=None):
-    import json as _json, requests
-    target = os.environ.get("GITHUB_WORKFLOW", "full_pipeline.yml")
-    wid = _resolve_workflow_id(target)
-    if not wid:
-        return {"ok": False, "status": 404, "text": f"Workflow bulunamadı: {target}"}
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{wid}/dispatches"
-    inputs = {"persist": persist, "force": "true" if force else "false"}
-    if variant: inputs["variant"] = str(variant)
-    if top_k:   inputs["top_k"]   = str(top_k)
-    payload = {"ref": ref, "inputs": inputs}
-    r = requests.post(url, headers=_gh_headers(), data=_json.dumps(payload), timeout=30)
-    return {"ok": r.status_code in (204, 201), "status": r.status_code, "text": r.text}
-
-def diag_workflow(target: str | None = None, ref: str | None = None):
-    """Workflow dispatch 422 tanısı: dosya adı/ad, branch ve YAML içeriğini kontrol eder (PyYAML yoksa YAML analizi atlanır)."""
-    import os, base64, urllib.parse
-    import requests
-    try:
-        import yaml  # PyYAML yoksa YAML analizi atlanır
-    except Exception:
-        yaml = None
-
-    try:
-        target = target or os.environ.get("GITHUB_WORKFLOW", "full_pipeline.yml")
-        ref = ref or "main"
-
-        st.write(f"🎯 Hedef workflow: `{target}` · ref: `{ref}`")
-
-        # 1) Workflow listesi
-        url_list = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows?per_page=100"
-        r = requests.get(url_list, headers=_gh_headers(), timeout=30)
-        if r.status_code != 200:
-            st.error(f"Workflow listesi okunamadı: {r.status_code} {r.text}")
-            return
-        ws = r.json().get("workflows", []) or []
-
-        if ws:
-            st.caption(f"Toplam {len(ws)} workflow bulundu.")
-            listing = "\n".join([f"- {w.get('name')}  | id={w.get('id')}  | path={w.get('path')}" for w in ws])
-            st.code(listing if listing else "-", language="text")
-        else:
-            st.warning("Repo’da hiç workflow görünmüyor.")
-            return
-
-        # 2) ID çöz: dosya adı -> görünür ad
-        wid = None
-        for w in ws:
-            if os.path.basename(str(w.get("path",""))) == target:
-                wid = w.get("id")
-                break
-        if wid is None:
-            for w in ws:
-                if str(w.get("name","")).strip().lower() == target.strip().lower():
-                    wid = w.get("id")
-                    break
-        if wid is None:
-            st.error(f"❌ Hedef workflow bulunamadı: `{target}` (dosya adı ya da görünen ad eşleşmedi)")
-            return
-        st.success(f"✅ Çözülen workflow id: {wid}")
-
-        # 3) YAML içeriği (contents API)
-        url_w = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{wid}"
-        rw = requests.get(url_w, headers=_gh_headers(), timeout=30)
-        if rw.status_code != 200:
-            st.warning(f"Workflow ayrıntısı okunamadı: {rw.status_code} {rw.text}")
-            return
-        wpath = rw.json().get("path", "")
-        st.write(f"🗂️ Dosya yolu: `{wpath}`")
-
-        url_contents = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{urllib.parse.quote(wpath)}?ref={urllib.parse.quote(ref)}"
-        rc = requests.get(url_contents, headers=_gh_headers(), timeout=30)
-        if rc.status_code != 200 or rc.json().get("encoding") != "base64":
-            st.error(f"YAML okunamadı: {rc.status_code} {rc.text[:200]}")
-            return
-        yaml_text = base64.b64decode(rc.json()["content"]).decode("utf-8", errors="replace")
-        st.code(yaml_text, language="yaml")
-
-        # 4) (opsiyonel) YAML parse edip workflow_dispatch kontrolü
-        if yaml is not None:
-            try:
-                y = yaml.safe_load(yaml_text) or {}
-                on_section = y.get("on") or {}
-                has_dispatch = False
-                inputs_info = {}
-
-                if isinstance(on_section, dict):
-                    if "workflow_dispatch" in on_section:
-                        has_dispatch = True
-                        wd = on_section.get("workflow_dispatch") or {}
-                        if isinstance(wd, dict):
-                            inputs_info = wd.get("inputs", {}) or {}
-                elif isinstance(on_section, list):
-                    has_dispatch = "workflow_dispatch" in on_section
-
-                if has_dispatch:
-                    st.success("✅ Bu workflow YAML'ında `workflow_dispatch` tanımlı.")
-                else:
-                    st.error("❌ Bu workflow YAML'ında `workflow_dispatch` YOK. 422’nin ana nedeni bu.")
-
-                if inputs_info:
-                    st.write("🧩 `workflow_dispatch.inputs` tanımı:")
-                    st.json(inputs_info)
-                else:
-                    st.caption("Bu workflow için özel inputs tanımı yok (veya boş).")
-            except Exception as e:
-                st.warning(f"YAML parse edilemedi: {e}")
-        else:
-            st.info("PyYAML yüklü değil; YAML analizi atlandı. (İstersen requirements.txt → PyYAML ekleyebilirsin)")
-
-        # 5) Branch kontrolü
-        url_branch = f"https://api.github.com/repos/{GITHUB_REPO}/branches/{urllib.parse.quote(ref)}"
-        rb = requests.get(url_branch, headers=_gh_headers(), timeout=30)
-        if rb.status_code == 200:
-            st.success(f"✅ Branch mevcut: {ref}")
-        else:
-            st.warning(f"⚠️ Branch bulunamadı: {ref} ({rb.status_code})")
-
-        # 6) Örnek payload bilgisi
-        st.write({"ref": ref, "inputs": {"persist": "artifact", "force": "true"}})
-        st.caption(f"Endpoint: /repos/{GITHUB_REPO}/actions/workflows/{wid}/dispatches")
-
-    except Exception as e:
-        st.error(f"Diag hata: {e}")
 
 def _get_last_run_by_workflow():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{GITHUB_WORKFLOW}/runs?per_page=1"
@@ -529,52 +386,6 @@ def _render_last_run_status(container):
         )
     except Exception as e:
         container.warning(f"Durum okunamadı: {e}")
-
-def fetch_latest_artifact_df() -> Optional[pd.DataFrame]:
-    try:
-        runs_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs?per_page=20"
-        runs = requests.get(runs_url, headers=_gh_headers(), timeout=30).json()
-        run_ids = [r["id"] for r in runs.get("workflow_runs", []) if r.get("conclusion") == "success"]
-
-        for rid in run_ids:
-            arts_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs/{rid}/artifacts"
-            arts = requests.get(arts_url, headers=_gh_headers(), timeout=30).json().get("artifacts", [])
-            for a in arts:
-                if a.get("expired", False) or a.get("name") not in ARTIFACT_NAMES:
-                    continue
-                dl = requests.get(a["archive_download_url"], headers=_gh_headers(), timeout=60)
-                zf = zipfile.ZipFile(io.BytesIO(dl.content))
-
-                # Önce düzden dene
-                for pick in ("crime_prediction_data/sf_crime_08.csv", "sf_crime_08.csv"):
-                    if pick in zf.namelist():
-                        with zf.open(pick) as f:
-                            df = pd.read_csv(f, low_memory=False)
-                            if "date" in df.columns:
-                                df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-                            elif "datetime" in df.columns:
-                                df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
-                            return df
-
-                # paquet_run_*.zip içinden dene
-                for n in zf.namelist():
-                    if re.search(r"^paquet_run_\d+\.zip$", n):
-                        with zf.open(n) as inner_blob:
-                            with zipfile.ZipFile(io.BytesIO(inner_blob.read())) as inner_zip:
-                                for pick in ("sf_crime_08.csv", "crime_prediction_data/sf_crime_08.csv"):
-                                    if pick in inner_zip.namelist():
-                                        with inner_zip.open(pick) as f:
-                                            df = pd.read_csv(f, low_memory=False)
-                                            if "date" in df.columns:
-                                                df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-                                            elif "datetime" in df.columns:
-                                                df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
-                                            return df
-        return None
-    except Exception as e:
-        st.warning(f"Artifact indirilemedi: {e}")
-        return None
-
 # -----------------------------------------------------------------------------
 # 08 → 09 Dönüşüm Yardımcıları
 # -----------------------------------------------------------------------------
@@ -1228,14 +1039,13 @@ def download_and_preview(name, url, file_path, is_json=False, allow_artifact_fal
 # -----------------------------------------------------------------------------
 # UI — Başlık ve Sidebar
 # -----------------------------------------------------------------------------
-st.title("📦 Günlük Suç Tahmin Zenginleştirme ve Güncelleme Paneli")
+st.title("📦 Veri Güncelleme Paneli")
+st.caption("Bu ekran yalnızca veri katmanlarını günceller ve birleştirir.")
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown("### GitHub Actions")
-
-    # Sidebar içinde expander açacaksan 'st.sidebar.expander' kullan
-    with st.sidebar.expander("ACS Ayarları (Demografi)"):
+    st.markdown("### Ayarlar")
+    with st.sidebar.expander("Demografi (ACS) Ayarları"):
         acs_year_default = os.environ.get("ACS_YEAR", "LATEST")
         whitelist_default = os.environ.get("DEMOG_WHITELIST", "")
         level_default = os.environ.get("CENSUS_GEO_LEVEL", "auto")
@@ -1291,97 +1101,6 @@ with st.sidebar:
             os.environ["POPULATION_PATH"] = pop_url_in_main or str(POPULATION_PATH)
 
 # --- ANA SAYFA (sidebar DIŞI) ---
-with st.container():
-    exp = st.expander("🕵️ Workflow tanı (dispatch)", expanded=False)
-    with exp:
-        # (BURASI TEK EXPANDER — iç içe expander YOK!)
-        wf_in = st.text_input(
-            "Workflow (dosya adı veya görünen ad)",
-            os.environ.get("GITHUB_WORKFLOW", "full_pipeline.yml")
-        )
-        ref_in = st.text_input("Ref (branch/tag)", "main")
-
-        if st.button("Tanıyı Çalıştır"):
-            diag_workflow(target=wf_in, ref=ref_in)
-
-        VARIANTS = ["default", "fr"]
-        variant = st.selectbox(
-            "Pipeline varyantı",
-            VARIANTS, index=0,
-            help="default: update_*.py • fr: update_*.fr.py / update_*_fr.py"
-        )
-        os.environ["PIPELINE_VARIANT"] = variant
-
-        persist = st.selectbox(
-            "Çıktıyı saklama modu",
-            ["artifact", "commit", "none"], index=0,
-            help="artifact: repo’yu bozmadan sakla • commit: repo’ya yaz • none: sadece log"
-        )
-
-        force_bypass = st.checkbox(
-            "07:00 kapısını yok say (force)",
-            value=True,
-            help="İşaretli ise saat filtresi devre dışı kalır ve pipeline her saatte çalışır."
-        )
-
-        status_box = st.empty()
-        _render_last_run_status(status_box)
-
-        col_run, col_refresh = st.columns(2)
-        with col_run:
-            if st.button("🚀 Full pipeline’ı Actions’ta çalıştır"):
-                if not (st.secrets.get("GH_TOKEN") or os.environ.get("GH_TOKEN")):
-                    st.error("GH_TOKEN tanımlı değil (Streamlit secrets veya env).")
-                else:
-                    try:
-                        r = dispatch_workflow(persist=persist, force=force_bypass)
-                        if r["ok"]:
-                            st.success(f"Workflow tetiklendi (persist={persist}, force={force_bypass}). Runs’ı kontrol et.")
-                        else:
-                            st.error(f"Tetikleme başarısız: {r['status']} {r['text']}")
-                    except Exception as e:
-                        st.error(f"Hata: {e}")
-
-        with col_refresh:
-            if st.button("📡 Son durumu yenile"):
-                _render_last_run_status(status_box)
-
-        levels = ["auto", "tract", "blockgroup", "block"]
-        try:
-            idx = levels.index(level_default) if level_default in levels else 0
-        except Exception:
-            idx = 0
-        level_in = st.selectbox(
-            "CENSUS_GEO_LEVEL",
-            levels,
-            index=idx,
-            key="census_geo_level_in",
-            help="Nüfus GEOID eşleşme seviyesi. `auto` çoğu durumda yeterlidir."
-        )
-        os.environ["CENSUS_GEO_LEVEL"] = level_in
-
-        pop_default = os.environ.get("POPULATION_PATH", str(POPULATION_PATH))
-        pop_url_in = st.text_input(
-            label="POPULATION_PATH (YEREL CSV YOLU)",
-            value=str(pop_default or ""),
-            key="population_path_in",
-            help="Örn: crime_prediction_data/sf_population.csv (URL kabul edilmez)."
-        )
-
-        _v = str(acs_year_in).strip()
-        if _v.upper() == "LATEST":
-            os.environ["ACS_YEAR"] = "LATEST"
-        else:
-            _digits = re.sub(r"\D", "", _v)
-            os.environ["ACS_YEAR"] = _digits if len(_digits) == 4 else "LATEST"
-
-        os.environ["DEMOG_WHITELIST"] = str(whitelist_in or "")
-
-        if re.match(r"^https?://", str(pop_url_in), flags=re.I):
-            st.error("CSV-only mod: URL kabul edilmez. Yerel bir CSV yolu girin.")
-        else:
-            os.environ["POPULATION_PATH"] = pop_url_in or str(POPULATION_PATH)
-
 # -----------------------------------------------------------------------------
 # 0) (Opsiyonel) requirements yükleme
 # -----------------------------------------------------------------------------
@@ -1410,19 +1129,61 @@ if st.button("📦 requirements.txt yükle"):
 # -----------------------------------------------------------------------------
 # 1) (Opsiyonel) Verileri indir ve önizle
 # -----------------------------------------------------------------------------
-st.markdown("### 1) (Opsiyonel) Verileri indir ve önizle")
-if st.button("📥 Verileri İndir ve Önizle (İlk 3 Satır)"):
-    for name, info in DOWNLOADS.items():
-        download_and_preview(
-            name,
-            info.get("url", ""),
-            info["path"],
-            is_json=info.get("is_json", False),
-            allow_artifact_fallback=info.get("allow_artifact", False),
-            artifact_picks=info.get("artifact_picks"),
-        )
-    st.success("✅ İndirme tamamlandı.")
+st.markdown("### 1) Veri Katmanları (Durum Özeti)")
 
+LAYER_FILES = [
+    ("Suç Olay Verisi (Temel)", "sf_crime.csv", "Dinamik (Günlük)"),
+    ("911 Çağrıları (Polis İlişkili)", "sf_911_last_5_year.csv", "Dinamik (Günlük)"),
+    ("311 Şikayetleri (Kolluk İlişkili)", "sf_311_last_5_years.csv", "Dinamik (Günlük)"),
+    ("Nüfus & Demografi", "sf_population.csv", "Statik / Yıllık"),
+    ("Otobüs Durakları", "sf_bus_stops_with_geoid.csv", "Yarı-dinamik (Aylık)"),
+    ("Tren Durakları (BART)", "sf_train_stops_with_geoid.csv", "Yarı-dinamik (Aylık)"),
+    ("POI (İlgi Noktaları)", "sf_pois_cleaned_with_geoid.csv", "Yarı-dinamik"),
+    ("Polis & Kamu Binaları", "sf_police_stations.csv", "Yarı-dinamik"),
+    ("Hava Durumu", "sf_weather_5years.csv", "Dinamik (Günlük)"),
+    ("Komşuluk (Neighbors)", "neighbors.csv", "Yapısal"),
+    ("Son Birleşik Çıktı", "sf_crime_09.csv", "Çıktı (En güncel)"),
+]
+
+rows = []
+for title, fname, typ in LAYER_FILES:
+    p = DATA_DIR / fname
+    rows.append({
+        "Konu": title,
+        "Dosya": fname,
+        "Tür": typ,
+        "Durum": "✅ Var" if p.exists() else "⚠️ Yok",
+        "Güncellenme": _fmt_dt(p.stat().st_mtime) if p.exists() else "-",
+        "Yaş": _age_str(p.stat().st_mtime) if p.exists() else "-",
+    })
+
+st.dataframe(pd.DataFrame(rows), use_container_width=True)
+st.info("📌 Not: En son güncellenen/birleşen çıktı genellikle **sf_crime_09.csv** dosyasıdır. Analizde kullanılabilecek güncel veri kaynağıdır.")
+
+with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=False):
+    df_stage = build_stage_summary(DATA_DIR)
+    st.dataframe(df_stage, use_container_width=True)
+
+    # küçük “etkili” özet
+    last_ok = df_stage[(df_stage["Aşama"] == 9) & (df_stage["Durum"] == "✅ Var")]
+    if not last_ok.empty:
+        st.success("✅ En güncel nihai model girdisi hazır: **Aşama 9**")
+    else:
+        st.warning("⚠️ Nihai model girdisi (Aşama 9) henüz yok. Komşuluk/Near-Repeat adımı çalıştırılmalı.")
+
+    try:
+        tmp = df_stage[df_stage["Δ Sütun"] != "-"].copy()
+        if not tmp.empty:
+            tmp["Δ Sütun"] = pd.to_numeric(tmp["Δ Sütun"], errors="coerce")
+            top = tmp.sort_values("Δ Sütun", ascending=False).head(1)
+            if not top.empty:
+                st.info(
+                    f"📌 En yüksek özellik artışı: **Aşama {int(top['Aşama'].iloc[0])}** "
+                    f"({top['Tanım'].iloc[0]}) → Δ Sütun: **{int(top['Δ Sütun'].iloc[0])}**"
+                )
+    except Exception:
+        pass
+        
 # -----------------------------------------------------------------------------
 # 1.5) Dosyaları tarihe göre sırala
 # -----------------------------------------------------------------------------
@@ -1494,64 +1255,58 @@ with st.expander("🔄 CSV’leri Parquet’e çevir (zstd)"):
         except Exception as e:
             st.error(f"Dönüşüm hatası: {e}")
 
-# -----------------------------------------------------------------------------
-# Tanı ve Cache
-# -----------------------------------------------------------------------------
-with st.expander("🔎 Tanı: Etkin URL/ENV değerleri"):
-    st.write("CRIME_CSV_URL (env):", os.environ.get("CRIME_CSV_URL"))
-    st.write("RAW_911_URL (env):", os.environ.get("RAW_911_URL"))
-    st.write("SF311_URL (env):", os.environ.get("SF311_URL"))
-
-if st.button("♻️ Streamlit cache temizle"):
-    try:
-        st.cache_data.clear()
-        st.success("Cache temizlendi.")
-    except Exception as e:
-        st.warning(f"Cache temizlenemedi: {e}")
 
 # -----------------------------------------------------------------------------
-# 2) Güncelleme ve Zenginleştirme (01 → 09)
+# 2) Veri Güncelleme (Tek Akış)
 # -----------------------------------------------------------------------------
-st.markdown("### 2) Güncelleme ve Zenginleştirme (01 → 09)")
-if st.button("⚙️ Güncelleme ve Zenginleştirme (01 → 09)"):
-    with st.spinner("⏳ Scriptler çalıştırılıyor..."):
+st.markdown("### 2) Veri Güncelle ve Birleştir (Tek Akış)")
+
+if st.button("⚙️ Güncelleme İşlemini Başlat"):
+    with st.spinner("⏳ Veri katmanları güncelleniyor ve birleştiriliyor..."):
         all_ok = True
+
+        # 1) Katman scriptleri
         for entry in PIPELINE:
-            sp = resolve_script(entry, locale=os.environ.get("PIPELINE_VARIANT", "default"))
+            st.markdown(f"#### 🔹 {entry['title']}")
+            sp = resolve_script(entry, locale="default")
             if not sp:
-                st.warning(f"⏭️ {entry['name']} bulunamadı/indirilemedi, atlanıyor.")
+                st.warning("⏭️ Script bulunamadı, adım atlandı.")
                 all_ok = False
                 continue
             ok = run_script(sp)
             all_ok = all_ok and ok
+
+        # 2) Komşuluk + nihai çıktı (opsiyonel, varsa)
+        st.markdown("#### 🔹 Komşuluk Özellikleri + Nihai Çıktı")
+        try:
+            _ = process_city_to_09("sf", DATA_DIR)
+        except Exception as e:
+            st.warning(f"Komşuluk/Nihai çıktı adımı atlandı: {e}")
+            all_ok = False
+
     if all_ok:
-        st.success("🎉 Pipeline bitti: Tüm adımlar başarıyla tamamlandı.")
+        st.success("🎉 Güncelleme tamamlandı. Güncel birleşik veri hazır.")
     else:
-        st.warning("ℹ️ Pipeline tamamlandı; eksik/hatalı adımlar var. Logları kontrol edin.")
+        st.warning("ℹ️ Güncelleme tamamlandı; bazı adımlar atlandı veya hata verdi.")
 
 # -----------------------------------------------------------------------------
-# 3) Güncel _08 → _09 üret (sf + fr)
+# 3) Güncel Birleşik Veri (Model Girdisi) — Önizleme
 # -----------------------------------------------------------------------------
-st.markdown("### 3) Güncel _08 → _09 üret (sf + fr)")
-if st.button("🧪 _08'i temizle ve _09 üret (sf & fr)"):
-    for prefix in ["sf", "fr"]:
-        st.subheader(f"🔹 {prefix.upper()} akışı")
-        _ = process_city_to_09(prefix, DATA_DIR)
+st.markdown("### 3) Güncel Birleşik Veri (Model Girdisi)")
 
-# Önizleme: 08 ve 09 dosyaları (varsa)
-for prefix in ["sf", "fr"]:
-    st.subheader(f"📄 Önizleme — {prefix.upper()}")
-    p08 = DATA_DIR / f"{prefix}_crime_08.csv"
-    p09 = DATA_DIR / f"{prefix}_crime_09.csv"
-    if p08.exists():
-        try:
-            st.markdown(f"**{p08.name} — ilk 20 satır**")
-            st.dataframe(pd.read_csv(p08, nrows=20, low_memory=False), use_container_width=True)
-        except Exception as e:
-            st.info(f"{p08.name} önizlenemedi: {e}")
-    if p09.exists():
-        try:
-            st.markdown(f"**{p09.name} — ilk 20 satır**")
-            st.dataframe(pd.read_csv(p09, nrows=20, low_memory=False), use_container_width=True)
-        except Exception as e:
-            st.info(f"{p09.name} önizlenemedi: {e}")
+candidates = [
+    DATA_DIR / "sf_crime_09.csv",
+    DATA_DIR / "sf_crime_08.csv",
+    DATA_DIR / "sf_crime.csv",
+]
+
+final_path = next((p for p in candidates if p.exists()), None)
+
+if final_path is None:
+    st.info("Henüz birleşik çıktı yok. Önce güncellemeyi çalıştırın.")
+else:
+    st.caption(f"📌 Seçilen dosya: **{final_path.name}**")
+    try:
+        st.dataframe(pd.read_csv(final_path, nrows=20, low_memory=False), use_container_width=True)
+    except Exception as e:
+        st.info(f"Önizleme okunamadı: {e}")
