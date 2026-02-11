@@ -1156,7 +1156,7 @@ st.info("📌 Not: En son güncellenen/birleşen çıktı genellikle **sf_crime_
 with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=False):
     dbg("CKPT-STAGE-00: expander açıldı")
 
-    df_stage = None  # ✅ FIX: her durumda tanımlı
+    df_stage = None  # her durumda tanımlı
 
     do_calc = st.checkbox("Aşama özetini hesapla (yavaş olabilir)", value=False)
     dbg(f"CKPT-STAGE-01: do_calc={do_calc}")
@@ -1173,6 +1173,7 @@ with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=
             df_stage = None
     else:
         st.info("Kapalı: UI donmaması için hesap yapılmadı.")
+        st.warning("ℹ️ Aşama 9 kontrolü için 'Aşama özetini hesapla' seçeneğini açmalısın.")
 
     # küçük “etkili” özet (df_stage varsa)
     if df_stage is not None and not df_stage.empty:
