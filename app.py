@@ -1152,28 +1152,30 @@ with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=
     if st.checkbox("Aşama özetini hesapla (yavaş olabilir)", value=False):
         df_stage = build_stage_summary(DATA_DIR)
         st.dataframe(df_stage, use_container_width=True)
+
+        # küçük “etkili” özet
+        last_ok = df_stage[(df_stage["Aşama"] == 9) & (df_stage["Durum"] == "✅ Var")]
+        if not last_ok.empty:
+            st.success("✅ En güncel nihai model girdisi hazır: **Aşama 9**")
+        else:
+            st.warning("⚠️ Nihai model girdisi (Aşama 9) henüz yok. Komşuluk/Near-Repeat adımı çalıştırılmalı.")
+
+        try:
+            tmp = df_stage[df_stage["Δ Sütun"] != "-"].copy()
+            if not tmp.empty:
+                tmp["Δ Sütun"] = pd.to_numeric(tmp["Δ Sütun"], errors="coerce")
+                top = tmp.sort_values("Δ Sütun", ascending=False).head(1)
+                if not top.empty:
+                    st.info(
+                        f"📌 En yüksek özellik artışı: **Aşama {int(top['Aşama'].iloc[0])}** "
+                        f"({top['Tanım'].iloc[0]}) → Δ Sütun: **{int(top['Δ Sütun'].iloc[0])}**"
+                    )
+        except Exception:
+            pass
+
     else:
         st.info("Kapalı: UI donmaması için hesap yapılmadı.")
-
-    # küçük “etkili” özet
-    last_ok = df_stage[(df_stage["Aşama"] == 9) & (df_stage["Durum"] == "✅ Var")]
-    if not last_ok.empty:
-        st.success("✅ En güncel nihai model girdisi hazır: **Aşama 9**")
-    else:
-        st.warning("⚠️ Nihai model girdisi (Aşama 9) henüz yok. Komşuluk/Near-Repeat adımı çalıştırılmalı.")
-
-    try:
-        tmp = df_stage[df_stage["Δ Sütun"] != "-"].copy()
-        if not tmp.empty:
-            tmp["Δ Sütun"] = pd.to_numeric(tmp["Δ Sütun"], errors="coerce")
-            top = tmp.sort_values("Δ Sütun", ascending=False).head(1)
-            if not top.empty:
-                st.info(
-                    f"📌 En yüksek özellik artışı: **Aşama {int(top['Aşama'].iloc[0])}** "
-                    f"({top['Tanım'].iloc[0]}) → Δ Sütun: **{int(top['Δ Sütun'].iloc[0])}**"
-                )
-    except Exception:
-        pass
+        st.warning("ℹ️ Aşama 9 kontrolü için 'Aşama özetini hesapla' seçeneğini açmalısın.")
         
 # -----------------------------------------------------------------------------
 # 1.5) Dosyaları tarihe göre sırala
