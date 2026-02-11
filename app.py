@@ -144,6 +144,10 @@ def run_script(path: Path) -> bool:
             bufsize=1,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
+        import time
+        
+        last_ui = time.time()
+        
         while True:
             line = proc.stdout.readline()
             if not line and proc.poll() is not None:
@@ -151,7 +155,15 @@ def run_script(path: Path) -> bool:
             if line:
                 lines.append(line.rstrip())
                 lines = lines[-400:]
-                placeholder.code("\n".join(lines))
+        
+                # UI'yı her satırda değil, 0.5 sn'de bir güncelle
+                if time.time() - last_ui >= 0.5:
+                    placeholder.code("\n".join(lines))
+                    last_ui = time.time()
+        
+        # final update (bittiyse son hali bas)
+        placeholder.code("\n".join(lines))
+
         rc = proc.wait()
         if rc == 0:
             st.success(f"✅ {path.name} tamamlandı")
@@ -168,16 +180,13 @@ def _human_mb(n_bytes: int) -> float:
         return 0.0
     return round(n_bytes / (1024**2), 3)
 
-def _file_rows_cols(p: Path) -> tuple[int | None, int | None]:
-    """Satır (header hariç) + sütun sayısı."""
+@st.cache_data(show_spinner=False)
+def _file_cols_only(p_str: str) -> int | None:
     try:
-        n_cols = len(pd.read_csv(p, nrows=0).columns)
-        with p.open("rb") as f:
-            n_lines = sum(1 for _ in f)
-        n_rows = max(n_lines - 1, 0)
-        return n_rows, n_cols
+        p = Path(p_str)
+        return len(pd.read_csv(p, nrows=0).columns)
     except Exception:
-        return None, None
+        return None
 
 def build_stage_summary(data_dir: Path) -> pd.DataFrame:
     STAGES = [
@@ -202,7 +211,8 @@ def build_stage_summary(data_dir: Path) -> pd.DataFrame:
         exists = p.exists()
 
         if exists:
-            n_rows, n_cols = _file_rows_cols(p)
+            n_cols = _file_cols_only(str(p))
+            n_rows = "-"   # satır sayımı kaldırıldı (UI donmasın)
             size_mb = _human_mb(p.stat().st_size)
         else:
             n_rows, n_cols, size_mb = None, None, None
@@ -798,7 +808,7 @@ def list_files_sorted(
 
     if include is None:
         include = []
-        for prefix in ["sf", "fr"]:
+        for prefix in ["sf"]:  # fr kaldırıldı
             include += [str(bdir / f"{prefix}_crime_{i:02d}.csv") for i in range(1, 10)]
             include += [str(bdir / f"{prefix}_crime_y.csv")]
         include += [str(bdir / "sf_crime_grid_full_labeled.csv")]
@@ -814,6 +824,8 @@ def list_files_sorted(
         seen.add(key)
 
         exists = p.exists()
+        if p.name.startswith("fr_"):
+            continue
         try:
             st_ = p.stat() if exists else None
             mtime = st_.st_mtime if st_ else None
@@ -835,6 +847,8 @@ def list_files_sorted(
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values("_mtime", ascending=ascending, na_position="last").drop(columns=["_mtime"])
+        df = df.reset_index(drop=True)
+        df.insert(0, "Sıra", range(1, len(df) + 1))
     return df
 
 def convert_csv_dir_to_parquet(
@@ -1028,7 +1042,7 @@ def download_and_preview(name, url, file_path, is_json=False, allow_artifact_fal
                 st.code(Path(file_path).read_text(encoding="utf-8")[:2000])
         else:
             head = pd.read_csv(file_path, nrows=3)
-            cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            cols = head.columns.tolist()
             st.dataframe(head)
             st.caption(f"📌 Sütunlar: {cols}")
         st.success("✅ İndirildi.")
@@ -1100,36 +1114,10 @@ with st.sidebar:
         else:
             os.environ["POPULATION_PATH"] = pop_url_in_main or str(POPULATION_PATH)
 
-# --- ANA SAYFA (sidebar DIŞI) ---
-# -----------------------------------------------------------------------------
-# 0) (Opsiyonel) requirements yükleme
-# -----------------------------------------------------------------------------
-st.markdown("### 0) (Opsiyonel) Gereklilikleri yükle")
-if st.button("📦 requirements.txt yükle"):
-    try:
-        req = ROOT / "requirements.txt"
-        if req.exists():
-            out = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", str(req)],
-                cwd=str(ROOT),
-                capture_output=True,
-                text=True,
-            )
-            st.code(out.stdout or "")
-            if out.returncode == 0:
-                st.success("✅ Gereklilikler yüklendi.")
-            else:
-                st.error("❌ Kurulumda hata!")
-                st.code(out.stderr or "")
-        else:
-            st.warning("⚠️ requirements.txt bulunamadı.")
-    except Exception as e:
-        st.error(f"Kurulum çağrısı başarısız: {e}")
-
 # -----------------------------------------------------------------------------
 # 1) (Opsiyonel) Verileri indir ve önizle
 # -----------------------------------------------------------------------------
-st.markdown("### 1) Veri Katmanları (Durum Özeti)")
+st.markdown("### Veri Katmanları (Durum Özeti)")
 
 LAYER_FILES = [
     ("Suç Olay Verisi (Temel)", "sf_crime.csv", "Dinamik (Günlük)"),
@@ -1161,8 +1149,11 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True)
 st.info("📌 Not: En son güncellenen/birleşen çıktı genellikle **sf_crime_09.csv** dosyasıdır. Analizde kullanılabilecek güncel veri kaynağıdır.")
 
 with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=False):
-    df_stage = build_stage_summary(DATA_DIR)
-    st.dataframe(df_stage, use_container_width=True)
+    if st.checkbox("Aşama özetini hesapla (yavaş olabilir)", value=False):
+        df_stage = build_stage_summary(DATA_DIR)
+        st.dataframe(df_stage, use_container_width=True)
+    else:
+        st.info("Kapalı: UI donmaması için hesap yapılmadı.")
 
     # küçük “etkili” özet
     last_ok = df_stage[(df_stage["Aşama"] == 9) & (df_stage["Durum"] == "✅ Var")]
@@ -1187,7 +1178,7 @@ with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=
 # -----------------------------------------------------------------------------
 # 1.5) Dosyaları tarihe göre sırala
 # -----------------------------------------------------------------------------
-st.markdown("### 1.5) Dosyaları tarihe göre sırala")
+st.markdown("### Dosyaları tarihe göre sırala")
 colA, colB, colC = st.columns([1, 1, 2])
 with colA:
     order = st.radio("Sıralama", ["Eski → Yeni", "Yeni → Eski"], horizontal=True, index=0)
@@ -1201,16 +1192,16 @@ with colC:
     )
 
 asc = (order == "Eski → Yeni")
-df_files = list_files_sorted(pattern=patt, ascending=asc, include_missing=show_missing)
-if df_files.empty:
-    st.info("Eşleşen dosya yok.")
+if st.button("📂 Listeyi Oluştur", key="make_file_list"):
+    df_files = list_files_sorted(pattern=patt, ascending=asc, include_missing=show_missing)
+    st.dataframe(df_files, use_container_width=True, hide_index=True)
 else:
-    st.dataframe(df_files, use_container_width=True)
+    st.info("Liste hazır değil. 'Listeyi Oluştur'a bas.")
 
 # -----------------------------------------------------------------------------
 # 1.6) CSV → Parquet dönüştür
 # -----------------------------------------------------------------------------
-st.markdown("### 1.6) CSV → Parquet dönüştür")
+st.markdown("### CSV → Parquet dönüştür")
 with st.expander("🔄 CSV’leri Parquet’e çevir (zstd)"):
     in_dir = st.text_input(
         "Girdi klasörü", value=str(DATA_DIR),
@@ -1259,7 +1250,7 @@ with st.expander("🔄 CSV’leri Parquet’e çevir (zstd)"):
 # -----------------------------------------------------------------------------
 # 2) Veri Güncelleme (Tek Akış)
 # -----------------------------------------------------------------------------
-st.markdown("### 2) Veri Güncelle ve Birleştir (Tek Akış)")
+st.markdown("### Veri Güncelle ve Birleştir (Tek Akış)")
 
 if st.button("⚙️ Güncelleme İşlemini Başlat"):
     with st.spinner("⏳ Veri katmanları güncelleniyor ve birleştiriliyor..."):
@@ -1292,7 +1283,7 @@ if st.button("⚙️ Güncelleme İşlemini Başlat"):
 # -----------------------------------------------------------------------------
 # 3) Güncel Birleşik Veri (Model Girdisi) — Önizleme
 # -----------------------------------------------------------------------------
-st.markdown("### 3) Güncel Birleşik Veri (Model Girdisi)")
+st.markdown("### Güncel Birleşik Veri (Model Girdisi)")
 
 candidates = [
     DATA_DIR / "sf_crime_09.csv",
