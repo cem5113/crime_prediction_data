@@ -1212,10 +1212,6 @@ with st.expander("📊 Tez/Savunma: Veri İşleme Aşamaları Özeti", expanded=
                     )
         except Exception:
             pass
-
-    else:
-        st.info("Kapalı: UI donmaması için hesap yapılmadı.")
-        st.warning("ℹ️ Aşama 9 kontrolü için 'Aşama özetini hesapla' seçeneğini açmalısın.")
         
 # -----------------------------------------------------------------------------
 # 1.5) Dosyaları tarihe göre sırala
