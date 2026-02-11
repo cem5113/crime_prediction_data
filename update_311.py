@@ -342,13 +342,19 @@ def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
         if df is not None and not df.empty:
             return df
 
-    # 2) base seed: SAVE_DIR içinde ham olabilecek adaylar
+    # 2) base seed: ham olabilecek adaylar (öncelik: repo'daki sf_311_last_5_years.csv)
     seed_candidates = [
-        os.path.join(SAVE_DIR, AGG_BASENAME),   # bazen yanlışlıkla ham kaydedilmiş olabiliyor
-        os.path.join(SAVE_DIR, RAW_311_NAME_Y), # normalde ham adı
-        os.path.join(SAVE_DIR, LEGACY_311_Y),   # legacy ham adı
-        os.path.join(SAVE_DIR, LEGACY_311),     # legacy kısa ad
+        os.path.join(SAVE_DIR, "sf_311_last_5_years.csv"),     # ✅ SENİN DEDİĞİN
+        os.path.join(SAVE_DIR, "sf_311_last_5_years_3h.csv"),  # (varsa)
+        os.path.join(SAVE_DIR, AGG_BASENAME),
+        os.path.join(SAVE_DIR, AGG_ALIAS),
+        os.path.join(SAVE_DIR, RAW_311_NAME_Y),
+        os.path.join(SAVE_DIR, LEGACY_311_Y),
+        os.path.join(SAVE_DIR, LEGACY_311),
     ]
+    # boş/None'ları temizle
+    seed_candidates = [p for p in seed_candidates if p and isinstance(p, str)]
+
     for cand in seed_candidates:
         if os.path.exists(cand):
             df_seed = _load_raw_seed_from_base(cand)
