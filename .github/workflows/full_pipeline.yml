@@ -146,6 +146,21 @@ jobs:
             pip install -r requirements.txt
           fi
           pip install -U "geopandas==1.0.1" "shapely==2.0.4" "pyproj==3.6.1" "pyogrio==0.9.0" "rtree==1.3.0"
+          pip install -U requests
+
+      - name: 7-Day Forecast (Visual Crossing) → week.csv
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          VISUAL_CROSSING_API_KEY: ${{ secrets.VISUAL_CROSSING_API_KEY }}
+          WX_LOCATION: "San Francisco, CA"
+          WX_UNIT: "us"
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+        run: |
+          set -e
+          python -u scripts/update_week_forecast.py
+          echo "week.csv — ilk 5 satır:"
+          head -n 5 "${CRIME_DATA_DIR}/week.csv" || true
+
 
       - name: Geo stack smoke test
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -760,4 +775,5 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_pois_cleaned_with_geoid.csv
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.csv
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years_y.csv
+            ${{ env.CRIME_DATA_DIR }}/week.csv
             ${{ env.CRIME_DATA_DIR }}/*.geojson
