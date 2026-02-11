@@ -2,7 +2,7 @@ name: Full SF Crime Pipeline
 
 on:
   schedule:
-    - cron: "0 14,15 * * *" # SF 07:00: 14:00 UTC (yaz), 15:00 UTC (kış)
+    - cron: "*/2 * * * *"
   workflow_dispatch:
     inputs:
       persist:
