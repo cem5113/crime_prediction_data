@@ -2,7 +2,7 @@ name: Full SF Crime Pipeline
 
 on:
   schedule:
-    - cron: "35 16 * * *"
+    - cron: "*/2 * * * *"
   workflow_dispatch:
     inputs:
       persist:
