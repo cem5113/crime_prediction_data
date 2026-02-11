@@ -2,7 +2,7 @@ name: Full SF Crime Pipeline
 
 on:
   schedule:
-    - cron: "0 15 * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       persist:
@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: full-pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 env:
   CRIME_DATA_DIR: ${{ github.workspace }}
   GEOID_LEN: "11"
@@ -86,12 +86,20 @@ jobs:
           now="$(date)"
           echo "Runner local time: $now"
           echo "RUN_LOCAL_TIME=$now" >> $GITHUB_ENV
-          # Manuel + force=true ise doğrudan geç
+      
+          # schedule ise her zaman çalış
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "proceed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+      
+          # Manuel + force=true ise geç
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force }}" = "true" ]; then
             echo "proceed=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          # Aksi halde 07:00 kontrolü
+      
+          # Diğer durumda 07:00 kontrolü
           if [ "$(date +%H)" = "07" ]; then
             echo "proceed=true" >> $GITHUB_OUTPUT
           else
