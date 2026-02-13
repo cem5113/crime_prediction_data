@@ -1,15 +1,13 @@
-# app.py
 import os
 from pathlib import Path
-from datetime import datetime
-
 import pandas as pd
-import numpy as np
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# ---------- STYLE (Times 12, klasik görünüm) ----------
+# --------------------------------------------------
+# STYLE (Times New Roman 12)
+# --------------------------------------------------
 st.markdown("""
 <style>
 html, body, [class*="css"]  {
@@ -25,7 +23,25 @@ h1 {
 
 st.markdown("<h1>SUTAM – Veri Hazırlama Süreci</h1>", unsafe_allow_html=True)
 
-# ---------- Dosya sırası ----------
+# --------------------------------------------------
+# SEARCH PATHS (Pipeline uyumlu)
+# --------------------------------------------------
+SEARCH_DIRS = []
+
+env_dir = os.getenv("CRIME_DATA_DIR")
+if env_dir:
+    SEARCH_DIRS.append(Path(env_dir))
+
+SEARCH_DIRS += [
+    Path("."), 
+    Path("./crime_prediction_data"),
+    Path("./data"),
+    Path("./outputs"),
+]
+
+# --------------------------------------------------
+# Pipeline aşamaları
+# --------------------------------------------------
 FILES = [
     ("00", "sf_crime.csv", "Ham + temiz + GEOID + zaman feature"),
     ("01", "sf_crime_01.csv", "+ 911"),
@@ -39,14 +55,9 @@ FILES = [
     ("09", "sf_crime_09.csv", "+ neighbors/otokorelasyon"),
 ]
 
-SEARCH_DIRS = [
-    Path("."),
-    Path("./crime_prediction_data"),
-    Path("./data"),
-    Path("./outputs")
-]
-
-# ---------- Fonksiyon ----------
+# --------------------------------------------------
+# Fonksiyonlar
+# --------------------------------------------------
 def find_file(filename):
     for d in SEARCH_DIRS:
         p = d / filename
@@ -58,20 +69,23 @@ def find_file(filename):
 def analyze_csv(path):
     try:
         df = pd.read_csv(path, low_memory=False)
-        rows, cols = df.shape
 
+        rows, cols = df.shape
         total_cells = rows * cols
+
         nan_cells = df.isna().sum().sum()
         nan_pct = (nan_cells / total_cells * 100) if total_cells > 0 else 0
 
         empty_rows = df.isna().all(axis=1).sum()
 
-        return rows, cols, round(nan_pct, 3), int(empty_rows)
+        return rows, cols, round(nan_pct, 4), int(empty_rows)
+
     except Exception:
         return "-", "-", "-", "-"
 
-
-# ---------- Tablo oluştur ----------
+# --------------------------------------------------
+# Tablo oluştur
+# --------------------------------------------------
 data = []
 
 for stage, fname, note in FILES:
