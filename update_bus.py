@@ -25,7 +25,7 @@ def ensure_parent(path: str):
 def safe_save_csv(df: pd.DataFrame, path: str):
     ensure_parent(path)
     tmp = str(path) + ".tmp"
-    df.to_csv(tmp, index=False)
+    df.to_csv(tmp, index=False, encoding="utf-8-sig")
     os.replace(tmp, path)
 
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
