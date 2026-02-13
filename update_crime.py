@@ -90,12 +90,12 @@ def log_date_range(df, date_col="date", label="Suç"):
 def safe_save(df: pd.DataFrame, path: str) -> None:
     try:
         Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
-        df.to_csv(path, index=False)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
     except Exception as e:
         print(f"❌ Kaydedilemedi: {path}\n{e}")
         backup_path = path + ".bak"
-        df.to_csv(backup_path, index=False)
-        print(f"\U0001F4C1 Yedek dosya: {backup_path}")
+        df.to_csv(backup_path, index=False, encoding="utf-8-sig")
+        print(f"📁 Yedek dosya: {backup_path}")
 
 def is_lfs_pointer(p: Path) -> bool:
     try:
