@@ -65,10 +65,10 @@ def _ensure_parent(path: str):
 def _safe_save_csv(df: pd.DataFrame, path: str):
     try:
         _ensure_parent(path)
-        df.to_csv(path, index=False)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
     except Exception as e:
         print(f"❌ Kaydetme hatası: {path}\n{e}")
-        df.to_csv(path + ".bak", index=False)
+        df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
         print(f"📁 Yedek oluşturuldu: {path}.bak")
 
 def _read_geojson_robust(path: str) -> gpd.GeoDataFrame:
