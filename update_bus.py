@@ -25,7 +25,13 @@ def ensure_parent(path: str):
 def safe_save_csv(df: pd.DataFrame, path: str):
     ensure_parent(path)
     tmp = str(path) + ".tmp"
-    df.to_csv(tmp, index=False, encoding="utf-8-sig")
+
+    df2 = sanitize_text_columns(df)  # <-- yeni
+
+    # encoding sabit + yazarken hata olursa replace
+    with open(tmp, "w", encoding="utf-8-sig", errors="replace", newline="") as f:
+        df2.to_csv(f, index=False)
+
     os.replace(tmp, path)
 
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
@@ -46,6 +52,28 @@ def freedman_diaconis_bin_count(data: np.ndarray, max_bins: int = 10) -> int:
     if bw <= 0:
         return min(max_bins, max(2, int(np.sqrt(len(data)))))
     return max(2, min(max_bins, int(np.ceil((data.max() - data.min()) / bw))))
+
+def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    obj_cols = df.select_dtypes(include=["object"]).columns
+    if len(obj_cols) == 0:
+        return df
+
+    # hem gerçek unicode hem de bozulmuş utf-8->cp1252 çıktıları
+    repl = {
+        "–": "-",   # en-dash
+        "−": "-",   # minus
+        "≤": "<=",
+        "≥": ">=",
+        "â€“": "-",  # bozulmuş en-dash
+        "â€": "-",   # bazı varyantlar
+        "â‰¤": "<=",
+        "â‰¥": ">=",
+    }
+    for c in obj_cols:
+        s = df[c]
+        df[c] = s.replace(repl, regex=False)
+    return df
 
 def extract_lat_lon(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -322,18 +350,18 @@ d = bus_feat["distance_to_bus"].replace([np.inf, -np.inf], np.nan).dropna()
 if len(d) >= 2 and d.max() > d.min():
     n_bins = freedman_diaconis_bin_count(d.to_numpy(), max_bins=10)
     _, dist_edges = pd.qcut(d, q=n_bins, retbins=True, duplicates="drop")
-    dist_labels = [f"{int(dist_edges[i])}–{int(dist_edges[i+1])}m" for i in range(len(dist_edges) - 1)]
+    dist_labels = [f"{int(dist_edges[i])}-{int(dist_edges[i+1])}m" for i in range(len(dist_edges) - 1)]
     bus_feat["distance_to_bus_range"] = pd.cut(
         bus_feat["distance_to_bus"], bins=dist_edges, labels=dist_labels, include_lowest=True
     )
 else:
-    bus_feat["distance_to_bus_range"] = pd.Series(["0–0m"] * len(bus_feat))
+    bus_feat["distance_to_bus_range"] = pd.Series(["0-0m"] * len(bus_feat))
 
 cnt = bus_feat["bus_stop_count"].fillna(0)
 if cnt.nunique() > 1:
     n_c_bins = freedman_diaconis_bin_count(cnt.to_numpy(), max_bins=8)
     _, cnt_edges = pd.qcut(cnt, q=n_c_bins, retbins=True, duplicates="drop")
-    cnt_labels = [f"{int(cnt_edges[i])}–{int(cnt_edges[i+1])}" for i in range(len(cnt_edges) - 1)]
+    cnt_labels = [f"{int(cnt_edges[i])}-{int(cnt_edges[i+1])}" for i in range(len(cnt_edges) - 1)]
     bus_feat["bus_stop_count_range"] = pd.cut(cnt, bins=cnt_edges, labels=cnt_labels, include_lowest=True)
 else:
     bus_feat["bus_stop_count_range"] = pd.Series([f"{int(cnt.min())}–{int(cnt.max())}"] * len(cnt))
