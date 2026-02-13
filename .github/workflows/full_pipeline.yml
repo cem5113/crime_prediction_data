@@ -42,8 +42,6 @@ env:
   SF911_API_TOKEN: ${{ secrets.SF911_API_TOKEN }}
   SOCS_APP_TOKEN: ${{ secrets.SOCS_APP_TOKEN }}
 
-  GDRIVE_FOLDER: "crime_inputs" 
-
   PATROL_TOP_K: ${{ github.event.inputs.top_k || '50' }}
 
   PATROL_HORIZON_DAYS: "1"
@@ -787,46 +785,3 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years_y.csv
             ${{ env.CRIME_DATA_DIR }}/week.csv
             ${{ env.CRIME_DATA_DIR }}/*.geojson
-
-      - name: Upload week.csv & sf_crime_09.csv to Google Drive (OAuth via token)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GDRIVE_FOLDER: ${{ env.GDRIVE_FOLDER }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Files check:"
-          ls -lah "${CRIME_DATA_DIR}/week.csv"
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.csv"
-
-          # rclone indir/kur (runner içine)
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-
-          # OAuth token ile remote config oluştur (client_id/secret boş -> rclone default)
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [gdrive]
-          type = drive
-          token = ${RCLONE_GDRIVE_TOKEN}
-          EOF
-
-          echo "Remote test:"
-          rclone lsd gdrive: || true
-
-          # Hedef klasör yolu
-          DEST="gdrive:${GDRIVE_FOLDER}"
-
-          # Önce hedefte eski dosyaları sil (varsa)
-          rclone deletefile "${DEST}/week.csv" || true
-          rclone deletefile "${DEST}/sf_crime_09.csv" || true
-
-          # Sonra yenisini yükle
-          rclone copyto "${CRIME_DATA_DIR}/week.csv"       "${DEST}/week.csv"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.csv" "${DEST}/sf_crime_09.csv"
-
-          echo "✅ Upload OK → ${DEST}"
-          rclone ls "${DEST}" | tail -n 20 || true
-
