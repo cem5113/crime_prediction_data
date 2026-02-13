@@ -748,6 +748,40 @@ jobs:
             fi
           done
 
+      - name: Upload week.csv & sf_crime_09.csv to Google Drive (overwrite)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          GDRIVE_SA_JSON_B64: ${{ secrets.GDRIVE_SA_JSON_B64 }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+        run: |
+          set -euo pipefail
+
+          echo "Files check:"
+          ls -lah "${CRIME_DATA_DIR}/week.csv"
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.csv"
+
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
+          echo "${GDRIVE_SA_JSON_B64}" | base64 -d > /tmp/gdrive_sa.json
+
+          cat > /tmp/rclone.conf <<'EOF'
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = /tmp/gdrive_sa.json
+          EOF
+
+          DEST="gdrive:${GDRIVE_FOLDER_ID}"
+
+          rclone --config /tmp/rclone.conf deletefile "${DEST}/week.csv" || true
+          rclone --config /tmp/rclone.conf deletefile "${DEST}/sf_crime_09.csv" || true
+
+          rclone --config /tmp/rclone.conf copyto "${CRIME_DATA_DIR}/week.csv" "${DEST}/week.csv"
+          rclone --config /tmp/rclone.conf copyto "${CRIME_DATA_DIR}/sf_crime_09.csv" "${DEST}/sf_crime_09.csv"
+
+          echo "✅ Google Drive upload OK"
+
       - name: Upload artifact (datasets only, after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         uses: actions/upload-artifact@v4
