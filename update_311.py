@@ -50,7 +50,7 @@ def normalize_geoid_11(x):
 def save_atomic(df, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    df.to_csv(tmp, index=False)
+    df.to_csv(tmp, index=False, encoding="utf-8-sig")
     os.replace(tmp, path)
 
 def is_lfs_pointer_file(p: Path) -> bool:
