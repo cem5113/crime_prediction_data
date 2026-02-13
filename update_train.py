@@ -20,13 +20,13 @@ def safe_save_csv(df: pd.DataFrame, path: str) -> None:
     ensure_parent(path)
     tmp = path + ".tmp"
     try:
-        df.to_csv(tmp, index=False)
+        df.to_csv(tmp, index=False, encoding="utf-8-sig")
         os.replace(tmp, path)
         print(f"💾 Kaydedildi: {path}")
     except Exception as e:
         print(f"❌ Kaydetme hatası: {path}\n{e}")
         try:
-            df.to_csv(path + ".bak", index=False)
+            df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
             print(f"📁 Yedek oluşturuldu: {path}.bak")
         except Exception:
             pass
