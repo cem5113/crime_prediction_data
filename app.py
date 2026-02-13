@@ -445,14 +445,20 @@ system_time_txt = now_utc.strftime("%d.%m.%Y %H:%M UTC")
 st.markdown(
     f"""
     <div class="sutam-foot">
-      <strong>Suç Veri Zaman Aralığı (İlk – Son Kayıt):</strong><br>
-      {first_txt} &nbsp;→&nbsp; {last_txt}<br><br>
-
-      <strong>Pipeline Son Güncelleme:</strong><br>
-      {pipeline_update_txt} &nbsp;|&nbsp; <strong>Kaynak dosya:</strong> {source_file_txt}<br><br>
-
-      <strong>Sistem Saati:</strong><br>
-      {system_time_txt}
+        <div>
+            <strong>Suç Veri Zaman Aralığı (İlk – Son Kayıt)</strong><br>
+            {first_txt} → {last_txt}
+        </div>
+        <br>
+        <div>
+            <strong>Pipeline Son Güncelleme</strong><br>
+            {pipeline_update_txt} | Kaynak dosya: {source_file_txt}
+        </div>
+        <br>
+        <div>
+            <strong>Sistem Saati</strong><br>
+            {system_time_txt}
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
