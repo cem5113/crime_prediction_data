@@ -63,7 +63,7 @@ st.markdown(
 
 st.markdown('<div class="sutam-title">SUTAM – Veri Hazırlama Süreci</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sutam-sub">Pipeline çıktılarının dosya bazlı sağlık özeti (satır/sütun, NaN %, tam boş satır) ve güncellik bilgisi.</div>',
+    '<div class="sutam-sub">SUTAM suç tahmin ekosistemini besleyen tüm veri katmanlarının yapısal bütünlüğünü ve zaman tutarlılığını izleyen merkezi kontrol paneli.</div>',
     unsafe_allow_html=True,
 )
 
