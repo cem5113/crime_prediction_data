@@ -750,50 +750,6 @@ jobs:
             fi
           done
 
-      - name: Cleanup old artifacts (keep last 5)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEEP_LAST: "5"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # gh cli kurulu değilse kur
-          if ! command -v gh >/dev/null; then
-            type -p curl >/dev/null && sudo curl -sSL https://raw.githubusercontent.com/cli/cli/trunk/script/install.sh | sudo bash
-          fi
-
-          echo "Listing artifacts..."
-          # Not: GitHub API sayfalama var; ilk 200 yeterli olur genelde
-          ART_JSON=$(gh api -H "Accept: application/vnd.github+json" \
-            "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=200")
-
-          # jq yoksa kur
-          if ! command -v jq >/dev/null; then
-            sudo apt-get update -y && sudo apt-get install -y jq
-          fi
-
-          TOTAL=$(echo "$ART_JSON" | jq '.total_count')
-          echo "Total artifacts: $TOTAL"
-
-          KEEP=${KEEP_LAST}
-
-          # newest -> oldest sıralı id listesi
-          IDS=$(echo "$ART_JSON" | jq -r '.artifacts | sort_by(.created_at) | reverse | .[].id')
-
-          i=0
-          for id in $IDS; do
-            i=$((i+1))
-            if [ $i -le $KEEP ]; then
-              echo "KEEP artifact id=$id"
-              continue
-            fi
-            echo "DELETE artifact id=$id"
-            gh api -X DELETE -H "Accept: application/vnd.github+json" \
-              "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" || true
-          done
-
       - name: Upload artifact (datasets only, after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         uses: actions/upload-artifact@v4
