@@ -16,11 +16,12 @@ def ensure_parent(path: str) -> None:
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
 def safe_save_csv(df: pd.DataFrame, path: str) -> None:
-    """Atomic yazım: tmp → replace; hata halinde .bak bırak."""
     ensure_parent(path)
     tmp = path + ".tmp"
     try:
-        df.to_csv(tmp, index=False, encoding="utf-8-sig")
+        df2 = sanitize_text_columns(df)  # <-- yeni
+        with open(tmp, "w", encoding="utf-8-sig", errors="replace", newline="") as f:
+            df2.to_csv(f, index=False)
         os.replace(tmp, path)
         print(f"💾 Kaydedildi: {path}")
     except Exception as e:
@@ -61,6 +62,22 @@ def freedman_diaconis_bin_count(data: np.ndarray, max_bins: int = 10) -> int:
     if bw <= 0:
         return min(max_bins, max(2, int(np.sqrt(len(data)))))
     return max(2, min(max_bins, int(np.ceil((data.max() - data.min()) / bw))))
+
+def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    obj_cols = df.select_dtypes(include=["object"]).columns
+    if len(obj_cols) == 0:
+        return df
+
+    repl = {
+        "–": "-", "−": "-",
+        "≤": "<=", "≥": ">=",
+        "â€“": "-", "â€": "-",
+        "â‰¤": "<=", "â‰¥": ">=",
+    }
+    for c in obj_cols:
+        df[c] = df[c].replace(repl, regex=False)
+    return df
 
 # =========================
 # ENV / Yollar
@@ -313,19 +330,19 @@ finite_dist = dist.dropna()
 if len(finite_dist) >= 2 and finite_dist.max() > finite_dist.min():
     n_bins = freedman_diaconis_bin_count(finite_dist.to_numpy(), max_bins=10)
     _, edges = pd.qcut(finite_dist, q=n_bins, retbins=True, duplicates="drop")
-    labels = [f"{int(round(edges[i]))}–{int(round(edges[i+1]))}m" for i in range(len(edges) - 1)]
+    labels = [f"{int(round(edges[i]))}-{int(round(edges[i+1]))}m" for i in range(len(edges) - 1)]
     geo_metrics["distance_to_train_range"] = pd.cut(dist, bins=edges, labels=labels, include_lowest=True)
 else:
-    geo_metrics["distance_to_train_range"] = "0–0m"
+    geo_metrics["distance_to_train_range"] = "0-0m"
 
 cnt = pd.to_numeric(geo_metrics["train_stop_count"], errors="coerce").fillna(0)
 if cnt.nunique() > 1:
     n_c_bins = freedman_diaconis_bin_count(cnt.to_numpy(), max_bins=8)
     _, c_edges = pd.qcut(cnt, q=n_c_bins, retbins=True, duplicates="drop")
-    c_labels = [f"{int(round(c_edges[i]))}–{int(round(c_edges[i+1]))}" for i in range(len(c_edges) - 1)]
+    c_labels = [f"{int(round(c_edges[i]))}-{int(round(c_edges[i+1]))}" for i in range(len(c_edges) - 1)]
     geo_metrics["train_stop_count_range"] = pd.cut(cnt, bins=c_edges, labels=c_labels, include_lowest=True)
 else:
-    geo_metrics["train_stop_count_range"] = f"{int(cnt.min())}–{int(cnt.max())}"
+    geo_metrics["train_stop_count_range"] = f"{int(cnt.min())}-{int(cnt.max())}"
 
 log_shape(geo_metrics, "GEOID-bazlı metrikler (binlenmiş)")
 
