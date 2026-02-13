@@ -386,25 +386,77 @@ df_table, missing_files = build_table(base_dir)
 
 st.dataframe(df_table, use_container_width=True, hide_index=True)
 
-# 3) Alt bilgi: güncellik
+# 3) Alt bilgi: güncellik + veri zaman aralığı (İlk–Son kayıt)
 last_update, last_file = get_latest_file_mtime(base_dir)
 now_utc = datetime.now(timezone.utc)
 
 st.markdown("---")
 
+# --- İlk/Son kayıt zamanını bulmak için en güncel suç dosyasını seçelim ---
+# Öncelik: sf_crime_09 -> sf_crime_00
+latest_csv = None
+for _, fname, _ in STAGES[::-1]:
+    p = base_dir / fname
+    if p.exists() and p.stat().st_size > 0:
+        latest_csv = p
+        break
+
+first_txt, last_txt = "—", "—"
+
+if latest_csv is not None:
+    try:
+        df_latest = safe_read_csv(latest_csv)
+
+        # Zaman sütunu isimleri (senin dosyalarda olabilecek varyantlar)
+        time_candidates = [
+            "event_datetime", "incident_datetime", "datetime",
+            "event_time", "incident_time", "time",
+            "date", "report_datetime", "created_at", "timestamp"
+        ]
+        time_col = next((c for c in time_candidates if c in df_latest.columns), None)
+
+        if time_col:
+            dt = pd.to_datetime(df_latest[time_col], errors="coerce", utc=False)
+            dt = dt.dropna()
+
+            if len(dt) > 0:
+                first_dt = dt.min()
+                last_dt  = dt.max()
+
+                # Görsel format: 01.01.2021 00:00
+                first_txt = first_dt.strftime("%d.%m.%Y %H:%M")
+                last_txt  = last_dt.strftime("%d.%m.%Y %H:%M")
+        else:
+            # zaman sütunu yoksa sessizce "—" bırak
+            pass
+    except Exception:
+        # okuma/parse patlarsa UI çökmesin
+        pass
+
+# Pipeline güncelleme: son görülen dosyanın mtime'ı (UTC)
+pipeline_update_txt = "—"
+source_file_txt = "—"
 if last_update:
-    st.markdown(
-        f"""
-        <div class="sutam-foot">
-          <strong>Son veri güncellemesi:</strong> {last_update.strftime("%Y-%m-%d %H:%M:%S")} UTC &nbsp;|&nbsp;
-          <strong>Kaynak dosya:</strong> {last_file} <br>
-          <strong>Şu an:</strong> {now_utc.strftime("%Y-%m-%d %H:%M:%S")} UTC
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.warning("Son güncelleme zamanı tespit edilemedi (hiç dosya bulunamadı).")
+    pipeline_update_txt = last_update.strftime("%d.%m.%Y %H:%M UTC")
+    source_file_txt = last_file or "—"
+
+system_time_txt = now_utc.strftime("%d.%m.%Y %H:%M UTC")
+
+st.markdown(
+    f"""
+    <div class="sutam-foot">
+      <strong>Suç Veri Zaman Aralığı (İlk – Son Kayıt):</strong><br>
+      {first_txt} &nbsp;→&nbsp; {last_txt}<br><br>
+
+      <strong>Pipeline Son Güncelleme:</strong><br>
+      {pipeline_update_txt} &nbsp;|&nbsp; <strong>Kaynak dosya:</strong> {source_file_txt}<br><br>
+
+      <strong>Sistem Saati:</strong><br>
+      {system_time_txt}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # 4) Eksikler
 if missing_files:
