@@ -49,19 +49,18 @@ import streamlit as st
 # =========================
 st.set_page_config(page_title="SUTAM – Veri Hazırlama Süreci", layout="wide")
 
-# “Times 12 formatında klasik başlık”
-st.markdown(
-    """
-<style>
-h1, h2, h3, h4, h5, h6, p, div, span, label {
-  font-family: "Times New Roman", Times, serif !important;
-}
-.block-container { padding-top: 1.25rem; }
-table, th, td { font-family: "Times New Roman", Times, serif !important; font-size: 12pt !important; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<div style="
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    font-size: 18px;
+    font-weight: 500;
+    color: #222;
+    padding-bottom: 6px;
+    margin-bottom: 14px;
+">
+SUTAM – Veri Hazırlama Süreci
+</div>
+""", unsafe_allow_html=True)
 
 st.title("SUTAM – Veri Hazırlama Süreci")
 
