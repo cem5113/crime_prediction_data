@@ -175,7 +175,7 @@ Path(CRIME_OUTPUT).parent.mkdir(parents=True, exist_ok=True)
 nan_pop = int(out["population"].isna().sum()) if "population" in out.columns else -1
 print(f"🔎 population NaN: {nan_pop}")
 
-out.to_csv(CRIME_OUTPUT, index=False)
+out.to_csv(CRIME_OUTPUT, index=False, encoding="utf-8-sig")
 print(f"✅ Kaydedildi → {CRIME_OUTPUT}")
 
 try:
