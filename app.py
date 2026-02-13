@@ -446,17 +446,18 @@ st.markdown(
     f"""
     <div class="sutam-foot">
         <div>
-            <strong>Suç Veri Zaman Aralığı (İlk – Son Kayıt)</strong><br>
+            <strong>Suç Veri Zaman Aralığı (America/Los_Angeles)</strong><br>
             {first_txt} → {last_txt}
         </div>
+
         <br>
         <div>
-            <strong>Pipeline Son Güncelleme</strong><br>
-            {pipeline_update_txt} | Kaynak dosya: {source_file_txt}
+            <strong>Pipeline Son Güncelleme (UTC)</strong><br>
+            {pipeline_update_txt}
         </div>
         <br>
         <div>
-            <strong>Sistem Saati</strong><br>
+            <strong>Sistem Saati (UTC)</strong><br>
             {system_time_txt}
         </div>
     </div>
