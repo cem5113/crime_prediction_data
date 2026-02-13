@@ -29,10 +29,10 @@ def ensure_parent(path: str):
 def safe_save_csv(df: pd.DataFrame, path: str):
     try:
         ensure_parent(path)
-        df.to_csv(path, index=False)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
     except Exception as e:
         log(f"❌ Kaydetme hatası: {path}\n{e}")
-        df.to_csv(path + ".bak", index=False)
+        df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
         log(f"📁 Yedek oluşturuldu: {path}.bak")
 
 def _to_date_series(x):
