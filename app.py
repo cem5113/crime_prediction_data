@@ -1,471 +1,433 @@
-# app.py
-# SUTAM – Veri Hazırlama Süreci (Pipeline Summary)
-# - Amaç: Sadece “Aşama–Dosya–Satır–Sütun–NaN hücre(%)–Tam boş satır–Not” tablosunu üretip göstermek
-# - Kaynak: (1) Local (repo içinde dosyalar)  (2) GitHub raw (commit)  (3) GitHub release asset  (4) GitHub artifact (token ile)
-#
-# ÇALIŞTIRMA NOTU (Streamlit Cloud):
-# - Eğer workflow "persist=artifact" ise app dosyaları repo’da olmayacağı için app.py bunları göremez.
-#   O zaman: Secrets’a GITHUB_TOKEN ekleyip DATA_SOURCE="artifact" kullanmalısın.
-# - Eğer "persist=commit" ise DATA_SOURCE="raw" yeterli (token gerekmez).
-#
-# ENV / SECRETS:
-#   DATA_SOURCE: local|raw|release|artifact   (default: raw)
-#   GH_OWNER, GH_REPO, GH_BRANCH             (default: repo bilgisi)
-#   GITHUB_TOKEN                             (artifact için şart; release/private ise gerekebilir)
-#   WORKFLOW_NAME                            (default: Full SF Crime Pipeline)
-#   ARTIFACT_NAME                            (default: sf-crime-pipeline-output)
-#   RELEASE_ASSET_NAME                        (default: sf-crime-pipeline-output.zip)  # release senaryosu
-#   RELEASE_TAG                               (default: latest)
-#
-# Dosya listesi senin akışına göre:
-# 00 sf_crime.csv
-# 01 sf_crime_01.csv
-# 02 sf_crime_02.csv
-# 03 sf_crime_03.csv
-# 04 sf_crime_04.csv
-# 05 sf_crime_05.csv
-# 06 sf_crime_06.csv
-# 07 sf_crime_07.csv
-# 08 sf_crime_08.csv
-# 09 sf_crime_09.csv
+# app.py — SUTAM | Veri Hazırlama Süreci (artifact/raw/local fallback)
+# Python 3.11 + Streamlit
+
+from __future__ import annotations
 
 import os
 import io
 import re
-import json
-import time
 import zipfile
-import tempfile
-from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
+import shutil
+from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
-import requests
 import streamlit as st
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+# PyGithub (requirements.txt içinde pygithub var)
+try:
+    from github import Github
+except Exception:
+    Github = None
 
 
 # =========================
-# 0) UI / Stil
+# UI / STYLE (Helvetica)
 # =========================
 st.set_page_config(page_title="SUTAM – Veri Hazırlama Süreci", layout="wide")
 
-st.markdown("""
-<div style="
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-    font-size: 18px;
-    font-weight: 500;
-    color: #222;
-    padding-bottom: 6px;
-    margin-bottom: 14px;
-">
-SUTAM – Veri Hazırlama Süreci
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+      html, body, [class*="css"]  {
+        font-family: Helvetica, Arial, sans-serif !important;
+      }
+      .sutam-title {
+        font-size: 22px;        /* daha küçük */
+        font-weight: 700;
+        margin: 0.2rem 0 0.6rem 0;
+        letter-spacing: 0.2px;
+      }
+      .sutam-sub {
+        font-size: 13px;
+        opacity: 0.8;
+        margin-bottom: 0.7rem;
+      }
+      .sutam-foot {
+        font-size: 13px;
+        opacity: 0.85;
+        margin-top: 0.6rem;
+      }
+      .stDataFrame {
+        font-size: 13px;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.title("SUTAM – Veri Hazırlama Süreci")
+st.markdown('<div class="sutam-title">SUTAM – Veri Hazırlama Süreci</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="sutam-sub">Pipeline çıktılarının dosya bazlı sağlık özeti (satır/sütun, NaN %, tam boş satır) ve güncellik bilgisi.</div>',
+    unsafe_allow_html=True,
+)
 
 
 # =========================
-# 1) Konfigürasyon
+# CONFIG (ENV)
 # =========================
-DATA_SOURCE = os.getenv("DATA_SOURCE", "raw").strip().lower()  # local|raw|release|artifact
+def env(name: str, default: str = "") -> str:
+    v = os.getenv(name)
+    return v.strip() if isinstance(v, str) and v.strip() else default
 
-GH_OWNER = os.getenv("GH_OWNER", "")  # boşsa otomatik deneyeceğiz
-GH_REPO = os.getenv("GH_REPO", "")
-GH_BRANCH = os.getenv("GH_BRANCH", "main")
+DATA_SOURCE     = env("DATA_SOURCE", "raw").lower()  # artifact | raw | local
+LOCAL_DATA_DIR  = env("LOCAL_DATA_DIR", "crime_prediction_data")
+GH_OWNER        = env("GH_OWNER", "")
+GITHUB_REPO     = env("GITHUB_REPO", "")  # "owner/repo" (opsiyonel)
+GH_TOKEN        = env("GH_TOKEN", "") or env("GITHUB_TOKEN", "")
+GH_BRANCH       = env("GH_BRANCH", "main")
+WORKFLOW_NAME   = env("WORKFLOW_NAME", "Full SF Crime Pipeline")
+ARTIFACT_NAME   = env("ARTIFACT_NAME", "sf-crime-pipeline-output")
 
-WORKFLOW_NAME = os.getenv("WORKFLOW_NAME", "Full SF Crime Pipeline")
-ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output")
+# opsiyonel fallback (release zip vs)
+RELEASE_ZIP_URL = env("RELEASE_ZIP_URL", "")  # örn: https://.../sf-crime-pipeline-output.zip
 
-RELEASE_TAG = os.getenv("RELEASE_TAG", "latest")
-RELEASE_ASSET_NAME = os.getenv("RELEASE_ASSET_NAME", "sf-crime-pipeline-output.zip")
+ALLOW_PIPELINE  = env("ALLOW_PIPELINE", "0")  # sadece bilgi amaçlı
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")  # artifact için şart
+# Eğer kullanıcı sadece "owner/repo" verdi ise ayrıştır
+if (not GH_OWNER) and GITHUB_REPO and "/" in GITHUB_REPO:
+    GH_OWNER = GITHUB_REPO.split("/")[0].strip()
 
-# Local / repo içi varsayılan data dizini (istersen değiştir)
-LOCAL_DATA_DIR = os.getenv("LOCAL_DATA_DIR", "crime_prediction_data")  # repo içinde
-
-# İstersen tabloya dahil etmek için ek dosyalar (örn. week.csv)
-EXTRA_FILES = os.getenv("EXTRA_FILES", "").strip()  # "week.csv;neighbors.csv" gibi
-
-
-@dataclass
-class StageSpec:
-    stage: str
-    filename: str
-    note: str
+if (not GITHUB_REPO) and GH_OWNER:
+    # kullanıcı bazen sadece GH_OWNER set ediyor; repo adı gerekli
+    # burada tahmin etmiyoruz, boş bırakıyoruz
+    pass
 
 
-PIPELINE_SPECS: List[StageSpec] = [
-    StageSpec("00", "sf_crime.csv", "Ham + temiz + GEOID + zaman feature"),
-    StageSpec("01", "sf_crime_01.csv", "+ 911"),
-    StageSpec("02", "sf_crime_02.csv", "+ 311"),
-    StageSpec("03", "sf_crime_03.csv", "+ nüfus/demografi"),
-    StageSpec("04", "sf_crime_04.csv", "+ otobüs mesafe/yoğunluk"),
-    StageSpec("05", "sf_crime_05.csv", "+ tren mesafe/yoğunluk"),
-    StageSpec("06", "sf_crime_06.csv", "+ POI risk/yoğunluk"),
-    StageSpec("07", "sf_crime_07.csv", "+ police/gov mesafe/yakınlık"),
-    StageSpec("08", "sf_crime_08.csv", "(senin akışında burası netleştirilecek)"),
-    StageSpec("09", "sf_crime_09.csv", "+ neighbors/otokorelasyon"),
+# =========================
+# FILES / STAGES (TABLE)
+# =========================
+STAGES = [
+    ("00", "sf_crime.csv",    "Ham + temiz + GEOID + zaman feature"),
+    ("01", "sf_crime_01.csv", "+ 911"),
+    ("02", "sf_crime_02.csv", "+ 311"),
+    ("03", "sf_crime_03.csv", "+ nüfus/demografi"),
+    ("04", "sf_crime_04.csv", "+ otobüs mesafe/yoğunluk"),
+    ("05", "sf_crime_05.csv", "+ tren mesafe/yoğunluk"),
+    ("06", "sf_crime_06.csv", "+ POI risk/yoğunluk"),
+    ("07", "sf_crime_07.csv", "+ police/gov mesafe/yakınlık"),
+    ("08", "sf_crime_08.csv", "(akışa göre netleşecek/ara çıktı)"),
+    ("09", "sf_crime_09.csv", "+ neighbors/otokorelasyon"),
 ]
 
 
 # =========================
-# 2) Yardımcılar: GitHub erişimi
+# HELPERS
 # =========================
-def _guess_owner_repo() -> Tuple[str, str]:
+def ensure_dir(p: str | Path) -> Path:
+    p = Path(p)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def repo_owner_and_name() -> tuple[str, str]:
     """
-    Streamlit Cloud’da repo bilgisi yoksa env üzerinden set et.
-    Local’de kullanıcı set etmediyse boş döner.
+    Öncelik:
+      1) GITHUB_REPO = owner/repo
+      2) GH_OWNER + repo env (GITHUB_REPO yoksa hata)
     """
-    return GH_OWNER, GH_REPO
+    if GITHUB_REPO and "/" in GITHUB_REPO:
+        o, r = GITHUB_REPO.split("/", 1)
+        return o.strip(), r.strip()
 
+    # Bu noktada repo adı bilinmiyor → crash etmeyelim
+    return "", ""
 
-def _gh_headers() -> Dict[str, str]:
-    h = {"Accept": "application/vnd.github+json"}
-    if GITHUB_TOKEN:
-        h["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-    return h
+def safe_read_csv(path: Path) -> pd.DataFrame:
+    # büyük dosyalarda daha stabil
+    return pd.read_csv(path, low_memory=False)
 
-
-def _http_get(url: str, headers: Optional[Dict[str, str]] = None, stream: bool = False) -> requests.Response:
-    resp = requests.get(url, headers=headers or {}, stream=stream, timeout=60)
-    resp.raise_for_status()
-    return resp
-
-
-def _download_bytes(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
-    r = _http_get(url, headers=headers, stream=True)
-    buf = io.BytesIO()
-    for chunk in r.iter_content(chunk_size=1024 * 1024):
-        if chunk:
-            buf.write(chunk)
-    return buf.getvalue()
-
-
-def _raw_file_url(owner: str, repo: str, branch: str, path: str) -> str:
-    # raw github content
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-
-
-def _api_url(owner: str, repo: str, endpoint: str) -> str:
-    return f"https://api.github.com/repos/{owner}/{repo}/{endpoint.lstrip('/')}"
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def gh_find_latest_success_run_id(owner: str, repo: str, workflow_name: str) -> Optional[int]:
+def calc_file_stats(csv_path: Path) -> dict:
     """
-    Workflow adına göre son başarılı run_id bulur.
-    Token yoksa private repo’da çalışmaz.
+    Satır/Sütun/NaN%/Tam boş satır hesaplar.
     """
-    if not owner or not repo:
-        return None
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        return {"rows": None, "cols": None, "nan_pct": None, "empty_rows": None, "ok": False}
 
-    # Workflow'ları listele → name eşleşmesini bul → workflow_id
-    wf_url = _api_url(owner, repo, "actions/workflows")
-    r = _http_get(wf_url, headers=_gh_headers())
-    data = r.json()
-    workflow_id = None
-    for wf in data.get("workflows", []):
-        if (wf.get("name") or "").strip().lower() == workflow_name.strip().lower():
-            workflow_id = wf.get("id")
-            break
-    if not workflow_id:
-        return None
-
-    runs_url = _api_url(owner, repo, f"actions/workflows/{workflow_id}/runs?status=success&per_page=1")
-    r2 = _http_get(runs_url, headers=_gh_headers())
-    j = r2.json()
-    runs = j.get("workflow_runs", [])
-    if not runs:
-        return None
-    return runs[0].get("id")
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def gh_get_artifact_download_url(owner: str, repo: str, run_id: int, artifact_name: str) -> Optional[str]:
-    """
-    Verilen run_id içindeki artifact_name’in download URL’sini bulur.
-    """
-    if not owner or not repo or not run_id:
-        return None
-    arts_url = _api_url(owner, repo, f"actions/runs/{run_id}/artifacts?per_page=100")
-    r = _http_get(arts_url, headers=_gh_headers())
-    data = r.json()
-    for a in data.get("artifacts", []):
-        if (a.get("name") or "").strip() == artifact_name.strip():
-            return a.get("archive_download_url")
-    return None
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def gh_download_and_extract_artifact(owner: str, repo: str, run_id: int, artifact_name: str) -> str:
-    """
-    Artifact zip indirir, temp dir’e açar, extracted dir path döner.
-    """
-    url = gh_get_artifact_download_url(owner, repo, run_id, artifact_name)
-    if not url:
-        raise RuntimeError(f"Artifact bulunamadı: {artifact_name} (run_id={run_id})")
-
-    # GitHub artifact download URL’si API auth ister
-    zbytes = _download_bytes(url, headers=_gh_headers())
-
-    tmpdir = tempfile.mkdtemp(prefix="sutam_artifact_")
-    with zipfile.ZipFile(io.BytesIO(zbytes), "r") as zf:
-        zf.extractall(tmpdir)
-    return tmpdir
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def gh_download_and_extract_release_asset(owner: str, repo: str, tag: str, asset_name: str) -> str:
-    """
-    Release asset zip indirip açar.
-    Public ise token gerekmez; private ise token gerekir.
-    """
-    rel_url = _api_url(owner, repo, f"releases/{tag}")
-    r = _http_get(rel_url, headers=_gh_headers())
-    rel = r.json()
-    assets = rel.get("assets", [])
-    dl = None
-    for a in assets:
-        if (a.get("name") or "").strip() == asset_name.strip():
-            dl = a.get("browser_download_url")
-            break
-    if not dl:
-        raise RuntimeError(f"Release asset bulunamadı: {asset_name} (tag={tag})")
-
-    zbytes = _download_bytes(dl, headers=_gh_headers() if GITHUB_TOKEN else None)
-    tmpdir = tempfile.mkdtemp(prefix="sutam_release_")
-    with zipfile.ZipFile(io.BytesIO(zbytes), "r") as zf:
-        zf.extractall(tmpdir)
-    return tmpdir
-
-
-# =========================
-# 3) CSV profil hesaplama
-# =========================
-def profile_csv(path: str) -> Dict[str, object]:
-    """
-    Satır/sütun/NaN oranı/tam boş satır.
-    Büyük dosyada da hızlı olması için:
-    - dtype=str ile okunur (NaN tespiti için yeterli)
-    - low_memory False
-    """
     try:
-        df = pd.read_csv(path, low_memory=False)
-    except Exception:
-        # Bazı CSV’lerde delimiter/encoding sorun olabilir
-        df = pd.read_csv(path, low_memory=False, encoding="utf-8", on_bad_lines="skip")
+        df = safe_read_csv(csv_path)
+        rows, cols = df.shape
+        # NaN yüzdesi: tüm hücreler içinde boş olanların oranı
+        total_cells = rows * cols if rows and cols else 0
+        nan_cells = int(df.isna().sum().sum()) if total_cells else 0
+        nan_pct = (nan_cells / total_cells * 100.0) if total_cells else 0.0
+        empty_rows = int(df.isna().all(axis=1).sum()) if rows else 0
+        return {
+            "rows": rows,
+            "cols": cols,
+            "nan_pct": round(float(nan_pct), 3),
+            "empty_rows": empty_rows,
+            "ok": True,
+        }
+    except Exception as e:
+        return {"rows": None, "cols": None, "nan_pct": None, "empty_rows": None, "ok": False, "err": str(e)}
 
-    n_rows, n_cols = df.shape
+def fmt_int(x):
+    return "—" if x is None else f"{x:,}".replace(",", ".")
 
-    # NaN hücre (%): toplam NaN / (rows*cols) *100
-    if n_rows == 0 or n_cols == 0:
-        nan_pct = 0.0
-    else:
-        nan_cells = int(df.isna().sum().sum())
-        total_cells = int(n_rows * n_cols)
-        nan_pct = (nan_cells / total_cells) * 100.0
+def fmt_float(x):
+    return "—" if x is None else f"{x:.3f}"
 
-    # Tam boş satır: tüm kolonları NaN olan satır sayısı
-    empty_rows = int(df.isna().all(axis=1).sum()) if n_rows else 0
+def get_latest_file_mtime(base_dir: Path) -> tuple[datetime | None, str | None]:
+    candidates = [s[1] for s in STAGES[::-1]]  # 09 -> 00
+    for f in candidates:
+        p = base_dir / f
+        if p.exists():
+            ts = p.stat().st_mtime
+            return datetime.fromtimestamp(ts, tz=timezone.utc), f
+    return None, None
+
+
+# =========================
+# ARTIFACT DOWNLOAD
+# =========================
+def download_and_extract_latest_artifact(
+    out_dir: Path,
+    owner: str,
+    repo: str,
+    workflow_name: str,
+    artifact_name: str,
+    branch: str,
+    token: str,
+) -> dict:
+    """
+    Son başarılı workflow run'ından artifact zip indirip out_dir'e açar.
+    """
+    if Github is None:
+        raise RuntimeError("PyGithub (github) import edilemedi. requirements.txt içinde pygithub olmalı.")
+    if not token:
+        raise RuntimeError("DATA_SOURCE=artifact için GH_TOKEN veya GITHUB_TOKEN gerekli.")
+    if not owner or not repo:
+        raise RuntimeError("Repo bilgisi eksik. GITHUB_REPO='owner/repo' veya GH_OWNER + repo gerekli.")
+
+    gh = Github(token)
+    r = gh.get_repo(f"{owner}/{repo}")
+
+    # Workflow seç (adı ile)
+    workflows = list(r.get_workflows())
+    wf = None
+    for w in workflows:
+        if (w.name or "").strip() == workflow_name.strip():
+            wf = w
+            break
+    if wf is None:
+        # isim eşleşmediyse id bulunamadı
+        # kullanıcı bazen dosya adı verir: full_pipeline.yml
+        # o zaman workflow_path ile deneyelim
+        for w in workflows:
+            if workflow_name.strip().lower() in (w.path or "").lower():
+                wf = w
+                break
+    if wf is None:
+        raise RuntimeError(f"Workflow bulunamadı: '{workflow_name}'. Repo içindeki Actions workflow adını kontrol et.")
+
+    # Son başarılı run
+    runs = wf.get_runs(branch=branch, status="success")
+    run = None
+    for x in runs:
+        run = x
+        break
+    if run is None:
+        raise RuntimeError(f"'{workflow_name}' için branch='{branch}' üzerinde SUCCESS run bulunamadı.")
+
+    # Run artifacts
+    arts = run.get_artifacts()
+    target = None
+    for a in arts:
+        if (a.name or "").strip() == artifact_name.strip():
+            target = a
+            break
+    if target is None:
+        # isim tutmadıysa, ilk artifact
+        for a in arts:
+            target = a
+            break
+    if target is None:
+        raise RuntimeError("Bu run içinde artifact bulunamadı.")
+
+    # Download (archive_download_url) — requests ile
+    if requests is None:
+        raise RuntimeError("requests import edilemedi.")
+
+    url = target.archive_download_url
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    resp = requests.get(url, headers=headers, timeout=120)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Artifact indirilemedi. HTTP {resp.status_code}: {resp.text[:300]}")
+
+    ensure_dir(out_dir)
+    zbytes = io.BytesIO(resp.content)
+    with zipfile.ZipFile(zbytes) as z:
+        z.extractall(out_dir)
 
     return {
-        "rows": int(n_rows),
-        "cols": int(n_cols),
-        "nan_pct": float(nan_pct),
-        "empty_rows": int(empty_rows),
+        "run_id": getattr(run, "id", None),
+        "run_number": getattr(run, "run_number", None),
+        "artifact_found": target.name,
+        "artifact_size_in_bytes": getattr(target, "size_in_bytes", None),
     }
 
 
-def fmt_int(x) -> str:
-    if x is None:
-        return "-"
-    try:
-        return f"{int(x):,}".replace(",", ".")  # TR binlik
-    except Exception:
-        return "-"
-
-
-def fmt_nan_pct(x) -> str:
-    if x is None:
-        return "-"
-    try:
-        # küçükse bilimsel gibi görünmesin diye 6 basamak
-        return f"{float(x):.6f}".rstrip("0").rstrip(".")
-    except Exception:
-        return "-"
-
-
-# =========================
-# 4) Dosya çözümleme: hangi kaynaktan okuyacağız?
-# =========================
-def resolve_base_dir() -> Tuple[str, str]:
+def maybe_fetch_data(base_dir: Path) -> dict:
     """
-    (base_dir, info_text)
-    base_dir: dosyaların bulunduğu yer (local klasör veya extracted temp dir)
+    DATA_SOURCE:
+      - raw/local: repo içi klasörden okur (base_dir)
+      - artifact: GitHub Actions artifact indirip base_dir'e extract eder
     """
-    owner, repo = _guess_owner_repo()
+    base_dir = ensure_dir(base_dir)
+    info = {"mode": DATA_SOURCE, "base_dir": str(base_dir)}
 
-    if DATA_SOURCE == "local":
-        return LOCAL_DATA_DIR, f"Kaynak: LOCAL → `{LOCAL_DATA_DIR}/`"
+    owner, repo = repo_owner_and_name()
 
-    if DATA_SOURCE == "raw":
-        # raw için base_dir yok; URL üzerinden indireceğiz (temp’e atacağız)
-        if not owner or not repo:
-            return "", "Kaynak: RAW ama GH_OWNER/GH_REPO boş. (Env ile set et)"
-        return "", f"Kaynak: GITHUB RAW → {owner}/{repo}@{GH_BRANCH}"
-
-    if DATA_SOURCE == "release":
-        if not owner or not repo:
-            return "", "Kaynak: RELEASE ama GH_OWNER/GH_REPO boş. (Env ile set et)"
-        d = gh_download_and_extract_release_asset(owner, repo, RELEASE_TAG, RELEASE_ASSET_NAME)
-        return d, f"Kaynak: RELEASE asset → `{RELEASE_TAG}` / `{RELEASE_ASSET_NAME}`"
+    if DATA_SOURCE in ("raw", "local"):
+        # hiçbir şey indirme, sadece dizin var mı kontrol et
+        info["note"] = "RAW/LOCAL: repo içindeki dosyalar okunacak."
+        return info
 
     if DATA_SOURCE == "artifact":
-        if not owner or not repo:
-            return "", "Kaynak: ARTIFACT ama GH_OWNER/GH_REPO boş. (Env ile set et)"
-        if not GITHUB_TOKEN:
-            return "", "Kaynak: ARTIFACT seçili ama GITHUB_TOKEN yok. (Streamlit secrets’a ekle)"
-        run_id = gh_find_latest_success_run_id(owner, repo, WORKFLOW_NAME)
-        if not run_id:
-            return "", f"Artifact için başarılı run bulunamadı: `{WORKFLOW_NAME}`"
-        d = gh_download_and_extract_artifact(owner, repo, run_id, ARTIFACT_NAME)
-        return d, f"Kaynak: ARTIFACT → run_id={run_id} / `{ARTIFACT_NAME}`"
+        # daha önce extract edilmişse tekrar indirme (basit kontrol)
+        sentinel = base_dir / ".artifact_ok"
+        if sentinel.exists():
+            info["note"] = "Artifact zaten hazır (sentinel bulundu)."
+            return info
 
-    return "", f"Bilinmeyen DATA_SOURCE: {DATA_SOURCE}"
+        # artifact indir
+        meta = download_and_extract_latest_artifact(
+            out_dir=base_dir,
+            owner=owner or GH_OWNER,
+            repo=repo,
+            workflow_name=WORKFLOW_NAME,
+            artifact_name=ARTIFACT_NAME,
+            branch=GH_BRANCH,
+            token=GH_TOKEN,
+        )
+        sentinel.write_text(f"ok {datetime.utcnow().isoformat()}Z\n")
+        info["artifact"] = meta
+        info["note"] = "Artifact indirildi ve açıldı."
+        return info
 
-
-@st.cache_data(show_spinner=False, ttl=600)
-def download_raw_to_temp(owner: str, repo: str, branch: str, rel_path: str) -> Optional[str]:
-    """
-    raw GitHub üzerinden dosyayı indirir, temp klasöre yazar, path döndürür.
-    """
-    url = _raw_file_url(owner, repo, branch, rel_path)
-    try:
-        b = _download_bytes(url)
-    except Exception:
-        return None
-    tmpdir = tempfile.mkdtemp(prefix="sutam_raw_")
-    out = os.path.join(tmpdir, os.path.basename(rel_path))
-    with open(out, "wb") as f:
-        f.write(b)
-    return out
+    info["note"] = f"Bilinmeyen DATA_SOURCE='{DATA_SOURCE}'. RAW gibi davranılacak."
+    return info
 
 
-def find_file_in_dir(base_dir: str, filename: str) -> Optional[str]:
-    """
-    base_dir içinde filename’i bul.
-    Artifact/release zip’lerinde bazen alt klasöre düşebilir: recursive ara.
-    """
-    if not base_dir:
-        return None
-    direct = os.path.join(base_dir, filename)
-    if os.path.isfile(direct):
-        return direct
-    # recursive search
-    for root, _, files in os.walk(base_dir):
-        if filename in files:
-            return os.path.join(root, filename)
-    return None
-
-
-# =========================
-# 5) Tabloyu üret
-# =========================
-def build_pipeline_table() -> Tuple[pd.DataFrame, str]:
-    base_dir, info = resolve_base_dir()
-    owner, repo = _guess_owner_repo()
-
+def build_table(base_dir: Path) -> pd.DataFrame:
     rows = []
     missing = []
-
-    for spec in PIPELINE_SPECS:
-        rec = {
-            "Aşama": spec.stage,
-            "Dosya": spec.filename,
-            "Satır": "-",
-            "Sütun": "-",
-            "NaN hücre (%)": "-",
-            "Tam boş satır": "-",
-            "Not": spec.note,
-        }
-
-        fpath = None
-
-        if DATA_SOURCE == "raw":
-            if owner and repo:
-                # raw path’leri: önce crime_prediction_data/, sonra repo root fallback
-                cand1 = f"{LOCAL_DATA_DIR}/{spec.filename}".replace("\\", "/")
-                cand2 = spec.filename
-                p = download_raw_to_temp(owner, repo, GH_BRANCH, cand1) or download_raw_to_temp(owner, repo, GH_BRANCH, cand2)
-                fpath = p
+    for stage, fname, note in STAGES:
+        p = base_dir / fname
+        if p.exists():
+            stats = calc_file_stats(p)
+            rows.append({
+                "Aşama": stage,
+                "Dosya": fname,
+                "Satır": stats.get("rows"),
+                "Sütun": stats.get("cols"),
+                "NaN hücre (%)": stats.get("nan_pct"),
+                "Tam boş satır": stats.get("empty_rows"),
+                "Not": note,
+            })
         else:
-            # local/release/artifact → directory araması
-            fpath = find_file_in_dir(base_dir, spec.filename)
+            missing.append(fname)
+            rows.append({
+                "Aşama": stage,
+                "Dosya": fname,
+                "Satır": None,
+                "Sütun": None,
+                "NaN hücre (%)": None,
+                "Tam boş satır": None,
+                "Not": note,
+            })
 
-        if not fpath:
-            missing.append(spec.filename)
-            rows.append(rec)
-            continue
+    df = pd.DataFrame(rows)
 
-        try:
-            prof = profile_csv(fpath)
-            rec["Satır"] = fmt_int(prof["rows"])
-            rec["Sütun"] = fmt_int(prof["cols"])
-            rec["NaN hücre (%)"] = fmt_nan_pct(prof["nan_pct"])
-            rec["Tam boş satır"] = fmt_int(prof["empty_rows"])
-        except Exception:
-            missing.append(spec.filename)
-        rows.append(rec)
+    # format (görüntü için)
+    df_disp = df.copy()
+    df_disp["Satır"] = df_disp["Satır"].apply(fmt_int)
+    df_disp["Sütun"] = df_disp["Sütun"].apply(fmt_int)
+    df_disp["NaN hücre (%)"] = df_disp["NaN hücre (%)"].apply(lambda x: "—" if x is None else f"{x:.3f}")
+    df_disp["Tam boş satır"] = df_disp["Tam boş satır"].apply(fmt_int)
 
-    df = pd.DataFrame(rows, columns=["Aşama", "Dosya", "Satır", "Sütun", "NaN hücre (%)", "Tam boş satır", "Not"])
-
-    msg = info
-    if missing:
-        msg += f"\n\nEksik/erişilemeyen dosyalar ({len(missing)}): " + ", ".join(missing)
-        msg += "\n\nNot: Workflow 'persist=artifact' ise dosyalar repo’da olmaz. Bu durumda DATA_SOURCE=artifact + GITHUB_TOKEN gerekir."
-    return df, msg
+    return df_disp, missing
 
 
 # =========================
-# 6) UI
+# MAIN
 # =========================
-with st.expander("Kaynak ayarları", expanded=False):
-    st.write("**DATA_SOURCE**:", DATA_SOURCE)
-    st.write("**LOCAL_DATA_DIR**:", LOCAL_DATA_DIR)
-    st.write("**WORKFLOW_NAME**:", WORKFLOW_NAME)
-    st.write("**ARTIFACT_NAME**:", ARTIFACT_NAME)
-    st.write("**GH_BRANCH**:", GH_BRANCH)
-    st.write("**Release**:", f"{RELEASE_TAG} / {RELEASE_ASSET_NAME}")
-    st.caption(
-        "İpucu: Workflow artifact üretiyorsa app’nin görmesi için DATA_SOURCE=artifact ve GITHUB_TOKEN gerekir. "
-        "Commit’e basıyorsan DATA_SOURCE=raw yeter."
+with st.expander("⚙️ Kaynak ayarları (okunuyor)", expanded=False):
+    st.write({
+        "DATA_SOURCE": DATA_SOURCE,
+        "LOCAL_DATA_DIR": LOCAL_DATA_DIR,
+        "GITHUB_REPO": GITHUB_REPO,
+        "GH_OWNER": GH_OWNER,
+        "GH_BRANCH": GH_BRANCH,
+        "WORKFLOW_NAME": WORKFLOW_NAME,
+        "ARTIFACT_NAME": ARTIFACT_NAME,
+        "ALLOW_PIPELINE": ALLOW_PIPELINE,
+        "RELEASE_ZIP_URL": RELEASE_ZIP_URL or "(boş)",
+        "TOKEN_SET": bool(GH_TOKEN),
+    })
+
+base_dir = Path(LOCAL_DATA_DIR)
+
+# 1) Veriyi hazırla (artifact ise indir-aç)
+try:
+    meta = maybe_fetch_data(base_dir)
+except Exception as e:
+    st.error("Veri kaynağı hazırlanamadı (uygulama çökmemesi için burada durduruldu).")
+    st.exception(e)
+    st.stop()
+
+# 2) Tabloyu üret
+df_table, missing_files = build_table(base_dir)
+
+st.dataframe(df_table, use_container_width=True, hide_index=True)
+
+# 3) Alt bilgi: güncellik
+last_update, last_file = get_latest_file_mtime(base_dir)
+now_utc = datetime.now(timezone.utc)
+
+st.markdown("---")
+
+if last_update:
+    st.markdown(
+        f"""
+        <div class="sutam-foot">
+          <strong>Son veri güncellemesi:</strong> {last_update.strftime("%Y-%m-%d %H:%M:%S")} UTC &nbsp;|&nbsp;
+          <strong>Kaynak dosya:</strong> {last_file} <br>
+          <strong>Şu an:</strong> {now_utc.strftime("%Y-%m-%d %H:%M:%S")} UTC
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+else:
+    st.warning("Son güncelleme zamanı tespit edilemedi (hiç dosya bulunamadı).")
 
-with st.spinner("Pipeline tablo üretiliyor..."):
-    table_df, info_text = build_pipeline_table()
+# 4) Eksikler
+if missing_files:
+    st.warning(
+        f"Eksik/erişilemeyen dosyalar ({len(missing_files)}): " + ", ".join(missing_files)
+    )
+    # Kullanıcıya net yönlendirme:
+    if DATA_SOURCE == "artifact":
+        st.info("DATA_SOURCE=artifact kullanıyorsun. Artifact'ın SUCCESS run’dan üretildiğinden ve ARTIFACT_NAME’in doğru olduğundan emin ol.")
+        if not GH_TOKEN:
+            st.error("GH_TOKEN / GITHUB_TOKEN set değil. Artifact indiremez.")
+        owner, repo = repo_owner_and_name()
+        if not owner or not repo:
+            st.error("GITHUB_REPO='owner/repo' formatında set edilmeli (repo adı boş görünüyor).")
+    else:
+        st.info("DATA_SOURCE=raw/local ise dosyaların repoda 'crime_prediction_data/' altında commit edilmiş olması gerekir.")
 
-st.info(info_text)
-
-# tablo (sadece bu!)
-st.dataframe(table_df, use_container_width=True, hide_index=True)
-
-# csv indir
-csv_bytes = table_df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇️ Tabloyu indir (CSV)",
-    data=csv_bytes,
-    file_name="sutam_pipeline_summary.csv",
-    mime="text/csv",
-)
-
-# Opsiyonel: hızlı toplamlar
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Aşama sayısı", len(table_df))
-with col2:
-    filled = (table_df["Satır"] != "-").sum()
-    st.metric("Dolu profil satırı", int(filled))
-with col3:
-    st.metric("Eksik dosya", int(len(table_df) - filled))
+# 5) Debug meta
+with st.expander("🧾 Debug (kaynak çözümleme sonucu)", expanded=False):
+    st.write(meta)
+    st.write({"base_dir_exists": base_dir.exists(), "base_dir": str(base_dir)})
+    if base_dir.exists():
+        try:
+            st.write({"dir_listing": sorted([p.name for p in base_dir.iterdir()])[:200]})
+        except Exception as _:
+            pass
