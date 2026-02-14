@@ -444,10 +444,21 @@ if raw_new is not None and not raw_new.empty:
                     df_new[c] = coords[c]
 
     # ---- Zaman türet ----
-    df_new["datetime"]   = pd.to_datetime(df_new["incident_datetime"], utc=True, errors="coerce").dt.tz_convert(SF_TZ)
+    dt = pd.to_datetime(df_new["incident_datetime"], errors="coerce")
+    try:
+        if getattr(dt.dt, "tz", None) is None:
+            dt = dt.dt.tz_localize(SF_TZ, nonexistent="shift_forward", ambiguous="NaT")
+        else:
+            dt = dt.dt.tz_convert(SF_TZ)
+    except Exception:
+        # edge-case: dt .dt erişemiyorsa
+        dt = pd.to_datetime(df_new["incident_datetime"], errors="coerce")
+    
+    df_new["datetime"]   = dt
     df_new["date"]       = df_new["datetime"].dt.date
     df_new["time"]       = df_new["datetime"].dt.strftime("%H:%M:%S")
     df_new["event_hour"] = df_new["datetime"].dt.hour
+    print("🧪 df_new date range:", df_new["date"].min(), "→", df_new["date"].max(), "| n_days:", df_new["date"].nunique())
 
     # ---- ID üret ----
     id_cols = [c for c in ["row_id","incident_id","incident_number","cad_number"] if c in df_new.columns]
