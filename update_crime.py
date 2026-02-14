@@ -629,7 +629,77 @@ for col, cnt in nan_counts.items():
 print("\n🎲 [QC] Rastgele 5 satır örneği (df_all):")
 with pd.option_context("display.max_columns", 200, "display.width", 200):
     print(df_all.sample(n=min(5, len(df_all)), random_state=42))
-    
+
+def _safe_zfill_geoid(x, width=DEFAULT_GEOID_LEN):
+    try:
+        s = str(x)
+        s = re.sub(r"\.0$", "", s)
+        s = re.sub(r"\D", "", s)
+        return s.zfill(width)
+    except Exception:
+        return np.nan
+
+# --- GEOID standard (yeni kolon) ---
+if "GEOID" in df_all.columns:
+    df_all["GEOID_std"] = df_all["GEOID"].apply(_safe_zfill_geoid)
+
+# --- CATEGORY standard (yeni kolon) ---
+if "category" in df_all.columns:
+    df_all["category_std"] = (
+        df_all["category"].astype(str)
+          .str.strip()
+          .str.replace(r"[?]+$", "", regex=True)
+          .str.replace(r"\s+", " ", regex=True)
+          .replace({"None": np.nan, "none": np.nan, "nan": np.nan, "NaN": np.nan, "": np.nan})
+    )
+else:
+    df_all["category_std"] = np.nan
+
+if "subcategory" in df_all.columns:
+    df_all["subcategory_std"] = (
+        df_all["subcategory"].astype(str)
+          .replace({"nan": np.nan, "None": np.nan, "": np.nan})
+    )
+else:
+    df_all["subcategory_std"] = np.nan
+
+# A1 Unknown politikası (SADECE std kolonlarda)
+both_nan = df_all["category_std"].isna() & df_all["subcategory_std"].isna()
+df_all.loc[both_nan, ["category_std", "subcategory_std"]] = "Unknown"
+
+only_sub_nan = df_all["subcategory_std"].isna() & df_all["category_std"].notna()
+df_all.loc[only_sub_nan, "subcategory_std"] = "Unknown"
+
+df_all["is_category_valid"] = df_all["category_std"].notna() & (df_all["category_std"] != "Unknown")
+
+# --- ID boş kontrol (rapor) ---
+if "id" in df_all.columns:
+    bad_id = df_all["id"].isna() | (df_all["id"].astype(str).str.lower().isin(["nan", "none", ""]))
+    print("🧪 [QC] invalid id rows:", int(bad_id.sum()))
+
+    dup_id = int(df_all.duplicated(["id"]).sum())
+    print("🧪 [QC] id duplicate:", dup_id)
+
+# --- duplicate (datetime+lat+lon) rapor ---
+key_cols = [c for c in ["datetime", "latitude", "longitude"] if c in df_all.columns]
+if len(key_cols) == 3:
+    dup_geo = int(df_all.duplicated(key_cols).sum())
+    print("🧪 [QC] datetime+lat+lon duplicate:", dup_geo)
+
+# --- date range rapor ---
+if "date" in df_all.columns:
+    d0 = pd.to_datetime(df_all["date"], errors="coerce").dt.date
+    print(f"🧪 [QC] Date range: {d0.min()} → {d0.max()} | gün={d0.nunique()}")
+
+# --- GEOID length rapor (std üzerinden) ---
+if "GEOID_std" in df_all.columns:
+    bad_geoid = df_all["GEOID_std"].astype(str).str.len().ne(DEFAULT_GEOID_LEN).sum()
+    print(f"🧪 [QC] GEOID_std len != {DEFAULT_GEOID_LEN} rows:", int(bad_geoid))
+
+# --- category dağılımı (std) ---
+print("\n🧾 [QC] category_std top-10:")
+print(df_all["category_std"].value_counts(dropna=False).head(10))
+
 event_out = Path(y_csv_path)  # default sf_crime_y.csv
 safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
