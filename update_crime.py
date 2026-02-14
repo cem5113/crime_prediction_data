@@ -553,8 +553,9 @@ if {"category", "subcategory"}.issubset(df_all.columns):
     df_all.loc[only_sub_nan, "subcategory"] = "Unknown"
 
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
-start_date_5y = today - timedelta(days=5*365)
+start_date_5y = (pd.Timestamp(today) - pd.DateOffset(years=5)).date()
 df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)]
+print("🧾 5y cutoff (takvim yılı):", start_date_5y)
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce")
 df_all["time"] = df_all["time"].astype(str).fillna("00:00:00")
 df_all["datetime"] = pd.to_datetime(df_all["date"].dt.strftime("%Y-%m-%d") + " " + df_all["time"], errors="coerce")
