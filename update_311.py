@@ -392,7 +392,7 @@ def download_by_date_chunks(start_date):
     police_filter = "(agency_responsible like '%Police%' OR agency_responsible like '%SFPD%')"
     cols = ",".join([
         "service_request_id","requested_datetime",
-        "lat","long","latitude","longitude",
+        "lat","long",
         "service_name","service_subtype","agency_responsible"
     ])
 
