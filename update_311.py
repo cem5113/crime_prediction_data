@@ -38,8 +38,10 @@ DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 
 def normalize_geoid(series, target_len: int | None = None):
     L = int(target_len or DEFAULT_GEOID_LEN)
-    s = series.astype(str).str.extract(r"(\d+)", expand=False)
-    return s.str[:L].str.zfill(L)
+    s = series.astype("string")
+    s = s.str.extract(r"(\d+)", expand=False)
+    s = s.str.slice(0, L)
+    return s.str.zfill(L)
 
 def normalize_geoid_11(x):
     if pd.isna(x):
@@ -389,7 +391,8 @@ def download_by_date_chunks(start_date):
     session = requests.Session()
     police_filter = "(agency_responsible like '%Police%' OR agency_responsible like '%SFPD%')"
     cols = ",".join([
-        "service_request_id","requested_datetime","lat","long",
+        "service_request_id","requested_datetime",
+        "lat","long","latitude","longitude",
         "service_name","service_subtype","agency_responsible"
     ])
 
@@ -412,17 +415,18 @@ def download_by_date_chunks(start_date):
         while True:
             params = {
                 "$select": cols,
+                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}' AND {police_filter}",
                 "$order": "requested_datetime ASC",
                 "$limit": PAGE_LIMIT,
                 "$offset": offset
             }
-            q = f"{DATASET_BASE}?{quote(where, safe='=&()>< ')}"
+        
             try:
-                data = socrata_get(session, q, params)
+                data = socrata_get(session, DATASET_BASE, params)
             except Exception as e:
                 print(f"❌ Chunk hata ( {cur}→{chunk_end} , offset={offset} ): {e} → chunk geçiliyor.")
                 break
-
+        
             df = pd.DataFrame(data)
             if df.empty:
                 break
@@ -465,8 +469,6 @@ def main():
     # 1) Mevcut ham dosya (artifact’tan gelmiş olabilir) veya base’den seed
     raw_path = resolve_existing_raw_path()
     agg_path = os.path.join(os.path.dirname(raw_path) or ".", AGG_BASENAME)
-    agg_alias_path = os.path.join(os.path.dirname(raw_path) or ".", AGG_ALIAS)
-
     df_raw = load_existing_raw_or_seed(raw_path)
 
     # 2) Başlangıç tarihi
@@ -552,15 +554,22 @@ def main():
     # 5) 3 SAATLİK ÖZET (sf_311_last_5_years.csv + alias)
     if not df_raw.empty:
         df_ok = df_raw.dropna(subset=["date"]).copy()
+    
         # GEOID yoksa özet üretilemez; uyarı ver, boş şemalı özet yaz
         if "GEOID" not in df_ok.columns or df_ok["GEOID"].isna().all():
             print("⚠️ GEOID üretilemedi; özet boş yazılacak.")
             grouped = pd.DataFrame(columns=["GEOID","date","hour_range","311_request_count"])
         else:
-            h = pd.to_datetime(df_ok["datetime"], errors="coerce").dt.hour.fillna(0).astype(int)
+            h = pd.to_datetime(df_ok["datetime"], errors="coerce", utc=True).dt.hour.fillna(0).astype(int)
             start_h = (h // 3) * 3
-            end_h = (start_h + 3) % 24
-            df_ok["hour_range"] = start_h.astype(str).str.zfill(2) + "-" + end_h.astype(str).str.zfill(2)
+            end_h = start_h + 3
+            end_h = end_h.where(end_h < 24, 24)  # 21-24 fix
+    
+            df_ok["hour_range"] = (
+                start_h.astype(int).astype(str).str.zfill(2) + "-" +
+                end_h.astype(int).astype(str).str.zfill(2)
+            )
+    
             grouped = (
                 df_ok.dropna(subset=["GEOID"])
                      .groupby(["GEOID","date","hour_range"])
@@ -568,11 +577,20 @@ def main():
                      .reset_index(name="311_request_count")
             )
             grouped["GEOID"] = normalize_geoid(grouped["GEOID"], DEFAULT_GEOID_LEN)
-
+    
+        # 1) artifact/prev klasörüne (raw_path ile aynı yere)
         save_atomic(grouped, agg_path)
+    
+        # 2) repo root SAVE_DIR'e (merge burada arıyor)
+        save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
+    
+        # 3) alias (opsiyonel) — sadece SAVE_DIR'e yazmak yeter
         if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
-            save_atomic(grouped, agg_alias_path)
-        print(f"📁 Özet yazıldı: {os.path.abspath(agg_path)}")
+            save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
+    
+        print(f"📁 Özet yazıldı (artifact): {os.path.abspath(agg_path)}")
+        print(f"📁 Özet yazıldı (SAVE_DIR): {os.path.join(SAVE_DIR, AGG_BASENAME)}")
+    
         try:
             print(grouped.head(5).to_string(index=False))
         except Exception:
@@ -606,6 +624,16 @@ def main():
             return
 
         summary = pd.read_csv(summary_path, dtype={"GEOID": str}, low_memory=False)
+        summary.columns = (summary.columns.astype(str)
+                           .str.replace("\ufeff", "", regex=False)
+                           .str.strip())
+
+        summary["hour_range"] = summary["hour_range"].astype(str).str.replace(r"^21-00$", "21-24", regex=True)
+        
+        need = ["GEOID","date","hour_range","311_request_count"]
+        missing = [c for c in need if c not in summary.columns]
+        if missing:
+            raise ValueError(f"❌ 311 summary kolon eksik: {missing} | cols={list(summary.columns)}")
 
         # GEOID ortak uzunluk
         def _mode_len(s: pd.Series) -> int:
@@ -643,7 +671,10 @@ def main():
             if "event_hour" not in crime.columns:
                 raise ValueError("❌ sf_crime_01.csv için hour_range/event_hour bulunamadı.")
             hr = (pd.to_numeric(crime["event_hour"], errors="coerce").fillna(0).astype(int) // 3) * 3
-            crime["hour_range"] = hr.astype(str).str.zfill(2) + "-" + (hr + 3).astype(str).str.zfill(2)
+            end = hr + 3
+            end = end.where(end < 24, 24)
+            crime["hour_range"] = hr.astype(str).str.zfill(2) + "-" + end.astype(str).str.zfill(2)
+
         hrp2 = crime["hour_range"].astype(str).str.extract(r"(\d{1,2})")
         crime["hr_key"] = pd.to_numeric(hrp2[0], errors="coerce").fillna(0).astype(int)
 
