@@ -219,7 +219,59 @@ crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
 crime_geoids = pd.Series(crime["GEOID"].unique(), name="GEOID")
 print(f"🧩 CRIME farklı GEOID sayısı: {crime_geoids.size}")
 
-# ========== 2) bus indir/cache/stub ==========
+# =========================
+# WEEKLY CACHE POLICY (BUS)
+# =========================
+FORCE_BUS_REFRESH = os.getenv("FORCE_BUS_REFRESH", "0").strip().lower() in ("1", "true", "yes")
+
+BUS_CACHE_OK = (
+    os.path.exists(BUS_CANON_RAW) and
+    os.path.exists(BUS_SUMMARY_NAME)
+)
+
+# Eğer cache varsa ve force yoksa:
+# - Socrata indirmeyi + GEOID eşlemeyi + metrik hesaplamayı atla
+# - sadece bus.csv'yi okuyup CRIME merge yap → sf_crime_04 yaz
+if BUS_CACHE_OK and (not FORCE_BUS_REFRESH):
+    print("✅ BUS cache bulundu ve FORCE_BUS_REFRESH=0 → indirme/hesaplama atlanıyor.")
+    print("   cache raw :", os.path.abspath(BUS_CANON_RAW))
+    print("   cache feat:", os.path.abspath(BUS_SUMMARY_NAME))
+
+    # 1) cache bus feature (bus.csv) oku
+    bus_feat = pd.read_csv(BUS_SUMMARY_NAME, low_memory=False)
+    if "GEOID" not in bus_feat.columns:
+        raise KeyError("❌ bus.csv içinde GEOID yok (cache bozuk).")
+    bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
+
+    # 2) crime oku + merge + yaz
+    crime = pd.read_csv(CRIME_INPUT, low_memory=False)
+    log_shape(crime, "CRIME (okundu)")
+    if "GEOID" not in crime.columns:
+        raise KeyError("❌ Suç verisinde 'GEOID' kolonu yok.")
+    _before = crime.shape
+    crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
+
+    _overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID"}
+    if _overlap:
+        print(f"🧹 BUS cache merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
+        bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
+
+    crime = crime.merge(bus_feat, on="GEOID", how="left", validate="many_to_one")
+    crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
+
+    log_delta(_before, crime.shape, "CRIME ⨯ BUS (CACHE GEOID enrich)")
+    log_shape(crime, "CRIME (bus enrich sonrası - CACHE)")
+
+    nan_counts = crime.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+    print("🔎 NaN sayıları (sf_crime_04 yazılmadan önce) [CACHE]:")
+    print("✅ NaN yok." if nan_counts.empty else nan_counts.to_string())
+
+    safe_save_csv(crime, CRIME_OUTPUT)
+    print(f"✅ CACHE ile güncellendi → {CRIME_OUTPUT}")
+    raise SystemExit(0)
+
+# ========== 2) bus indir/cache/stub (FULL RUN) ==========
 print("🚌 Otobüs durakları Socrata'dan indiriliyor…")
 bus = download_bus_with_retry(BASE, HEADERS, limit=50000, max_retries=5, backoff_base=1.7)
 
