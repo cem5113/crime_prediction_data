@@ -420,6 +420,21 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}" || true
           ls -lah "${CRIME_DATA_DIR}/sf_crime_05.csv" || { echo "❌ sf_crime_05.csv yok"; exit 2; }
       
+          # ============================================================
+          # Weekly POI refresh — THURSDAY
+          # (UTC: 4 = Thursday)
+          # ============================================================
+          DOW_UTC="$(date -u +%u)"   # 1=Mon ... 7=Sun
+      
+          if [ "${DOW_UTC}" = "4" ]; then
+            echo "♻️ Weekly POI refresh (Thursday) => FORCE_POI_REFRESH=1"
+            export FORCE_POI_REFRESH=1
+          else
+            export FORCE_POI_REFRESH=0
+          fi
+      
+          echo "FORCE_POI_REFRESH=${FORCE_POI_REFRESH}"
+      
           if [ -f update_poi.py ]; then
             python -u update_poi.py
           elif [ -f pipeline_make_sf_crime_06.py ]; then
