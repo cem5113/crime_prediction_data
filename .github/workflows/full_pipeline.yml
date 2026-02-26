@@ -503,11 +503,42 @@ jobs:
 
       - name: 08) Polis & Devlet binaları → sf_crime_07.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+        shell: bash
         run: |
-          set -e
-          if [ -f update_police_gov.py ]; then python -u update_police_gov.py;
-          elif [ -f scripts/enrich_police_gov_06_to_07.py ]; then python -u scripts/enrich_police_gov_06_to_07.py;
-          else echo "Polis/Gov adımı bulunamadı"; exit 2; fi
+          set -euo pipefail
+          echo "🏛️ POLICE/GOV STEP"
+          echo "CWD=$(pwd)"
+          echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
+          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,160p' || true
+      
+          # input kontrol
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_06.csv" || { echo "❌ sf_crime_06.csv yok"; exit 2; }
+      
+          # Perşembe: refresh=1, diğer günler: cache=0  (SF timezone)
+          DOW=$(TZ=America/Los_Angeles date +%u)  # 1=Mon ... 4=Thu ... 7=Sun
+          if [ "$DOW" = "4" ]; then
+            export FORCE_PG_REFRESH=1
+            echo "🟢 Thursday → FORCE_PG_REFRESH=1"
+          else
+            export FORCE_PG_REFRESH=0
+            echo "🟡 Not Thursday → FORCE_PG_REFRESH=0 (cache mode)"
+          fi
+      
+          # script seç ve çalıştır
+          if [ -f update_police_gov.py ]; then
+            python -u update_police_gov.py
+          elif [ -f scripts/enrich_police_gov_06_to_07.py ]; then
+            python -u scripts/enrich_police_gov_06_to_07.py
+          else
+            echo "❌ Polis/Gov adımı bulunamadı"; exit 2
+          fi
+      
+          # output kontrol
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_07.csv" || { echo "❌ sf_crime_07.csv oluşmadı"; exit 3; }
+          echo "sf_crime_07.csv (head):"
+          head -n 5 "${CRIME_DATA_DIR}/sf_crime_07.csv" || true
 
       - name: 09) Hava durumu — sadece update
         if: ${{ steps.gate.outputs.proceed == 'true' }}
