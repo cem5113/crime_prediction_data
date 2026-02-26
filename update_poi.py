@@ -9,6 +9,14 @@ import pandas as pd
 import geopandas as gpd
 from sklearn.neighbors import BallTree
 
+import os
+import subprocess
+import sys
+
+if __name__ == "__main__":
+    os.environ.setdefault("CRIME_DATA_DIR", os.getcwd())
+    subprocess.check_call([sys.executable, "scripts/pipeline_make_sf_crime_06.py"])
+    
 # --- LOG HELPERS (date'e BAĞLI DEĞİL) ---
 def log_shape(df, label):
     r, c = df.shape
@@ -23,17 +31,6 @@ try:
     from shapely.strtree import STRtree
 except Exception:
     STRtree = None
-
-INCLUDE_OFFICE_CRAFT = True
-REBUILD_POI_CLEAN_IF_SF_MISMATCH = True
-FORCE_POI_REFRESH = (os.getenv("FORCE_POI_REFRESH", "0") == "1")
-
-poi_geojson = ensure_sf_pois_geojson(
-    poi_geojson,
-    include_office_craft=INCLUDE_OFFICE_CRAFT,
-    force_refresh=FORCE_POI_REFRESH,
-    fallback_to_existing=True
-)
 
 # ================== 0) YOLLAR ==================
 BASE_DIR  = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
@@ -521,7 +518,15 @@ if __name__ == "__main__":
     if poi_geojson is None:
         # yoksa BASE_DIR içine indirelim
         poi_geojson = os.path.join(BASE_DIR, "sf_pois.geojson")
-    poi_geojson = ensure_sf_pois_geojson(poi_geojson, include_office_craft=INCLUDE_OFFICE_CRAFT if "INCLUDE_OFFICE_CRAFT" in globals() else True)
+
+    FORCE_POI_REFRESH = (os.getenv("FORCE_POI_REFRESH", "0") == "1")
+
+poi_geojson = ensure_sf_pois_geojson(
+    poi_geojson,
+    include_office_craft=INCLUDE_OFFICE_CRAFT,
+    force_refresh=FORCE_POI_REFRESH,
+    fallback_to_existing=True
+)
 
     # 1) POI temiz/güncel hazır mı? Varsa kullan, yoksa üret
     use_clean = os.path.exists(POI_CLEAN_CSV)
