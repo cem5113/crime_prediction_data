@@ -1,5 +1,4 @@
 # pipeline_make_sf_crime_06.py  (GEOID-ONLY POI ENRICH — no date dependency)
-import os, ast, json, time
 import requests
 from pathlib import Path
 from collections import defaultdict, Counter
@@ -8,14 +7,6 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 from sklearn.neighbors import BallTree
-
-import os
-import subprocess
-import sys
-
-if __name__ == "__main__":
-    os.environ.setdefault("CRIME_DATA_DIR", os.getcwd())
-    subprocess.check_call([sys.executable, "scripts/pipeline_make_sf_crime_06.py"])
     
 # --- LOG HELPERS (date'e BAĞLI DEĞİL) ---
 def log_shape(df, label):
@@ -519,14 +510,16 @@ if __name__ == "__main__":
         # yoksa BASE_DIR içine indirelim
         poi_geojson = os.path.join(BASE_DIR, "sf_pois.geojson")
 
+    # flags (mutlaka çağrıdan önce!)
+    INCLUDE_OFFICE_CRAFT = True
     FORCE_POI_REFRESH = (os.getenv("FORCE_POI_REFRESH", "0") == "1")
-
-poi_geojson = ensure_sf_pois_geojson(
-    poi_geojson,
-    include_office_craft=INCLUDE_OFFICE_CRAFT,
-    force_refresh=FORCE_POI_REFRESH,
-    fallback_to_existing=True
-)
+    
+    poi_geojson = ensure_sf_pois_geojson(
+        poi_geojson,
+        include_office_craft=INCLUDE_OFFICE_CRAFT,
+        force_refresh=FORCE_POI_REFRESH,
+        fallback_to_existing=True
+    )
 
     # 1) POI temiz/güncel hazır mı? Varsa kullan, yoksa üret
     use_clean = os.path.exists(POI_CLEAN_CSV)
