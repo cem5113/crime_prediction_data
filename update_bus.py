@@ -208,7 +208,7 @@ SNAPSHOT_DATE = os.getenv("SNAPSHOT_DATE", "").strip()
 if SNAPSHOT_DATE:
     SNAPSHOT_TS = pd.to_datetime(SNAPSHOT_DATE).normalize()
 else:
-    SNAPSHOT_TS = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    SNAPSHOT_TS = pd.Timestamp.utcnow().tz_localize(None).normalize().to_datetime64().astype("datetime64[ns]")
     
 # census geojson adayları
 CENSUS_CANDIDATES = [
@@ -463,9 +463,9 @@ else:
 
 bus_feat["snapshot_date"] = SNAPSHOT_TS
 
-_before = crime.shape
-crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
-bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
+# ✅ unit eşitle (ns)
+crime["_crime_date"]      = crime["_crime_date"].values.astype("datetime64[ns]")
+bus_feat["snapshot_date"] = bus_feat["snapshot_date"].values.astype("datetime64[ns]")
 
 # 🔒 _x / _y oluşmasını kesin engelle
 _overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID"}
