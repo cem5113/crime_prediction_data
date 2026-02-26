@@ -26,6 +26,14 @@ except Exception:
 
 INCLUDE_OFFICE_CRAFT = True
 REBUILD_POI_CLEAN_IF_SF_MISMATCH = True
+FORCE_POI_REFRESH = (os.getenv("FORCE_POI_REFRESH", "0") == "1")
+
+poi_geojson = ensure_sf_pois_geojson(
+    poi_geojson,
+    include_office_craft=INCLUDE_OFFICE_CRAFT,
+    force_refresh=FORCE_POI_REFRESH,
+    fallback_to_existing=True
+)
 
 # ================== 0) YOLLAR ==================
 BASE_DIR  = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
@@ -79,21 +87,36 @@ def _bbox_ok_sf(features, min_lon=-123.5, max_lon=-121.5, min_lat=37.0, max_lat=
         return False
     return (min(lons) > min_lon and max(lons) < max_lon and min(lats) > min_lat and max(lats) < max_lat)
 
-def ensure_sf_pois_geojson(out_path: str, include_office_craft=True):
-    # 1) varsa oku, SF mi kontrol et
+def ensure_sf_pois_geojson(
+    out_path: str,
+    include_office_craft: bool = True,
+    force_refresh: bool = False,
+    fallback_to_existing: bool = True,
+):
+    """
+    - force_refresh=False: mevcut dosya SF bbox OK ise indirme yapmaz (cache).
+    - force_refresh=True: indirmeyi zorlar (weekly refresh gibi).
+    - fallback_to_existing=True: indirme başarısız olursa mevcut dosya SF ise onunla devam eder.
+    """
+
+    # --- 0) Mevcut dosya SF mi? (cache kontrol) ---
+    existing_ok = False
     if os.path.exists(out_path):
         try:
-            gj = json.loads(Path(out_path).read_text(encoding="utf-8", errors="ignore"))
-            feats = gj.get("features", [])
-            if feats and _bbox_ok_sf(feats):
-                print("✅ sf_pois.geojson mevcut ve SF bbox OK.")
+            gj0 = json.loads(Path(out_path).read_text(encoding="utf-8", errors="ignore"))
+            feats0 = gj0.get("features", [])
+            existing_ok = bool(feats0) and _bbox_ok_sf(feats0)
+            if existing_ok and not force_refresh:
+                print("✅ sf_pois.geojson mevcut ve SF bbox OK. (cache) → indirilmeyecek.")
                 return out_path
-            else:
-                print("⚠️ sf_pois.geojson var ama SF dışı görünüyor → yeniden indirilecek.")
-        except Exception:
-            print("⚠️ sf_pois.geojson okunamadı → yeniden indirilecek.")
+            if existing_ok and force_refresh:
+                print("♻️ force_refresh=True → SF POI yeniden indirilecek (hata olursa fallback var).")
+            if (not existing_ok):
+                print("⚠️ sf_pois.geojson var ama SF dışı/bozuk → yeniden indirilecek.")
+        except Exception as e:
+            print(f"⚠️ sf_pois.geojson okunamadı ({e}) → yeniden indirilecek.")
 
-    # 2) Overpass’tan SF relation-area ile indir
+    # --- 1) Overpass query (SF relation-area) ---
     extra = ""
     if include_office_craft:
         extra = """
@@ -122,58 +145,89 @@ def ensure_sf_pois_geojson(out_path: str, include_office_craft=True):
 
     def overpass_post(q, eps, max_retries=4, backoff_base=1.8):
         headers = {"Accept": "application/json"}
+        last_err = None
         for ep in eps:
             print(f"🌐 Overpass deneniyor: {ep}")
             for attempt in range(max_retries + 1):
                 try:
                     r = requests.post(ep, data={"data": q}, headers=headers, timeout=900)
+
+                    # 429 / 5xx: retry
                     if r.status_code in (429,) or 500 <= r.status_code < 600:
                         if attempt >= max_retries:
                             r.raise_for_status()
                         time.sleep(backoff_base ** (attempt + 1))
                         continue
+
                     r.raise_for_status()
                     js = r.json()
                     if "elements" not in js:
                         raise ValueError("Overpass yanıtında 'elements' yok.")
                     return js
+
                 except Exception as e:
+                    last_err = e
                     if attempt >= max_retries:
                         print(f"❌ Endpoint başarısız: {ep} | hata: {e}")
                     else:
                         time.sleep(backoff_base ** (attempt + 1))
             print(f"↪️ Endpoint geçiliyor: {ep}")
-        raise RuntimeError("❌ Tüm Overpass endpointleri başarısız oldu.")
+        raise RuntimeError(f"❌ Tüm Overpass endpointleri başarısız oldu. Son hata: {last_err}")
 
-    raw = overpass_post(query, endpoints)
+    # --- 2) İndir (hata olursa fallback) ---
+    try:
+        raw = overpass_post(query, endpoints)
 
-    # elements -> GeoJSON
-    feats = []
-    for el in raw["elements"]:
-        tags = el.get("tags", {}) or {}
-        if el.get("type") == "node":
-            lat, lon = el.get("lat"), el.get("lon")
-        else:
-            c = el.get("center") or {}
-            lat, lon = c.get("lat"), c.get("lon")
-        if lat is None or lon is None:
-            continue
-        feats.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-            "properties": {"id": f'{el.get("type")}/{el.get("id")}',
-                           "osm_type": el.get("type"), "osm_id": el.get("id"), "tags": tags}
-        })
+        feats = []
+        for el in raw.get("elements", []):
+            tags = el.get("tags", {}) or {}
 
-    gj = {"type": "FeatureCollection", "features": feats}
-    _ensure_parent(out_path)
-    Path(out_path).write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
+            # node -> lat/lon, way/relation -> center
+            if el.get("type") == "node":
+                lat, lon = el.get("lat"), el.get("lon")
+            else:
+                c = el.get("center") or {}
+                lat, lon = c.get("lat"), c.get("lon")
 
-    # son kontrol
-    if not feats or not _bbox_ok_sf(feats):
-        raise RuntimeError("❌ İndirilen POI hâlâ SF bbox dışında. Query/endpoint kontrol et.")
-    print(f"✅ SF POI indirildi: {out_path} | n={len(feats)}")
-    return out_path
+            if lat is None or lon is None:
+                continue
+
+            feats.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                "properties": {
+                    "id": f'{el.get("type")}/{el.get("id")}',
+                    "osm_type": el.get("type"),
+                    "osm_id": el.get("id"),
+                    "tags": tags
+                }
+            })
+
+        # Sanity: SF bbox
+        if (not feats) or (not _bbox_ok_sf(feats)):
+            raise RuntimeError("❌ İndirilen POI SF bbox dışında (sanity fail).")
+
+        gj = {"type": "FeatureCollection", "features": feats}
+        _ensure_parent(out_path)
+        Path(out_path).write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
+
+        print(f"✅ SF POI indirildi: {out_path} | n={len(feats)}")
+        return out_path
+
+    except Exception as e:
+        print(f"❌ Overpass indirme başarısız: {e}")
+
+        # fallback: mevcut dosya SF ise onunla devam
+        if fallback_to_existing and os.path.exists(out_path):
+            try:
+                gj1 = json.loads(Path(out_path).read_text(encoding="utf-8", errors="ignore"))
+                feats1 = gj1.get("features", [])
+                if feats1 and _bbox_ok_sf(feats1):
+                    print("🛡️ Fallback: mevcut sf_pois.geojson kullanılacak.")
+                    return out_path
+            except Exception:
+                pass
+        raise
     
 def _safe_save_csv(df: pd.DataFrame, path: str):
     try:
