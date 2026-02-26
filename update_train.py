@@ -1,6 +1,6 @@
-# update_train.py
+# update_train.py  (SON REVIZE — MOBILITYDB "latest.zip" OTOMATİK)
 
-import os, io, zipfile, time
+import os, io, zipfile, time, re
 from pathlib import Path
 
 import numpy as np
@@ -15,11 +15,27 @@ from scipy.spatial import cKDTree
 def ensure_parent(path: str) -> None:
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
+def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    obj_cols = df.select_dtypes(include=["object"]).columns
+    if len(obj_cols) == 0:
+        return df
+
+    repl = {
+        "–": "-", "−": "-",
+        "≤": "<=", "≥": ">=",
+        "â€“": "-", "â€": "-",
+        "â‰¤": "<=", "â‰¥": ">=",
+    }
+    for c in obj_cols:
+        df[c] = df[c].replace(repl, regex=False)
+    return df
+
 def safe_save_csv(df: pd.DataFrame, path: str) -> None:
     ensure_parent(path)
     tmp = path + ".tmp"
     try:
-        df2 = sanitize_text_columns(df)  # <-- yeni
+        df2 = sanitize_text_columns(df)
         with open(tmp, "w", encoding="utf-8-sig", errors="replace", newline="") as f:
             df2.to_csv(f, index=False)
         os.replace(tmp, path)
@@ -63,22 +79,6 @@ def freedman_diaconis_bin_count(data: np.ndarray, max_bins: int = 10) -> int:
         return min(max_bins, max(2, int(np.sqrt(len(data)))))
     return max(2, min(max_bins, int(np.ceil((data.max() - data.min()) / bw))))
 
-def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    obj_cols = df.select_dtypes(include=["object"]).columns
-    if len(obj_cols) == 0:
-        return df
-
-    repl = {
-        "–": "-", "−": "-",
-        "≤": "<=", "≥": ">=",
-        "â€“": "-", "â€": "-",
-        "â‰¤": "<=", "â‰¥": ">=",
-    }
-    for c in obj_cols:
-        df[c] = df[c].replace(repl, regex=False)
-    return df
-
 # =========================
 # ENV / Yollar
 # =========================
@@ -87,7 +87,7 @@ Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 
 # Suç girdisi adayları
 CRIME_CANDIDATES = [
-    os.path.join(BASE_DIR, "sf_crime_04.csv"),  #
+    os.path.join(BASE_DIR, "sf_crime_04.csv"),
 ]
 CRIME_INPUT = next((p for p in CRIME_CANDIDATES if os.path.exists(p)), None)
 if CRIME_INPUT is None:
@@ -107,14 +107,47 @@ CENSUS_CANDIDATES = [
     os.path.join(".",      "sf_census_blocks.geojson"),
 ]
 
-# GTFS kaynakları (BART)
-GTFS_URLS = [
+# Mobility Database katalog (feeds_v2.csv) — DOĞRU kaynak: files.mobilitydatabase.org
+MOBILITYDB_FEEDS_V2_URL = os.getenv("MOBILITYDB_FEEDS_V2_URL", "https://files.mobilitydatabase.org/feeds_v2.csv")
+
+def get_mobilitydb_latest_zip(feed_id: str = "mdb-53") -> str | None:
+    """
+    MobilityDB feeds_v2.csv içinden <feed_id> için urls.latest alanını alır.
+    Örn: https://files.mobilitydatabase.org/mdb-53/latest.zip
+    """
+    try:
+        df = pd.read_csv(MOBILITYDB_FEEDS_V2_URL, low_memory=False)
+        if "id" not in df.columns:
+            print("⚠️ feeds_v2.csv beklenmeyen şema: 'id' kolonu yok.")
+            return None
+        row = df[df["id"].astype(str).str.strip().eq(str(feed_id))]
+        if row.empty:
+            print(f"⚠️ feeds_v2.csv içinde {feed_id} bulunamadı.")
+            return None
+        url = row.iloc[0].get("urls.latest")
+        if isinstance(url, str) and url.strip().startswith("http"):
+            return url.strip()
+        print(f"⚠️ {feed_id} için 'urls.latest' boş/uygunsuz.")
+        return None
+    except Exception as e:
+        print(f"⚠️ feeds_v2.csv okunamadı ({MOBILITYDB_FEEDS_V2_URL}): {e}")
+        return None
+
+# GTFS kaynakları (BART) — ÖNCE latest.zip, sonra fallback
+latest_zip = get_mobilitydb_latest_zip("mdb-53")
+
+GTFS_URLS = []
+if latest_zip:
+    print("✅ MobilityDB latest.zip:", latest_zip)
+    GTFS_URLS.append(latest_zip)
+
+GTFS_URLS += [
     os.getenv("BART_GTFS_URL", "https://files.mobilitydatabase.org/mdb-53/mdb-53-202512180015/mdb-53-202512180015.zip"),
-    # Dilersen alternatifler için env üzerinden ek string verebilirsin:
     os.getenv("BART_GTFS_URL_ALT1", "").strip(),
     os.getenv("BART_GTFS_URL_ALT2", "").strip(),
 ]
-GTFS_URLS = [u for u in GTFS_URLS if u]  # boşları ayıkla
+GTFS_URLS = [u for u in GTFS_URLS if u]
+print("🧭 GTFS_URLS sırası:", GTFS_URLS)
 
 # İndirme başarısız olursa cache / stub?
 ALLOW_STUB = os.getenv("ALLOW_STUB_ON_API_FAIL", "1").strip().lower() not in ("0", "false")
@@ -134,15 +167,17 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                         r.raise_for_status()
                     sleep_s = backoff_base ** (attempt + 1)
                     print(f"⚠️ Geçici hata (HTTP {r.status_code}) → {attempt+1}. deneme, {sleep_s:.1f}s bekleme…")
-                    time.sleep(sleep_s); continue
+                    time.sleep(sleep_s)
+                    continue
+
                 r.raise_for_status()
-                
                 content = r.content
+
                 # ZIP dosyaları genelde "PK\x03\x04" ile başlar
                 if not content.startswith(b"PK"):
                     snippet = content[:200].decode("utf-8", errors="ignore")
                     raise ValueError(f"ZIP gelmedi (ilk 200 char): {snippet}")
-                
+
                 buf = io.BytesIO(content)
                 with zipfile.ZipFile(buf, "r") as zf:
                     members = [m for m in zf.namelist() if m.lower().endswith("stops.txt")]
@@ -151,6 +186,7 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                     with zf.open(members[0], "r") as f:
                         stops = pd.read_csv(f, dtype={"stop_lat": float, "stop_lon": float})
                 return stops
+
             except Exception as e:
                 if attempt >= max_retries:
                     print(f"❌ GTFS indirme/çıkarma hatası (url={url}): {e}")
@@ -158,6 +194,7 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                     sleep_s = backoff_base ** (attempt + 1)
                     print(f"⚠️ Hata (url={url}) → tekrar denenecek ({attempt+1}/{max_retries}), {sleep_s:.1f}s bekleme. ({e})")
                     time.sleep(sleep_s)
+
         print(f"↪️ URL başarısız: {url}")
     return None
 
@@ -183,16 +220,16 @@ if stops is None:
         try:
             stops = pd.read_csv(TRAIN_STOPS_WITH_GEOID, low_memory=False)
         except Exception:
-            stops = pd.DataFrame(columns=["stop_lat","stop_lon"])
+            stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
     elif os.path.exists(TRAIN_LEGACY_RAW_Y):
         print("⚠️ GTFS indirilemedi; legacy cache kullanılacak:", os.path.abspath(TRAIN_LEGACY_RAW_Y))
         try:
             stops = pd.read_csv(TRAIN_LEGACY_RAW_Y, low_memory=False)
         except Exception:
-            stops = pd.DataFrame(columns=["stop_lat","stop_lon"])
+            stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
     elif ALLOW_STUB:
         print("⚠️ GTFS ve yerel cache yok → STUB (0 durak, NaN metrik).")
-        stops = pd.DataFrame(columns=["stop_lat","stop_lon"])
+        stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
     else:
         raise SystemExit("❌ GTFS alınamadı ve cache yok; çıkılıyor.")
 
@@ -200,20 +237,20 @@ if stops is None:
 low = {c.lower(): c for c in stops.columns}
 if "stop_lat" not in low or "stop_lon" not in low:
     # bazı GTFS'lerde 'stop_latitude/stop_longitude' olabilir
-    for a, b in (("stop_latitude","stop_longitude"), ("latitude","longitude"), ("lat","lon"), ("lat","long")):
+    for a, b in (("stop_latitude", "stop_longitude"), ("latitude", "longitude"), ("lat", "lon"), ("lat", "long")):
         if a in low and b in low:
-            stops.rename(columns={low[a]:"stop_lat", low[b]:"stop_lon"}, inplace=True)
+            stops.rename(columns={low[a]: "stop_lat", low[b]: "stop_lon"}, inplace=True)
             break
 else:
     # doğru isimler varsa standardize
     if low["stop_lat"] != "stop_lat":
-        stops.rename(columns={low["stop_lat"]:"stop_lat"}, inplace=True)
+        stops.rename(columns={low["stop_lat"]: "stop_lat"}, inplace=True)
     if low["stop_lon"] != "stop_lon":
-        stops.rename(columns={low["stop_lon"]:"stop_lon"}, inplace=True)
+        stops.rename(columns={low["stop_lon"]: "stop_lon"}, inplace=True)
 
 stops["stop_lat"] = pd.to_numeric(stops.get("stop_lat"), errors="coerce")
 stops["stop_lon"] = pd.to_numeric(stops.get("stop_lon"), errors="coerce")
-stops = stops.dropna(subset=["stop_lat","stop_lon"]).copy()
+stops = stops.dropna(subset=["stop_lat", "stop_lon"]).copy()
 log_shape(stops, "GTFS stops (temiz)")
 
 # =========================
@@ -254,10 +291,11 @@ if blocks_ok and not stops.empty:
         stops, geometry=gpd.points_from_xy(stops["stop_lon"], stops["stop_lat"]), crs="EPSG:4326"
     )
     try:
-        gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks[["geometry","GEOID"]], how="left", predicate="within")
+        gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks[["geometry", "GEOID"]], how="left", predicate="within")
     except Exception as e:
         print(f"⚠️ sjoin(within) başarısız ({e}). sjoin_nearest(max_distance=5 m) deneniyor…")
-        gdf_joined = gpd.sjoin_nearest(gdf_stops, gdf_blocks[["geometry","GEOID"]], how="left", max_distance=5)
+        gdf_joined = gpd.sjoin_nearest(gdf_stops, gdf_blocks[["geometry", "GEOID"]], how="left", max_distance=5)
+
     gdf_joined = gdf_joined.drop(columns=["index_right"], errors="ignore")
     gdf_joined["GEOID"] = normalize_geoid(gdf_joined["GEOID"], DEFAULT_GEOID_LEN)
     train_stops_geo = pd.DataFrame(gdf_joined.drop(columns=["geometry"], errors="ignore")).copy()
@@ -281,17 +319,15 @@ except Exception as e:
 # 6) GEOID-level metrikler (distance & count) + binleme
 # =========================
 if blocks_ok:
-    gdf_blocks_3857 = gdf_blocks[["GEOID","geometry"]].copy().to_crs(epsg=3857)
+    gdf_blocks_3857 = gdf_blocks[["GEOID", "geometry"]].copy().to_crs(epsg=3857)
     gdf_blocks_3857["cx"] = gdf_blocks_3857.geometry.centroid.x
     gdf_blocks_3857["cy"] = gdf_blocks_3857.geometry.centroid.y
     blocks_xy = np.vstack([gdf_blocks_3857["cx"].values, gdf_blocks_3857["cy"].values]).T
 
+    tmp_pts = train_stops_geo.dropna(subset=["stop_lat", "stop_lon"]).copy()
     gdf_train_xy = gpd.GeoDataFrame(
-        train_stops_geo.dropna(subset=["stop_lat","stop_lon"])[["stop_lat","stop_lon"]].copy(),
-        geometry=gpd.points_from_xy(
-            train_stops_geo.dropna(subset=["stop_lat","stop_lon"])["stop_lon"],
-            train_stops_geo.dropna(subset=["stop_lat","stop_lon"])["stop_lat"]
-        ),
+        tmp_pts[["stop_lat", "stop_lon"]].copy(),
+        geometry=gpd.points_from_xy(tmp_pts["stop_lon"], tmp_pts["stop_lat"]),
         crs="EPSG:4326"
     ).to_crs(epsg=3857)
 
@@ -347,7 +383,7 @@ else:
 log_shape(geo_metrics, "GEOID-bazlı metrikler (binlenmiş)")
 
 # =========================
-# 7) GEOID-level özeti da yaz (legacy: train.csv)
+# 7) GEOID-level özeti de yaz (legacy: train.csv)
 # =========================
 safe_save_csv(geo_metrics, TRAIN_SUMMARY_NAME)
 print(f"✅ TRAIN özet (GEOID-level) yazıldı → {TRAIN_SUMMARY_NAME}")
@@ -368,7 +404,7 @@ _overlap = (set(crime.columns) & set(geo_metrics.columns)) - {"GEOID"}
 if _overlap:
     print(f"🧹 TRAIN merge overlap bulundu, geo_metrics'ten düşürüldü: {sorted(_overlap)}")
     geo_metrics = geo_metrics.drop(columns=list(_overlap), errors="ignore")
-    
+
 crime_enriched = crime.merge(
     geo_metrics,
     on="GEOID",
@@ -395,7 +431,7 @@ else:
 # -----------------------------------------------
 
 safe_save_csv(crime_enriched, CRIME_OUTPUT)
-print("📦 Yeni sütunlar eklendi (örnek):", ["distance_to_train","distance_to_train_range","train_stop_count","train_stop_count_range"])
+print("📦 Yeni sütunlar eklendi (örnek):", ["distance_to_train", "distance_to_train_range", "train_stop_count", "train_stop_count_range"])
 print(f"✅ Güncellenmiş veri kaydedildi → {CRIME_OUTPUT}")
 try:
     print("sf_crime_05.csv — ilk 5 satır")
