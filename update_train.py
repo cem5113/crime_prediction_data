@@ -101,6 +101,59 @@ TRAIN_STOPS_WITH_GEOID = os.path.join(BASE_DIR, os.getenv("TRAIN_STOPS_NAME", "s
 TRAIN_LEGACY_RAW_Y     = os.path.join(BASE_DIR, os.getenv("TRAIN_LEGACY_RAW_Y", "train_y.csv"))  # legacy ham
 TRAIN_SUMMARY_NAME     = os.path.join(BASE_DIR, os.getenv("TRAIN_SUMMARY_NAME", "train.csv"))     # legacy özet/feature
 
+# =========================
+# WEEKLY CACHE POLICY (TRAIN)
+# =========================
+FORCE_TRAIN_REFRESH = os.getenv("FORCE_TRAIN_REFRESH", "0").strip().lower() in ("1", "true", "yes")
+
+# TRAIN cache dosyaları mevcutsa ve force yoksa:
+# - GTFS indirmeyi ve geoid-metric hesaplamayı atla
+# - sadece bu cache'lerle CRIME merge yapıp sf_crime_05 yaz
+TRAIN_CACHE_OK = (
+    os.path.exists(TRAIN_STOPS_WITH_GEOID) and
+    os.path.exists(TRAIN_SUMMARY_NAME)
+)
+
+if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
+    print("✅ TRAIN cache bulundu ve FORCE_TRAIN_REFRESH=0 → indirme/hesaplama atlanıyor.")
+    print("   cache stops:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
+    print("   cache metrics:", os.path.abspath(TRAIN_SUMMARY_NAME))
+
+    # 1) cache metrikleri oku
+    geo_metrics = pd.read_csv(TRAIN_SUMMARY_NAME, low_memory=False)
+    if "GEOID" not in geo_metrics.columns:
+        raise KeyError("❌ train.csv içinde GEOID yok (cache bozuk).")
+    geo_metrics["GEOID"] = normalize_geoid(geo_metrics["GEOID"], DEFAULT_GEOID_LEN)
+
+    # 2) crime oku + merge + yaz
+    crime = pd.read_csv(CRIME_INPUT, dtype={"GEOID": str}, low_memory=False)
+    _before = crime.shape
+    crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
+
+    _overlap = (set(crime.columns) & set(geo_metrics.columns)) - {"GEOID"}
+    if _overlap:
+        print(f"🧹 TRAIN cache merge overlap bulundu, geo_metrics'ten düşürüldü: {sorted(_overlap)}")
+        geo_metrics = geo_metrics.drop(columns=list(_overlap), errors="ignore")
+
+    crime_enriched = crime.merge(
+        geo_metrics,
+        on="GEOID",
+        how="left",
+        validate="many_to_one"
+    )
+    log_delta(_before, crime_enriched.shape, "CRIME ⨯ TRAIN (CACHE GEOID enrich)")
+    log_shape(crime_enriched, "CRIME (train enrich sonrası - CACHE)")
+
+    # NaN raporu
+    nan_counts = crime_enriched.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+    print("🔎 NaN sayıları (sf_crime_05 yazılmadan önce) [CACHE]:")
+    print("✅ NaN yok." if nan_counts.empty else nan_counts.to_string())
+
+    safe_save_csv(crime_enriched, CRIME_OUTPUT)
+    print(f"✅ CACHE ile güncellendi → {CRIME_OUTPUT}")
+    raise SystemExit(0)
+    
 # Census GeoJSON adayları
 CENSUS_CANDIDATES = [
     os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
