@@ -496,8 +496,8 @@ bus_feat["snapshot_date"] = SNAPSHOT_TS
 crime = crime.sort_values(["GEOID", "_crime_date"])
 bus_feat = bus_feat.sort_values(["GEOID", "snapshot_date"])
 
-crime["_crime_date"] = pd.to_datetime(crime["_crime_date"]).dt.tz_localize(None)
-bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"]).dt.tz_localize(None)
+crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").astype("datetime64[ns]")
+bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").astype("datetime64[ns]"))
 
 # sonra merge_asof
 crime = pd.merge_asof(
