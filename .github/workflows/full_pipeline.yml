@@ -404,11 +404,29 @@ jobs:
 
       - name: 06) Tren (BART) → sf_crime_05.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
-          set -e
+          set -euo pipefail
+          echo "CWD=$(pwd)"
+          echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
+          ls -lah "${CRIME_DATA_DIR}" || true
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_04.csv" || { echo "❌ sf_crime_04.csv yok"; exit 2; }
+      
+          # Perşembe: refresh=1, diğer günler: cache=0
+          DOW=$(TZ=America/Los_Angeles date +%u)  # 1=Mon ... 4=Thu ... 7=Sun
+          if [ "$DOW" = "4" ]; then
+            export FORCE_TRAIN_REFRESH=1
+            echo "🟢 Thursday → FORCE_TRAIN_REFRESH=1"
+          else
+            export FORCE_TRAIN_REFRESH=0
+            echo "🟡 Not Thursday → FORCE_TRAIN_REFRESH=0 (cache mode)"
+          fi
+      
           python -u update_train.py
       
       - name: POI enrich (GEOID-only)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
           CRIME_IN:  "${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv"
@@ -419,6 +437,18 @@ jobs:
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" || true
           ls -lah "${CRIME_DATA_DIR}/sf_crime_05.csv" || { echo "❌ sf_crime_05.csv yok"; exit 2; }
+      
+          # Perşembe: refresh=1, diğer günler: cache=0
+          DOW=$(TZ=America/Los_Angeles date +%u)
+          if [ "$DOW" = "4" ]; then
+            export FORCE_POI_REFRESH=1
+            echo "🟢 Thursday → FORCE_POI_REFRESH=1"
+          else
+            export FORCE_POI_REFRESH=0
+            echo "🟡 Not Thursday → FORCE_POI_REFRESH=0 (cache mode)"
+          fi
+      
+          python -u update_poi.py
       
           # ============================================================
           # Weekly POI refresh — THURSDAY
