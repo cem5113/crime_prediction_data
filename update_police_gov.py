@@ -173,6 +173,103 @@ log_shape(geo, "GEOID centroid (hazır)")
 police_path = pick_existing(POLICE_CANDIDATES)
 gov_path    = pick_existing(GOV_CANDIDATES)
 
+# =========================
+# WEEKLY CACHE POLICY (POLICE/GOV)
+# =========================
+FORCE_PG_REFRESH = os.getenv("FORCE_PG_REFRESH", "0").strip().lower() in ("1", "true", "yes")
+
+police_csv = pick_existing(POLICE_CANDIDATES)
+gov_csv    = pick_existing(GOV_CANDIDATES)
+
+CACHE_OK = (police_csv is not None) and (gov_csv is not None)
+
+if CACHE_OK and (not FORCE_PG_REFRESH):
+    print("✅ POLICE/GOV cache bulundu ve FORCE_PG_REFRESH=0 → indirme atlanıyor.")
+else:
+    print("♻️ POLICE/GOV refresh (Overpass) başlıyor...")
+
+    OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+    # SF kaba bbox (W,S,E,N) – istersen env ile override et
+    SF_BBOX = os.getenv("SF_BBOX", "-122.525,37.708,-122.355,37.833")
+
+    def overpass(query: str):
+        r = requests.post(OVERPASS_URL, data={"data": query}, timeout=180)
+        r.raise_for_status()
+        return r.json()
+
+    def to_points(osm_json):
+        rows = []
+        for el in osm_json.get("elements", []):
+            lat = el.get("lat") or (el.get("center") or {}).get("lat")
+            lon = el.get("lon") or (el.get("center") or {}).get("lon")
+            if lat is None or lon is None:
+                continue
+            tags = el.get("tags", {}) or {}
+            rows.append({
+                "name": tags.get("name", ""),
+                "latitude": float(lat),
+                "longitude": float(lon),
+                "osm_id": el.get("id"),
+                "osm_type": el.get("type"),
+                "source": "OpenStreetMap/Overpass",
+                "data_as_of": dt.datetime.utcnow().strftime("%Y-%m-%d"),
+            })
+        return pd.DataFrame(rows)
+
+    bbox = SF_BBOX
+    q_police = f"""
+    [out:json][timeout:180];
+    (
+      node["amenity"="police"]({bbox});
+      way["amenity"="police"]({bbox});
+      relation["amenity"="police"]({bbox});
+    );
+    out center;
+    """
+
+    q_gov = f"""
+    [out:json][timeout:180];
+    (
+      node["office"="government"]({bbox});
+      way["office"="government"]({bbox});
+      relation["office"="government"]({bbox});
+      node["amenity"="townhall"]({bbox});
+      way["amenity"="townhall"]({bbox});
+      relation["amenity"="townhall"]({bbox});
+    );
+    out center;
+    """
+
+    try:
+        dfp = to_points(overpass(q_police))
+        dfg = to_points(overpass(q_gov))
+
+        # boş gelirse cache varsa düş
+        if dfp.empty:
+            print("⚠️ Overpass police boş döndü.")
+        if dfg.empty:
+            print("⚠️ Overpass gov boş döndü.")
+
+        # hedef yolları seç (in_dir altına yaz)
+        police_out = str(in_dir / "sf_police_stations.csv")
+        gov_out    = str(in_dir / "sf_government_buildings.csv")
+
+        if not dfp.empty:
+            safe_save_csv(dfp, police_out)
+            print("✅ Yazıldı:", police_out)
+        if not dfg.empty:
+            safe_save_csv(dfg, gov_out)
+            print("✅ Yazıldı:", gov_out)
+
+        # artık bu yeni dosyaları kullan
+        police_path = police_out if os.path.exists(police_out) else pick_existing(POLICE_CANDIDATES)
+        gov_path    = gov_out    if os.path.exists(gov_out)    else pick_existing(GOV_CANDIDATES)
+
+    except Exception as e:
+        print("⚠️ Overpass indirme hatası:", e)
+        police_path = pick_existing(POLICE_CANDIDATES)
+        gov_path    = pick_existing(GOV_CANDIDATES)
+        
 if police_path is None:
     print("⚠️ sf_police_stations.csv bulunamadı; polis mesafeleri NaN olacak.")
     df_police = pd.DataFrame(columns=["latitude", "longitude"])
