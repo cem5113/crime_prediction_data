@@ -492,14 +492,15 @@ else:
 # bus.csv tek snapshot gibi ele al
 bus_feat["snapshot_date"] = SNAPSHOT_TS
 
-# sort (merge_asof şartı)
+# sort
 crime = crime.sort_values(["GEOID", "_crime_date"])
 bus_feat = bus_feat.sort_values(["GEOID", "snapshot_date"])
 
+# dtype unify (ns)
 crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").astype("datetime64[ns]")
-bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").astype("datetime64[ns]"))
+bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").astype("datetime64[ns]")
 
-# sonra merge_asof
+# merge
 crime = pd.merge_asof(
     crime,
     bus_feat,
