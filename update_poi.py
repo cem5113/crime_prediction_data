@@ -1,4 +1,5 @@
 # pipeline_make_sf_crime_06.py  (GEOID-ONLY POI ENRICH — no date dependency)
+import os, ast, json, time
 import requests
 from pathlib import Path
 from collections import defaultdict, Counter
