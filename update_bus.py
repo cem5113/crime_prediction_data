@@ -208,7 +208,7 @@ SNAPSHOT_DATE = os.getenv("SNAPSHOT_DATE", "").strip()
 if SNAPSHOT_DATE:
     SNAPSHOT_TS = pd.to_datetime(SNAPSHOT_DATE).normalize()
 else:
-    SNAPSHOT_TS = pd.Timestamp.utcnow().normalize()
+    SNAPSHOT_TS = pd.Timestamp.utcnow().tz_localize(None).normalize()
     
 # census geojson adayları
 CENSUS_CANDIDATES = [
@@ -495,6 +495,19 @@ bus_feat["snapshot_date"] = SNAPSHOT_TS
 # sort (merge_asof şartı)
 crime = crime.sort_values(["GEOID", "_crime_date"])
 bus_feat = bus_feat.sort_values(["GEOID", "snapshot_date"])
+
+crime["_crime_date"] = pd.to_datetime(crime["_crime_date"]).dt.tz_localize(None)
+bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"]).dt.tz_localize(None)
+
+# sonra merge_asof
+crime = pd.merge_asof(
+    crime,
+    bus_feat,
+    left_on="_crime_date",
+    right_on="snapshot_date",
+    by="GEOID",
+    direction="backward"
+)
 
 # 🔒 overlap engeli (snapshot_date hariç)
 _overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
