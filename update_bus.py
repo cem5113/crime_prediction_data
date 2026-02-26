@@ -203,12 +203,11 @@ BUS_SUMMARY_NAME   = os.path.join(BASE_DIR, os.getenv("BUS_SUMMARY_NAME", "bus.c
 BUS_SNAPSHOT_DIR = os.path.join(BASE_DIR, "bus_snapshots")
 Path(BUS_SNAPSHOT_DIR).mkdir(parents=True, exist_ok=True)
 
-# İstersen dışarıdan ver: SNAPSHOT_DATE=2025-11-25 gibi
 SNAPSHOT_DATE = os.getenv("SNAPSHOT_DATE", "").strip()
 if SNAPSHOT_DATE:
-    SNAPSHOT_TS = pd.to_datetime(SNAPSHOT_DATE).normalize()
+    SNAPSHOT_TS = pd.to_datetime(SNAPSHOT_DATE, errors="coerce").normalize()
 else:
-    SNAPSHOT_TS = pd.Timestamp.utcnow().tz_localize(None).normalize().to_datetime64().astype("datetime64[ns]")
+    SNAPSHOT_TS = pd.Timestamp.utcnow().tz_localize(None).normalize()
     
 # census geojson adayları
 CENSUS_CANDIDATES = [
