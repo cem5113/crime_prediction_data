@@ -1,5 +1,6 @@
 # pipeline_make_sf_crime_06.py  (GEOID-ONLY POI ENRICH — no date dependency)
-import os, ast, json
+import os, ast, json, time
+import requests
 from pathlib import Path
 from collections import defaultdict, Counter
 
@@ -22,6 +23,9 @@ try:
     from shapely.strtree import STRtree
 except Exception:
     STRtree = None
+
+INCLUDE_OFFICE_CRAFT = True
+REBUILD_POI_CLEAN_IF_SF_MISMATCH = True
 
 # ================== 0) YOLLAR ==================
 BASE_DIR  = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
@@ -62,6 +66,115 @@ if not os.path.exists(CRIME_IN):
 def _ensure_parent(path: str):
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
+def _bbox_ok_sf(features, min_lon=-123.5, max_lon=-121.5, min_lat=37.0, max_lat=38.5):
+    # SF civarı kaba bbox kontrolü
+    lons, lats = [], []
+    for f in features[: min(200, len(features))]:  # 200 sample yeter
+        try:
+            lon, lat = f["geometry"]["coordinates"]
+            lons.append(float(lon)); lats.append(float(lat))
+        except Exception:
+            pass
+    if not lons or not lats:
+        return False
+    return (min(lons) > min_lon and max(lons) < max_lon and min(lats) > min_lat and max(lats) < max_lat)
+
+def ensure_sf_pois_geojson(out_path: str, include_office_craft=True):
+    # 1) varsa oku, SF mi kontrol et
+    if os.path.exists(out_path):
+        try:
+            gj = json.loads(Path(out_path).read_text(encoding="utf-8", errors="ignore"))
+            feats = gj.get("features", [])
+            if feats and _bbox_ok_sf(feats):
+                print("✅ sf_pois.geojson mevcut ve SF bbox OK.")
+                return out_path
+            else:
+                print("⚠️ sf_pois.geojson var ama SF dışı görünüyor → yeniden indirilecek.")
+        except Exception:
+            print("⚠️ sf_pois.geojson okunamadı → yeniden indirilecek.")
+
+    # 2) Overpass’tan SF relation-area ile indir
+    extra = ""
+    if include_office_craft:
+        extra = """
+      nwr(area.sf)["office"];
+      nwr(area.sf)["craft"];
+    """
+
+    query = f"""
+    [out:json][timeout:600];
+    area(3600111968)->.sf;
+    (
+      nwr(area.sf)["amenity"];
+      nwr(area.sf)["shop"];
+      nwr(area.sf)["leisure"];
+      nwr(area.sf)["tourism"];
+      {extra}
+    );
+    out center tags;
+    """
+
+    endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.openstreetmap.ru/api/interpreter",
+    ]
+
+    def overpass_post(q, eps, max_retries=4, backoff_base=1.8):
+        headers = {"Accept": "application/json"}
+        for ep in eps:
+            print(f"🌐 Overpass deneniyor: {ep}")
+            for attempt in range(max_retries + 1):
+                try:
+                    r = requests.post(ep, data={"data": q}, headers=headers, timeout=900)
+                    if r.status_code in (429,) or 500 <= r.status_code < 600:
+                        if attempt >= max_retries:
+                            r.raise_for_status()
+                        time.sleep(backoff_base ** (attempt + 1))
+                        continue
+                    r.raise_for_status()
+                    js = r.json()
+                    if "elements" not in js:
+                        raise ValueError("Overpass yanıtında 'elements' yok.")
+                    return js
+                except Exception as e:
+                    if attempt >= max_retries:
+                        print(f"❌ Endpoint başarısız: {ep} | hata: {e}")
+                    else:
+                        time.sleep(backoff_base ** (attempt + 1))
+            print(f"↪️ Endpoint geçiliyor: {ep}")
+        raise RuntimeError("❌ Tüm Overpass endpointleri başarısız oldu.")
+
+    raw = overpass_post(query, endpoints)
+
+    # elements -> GeoJSON
+    feats = []
+    for el in raw["elements"]:
+        tags = el.get("tags", {}) or {}
+        if el.get("type") == "node":
+            lat, lon = el.get("lat"), el.get("lon")
+        else:
+            c = el.get("center") or {}
+            lat, lon = c.get("lat"), c.get("lon")
+        if lat is None or lon is None:
+            continue
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+            "properties": {"id": f'{el.get("type")}/{el.get("id")}',
+                           "osm_type": el.get("type"), "osm_id": el.get("id"), "tags": tags}
+        })
+
+    gj = {"type": "FeatureCollection", "features": feats}
+    _ensure_parent(out_path)
+    Path(out_path).write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
+
+    # son kontrol
+    if not feats or not _bbox_ok_sf(feats):
+        raise RuntimeError("❌ İndirilen POI hâlâ SF bbox dışında. Query/endpoint kontrol et.")
+    print(f"✅ SF POI indirildi: {out_path} | n={len(feats)}")
+    return out_path
+    
 def _safe_save_csv(df: pd.DataFrame, path: str):
     try:
         _ensure_parent(path)
@@ -351,21 +464,45 @@ if __name__ == "__main__":
 
     blocks_path = _pick_existing(BLOCK_PATH_1, BLOCK_PATH_2)
     poi_geojson = _pick_existing(POI_GEOJSON_1, POI_GEOJSON_2)
+    if poi_geojson is None:
+        # yoksa BASE_DIR içine indirelim
+        poi_geojson = os.path.join(BASE_DIR, "sf_pois.geojson")
+    poi_geojson = ensure_sf_pois_geojson(poi_geojson, include_office_craft=INCLUDE_OFFICE_CRAFT if "INCLUDE_OFFICE_CRAFT" in globals() else True)
 
     # 1) POI temiz/güncel hazır mı? Varsa kullan, yoksa üret
-    if os.path.exists(POI_CLEAN_CSV):
+    use_clean = os.path.exists(POI_CLEAN_CSV)
+    
+    # ✅ Eğer POI geojson SF değilse, eski temiz CSV'yi kullanma → yeniden üret
+    if use_clean:
+        try:
+            gj = json.loads(Path(poi_geojson).read_text(encoding="utf-8", errors="ignore"))
+            feats = gj.get("features", [])
+            if (not feats) or (not _bbox_ok_sf(feats)):
+                print("⚠️ POI GeoJSON SF bbox dışında görünüyor → POI_CLEAN_CSV yeniden üretilecek.")
+                use_clean = False
+        except Exception as e:
+            print(f"⚠️ POI GeoJSON okunamadı ({e}) → POI_CLEAN_CSV yeniden üretilecek.")
+            use_clean = False
+    
+    if use_clean:
         print("ℹ️ Var olan temiz POI CSV kullanılacak:", POI_CLEAN_CSV)
         df_poi = pd.read_csv(POI_CLEAN_CSV, low_memory=False)
+    
         # normalize
         if "lat" not in df_poi.columns and "latitude" in df_poi.columns:
             df_poi["lat"] = pd.to_numeric(df_poi["latitude"], errors="coerce")
         if "lon" not in df_poi.columns and "longitude" in df_poi.columns:
             df_poi["lon"] = pd.to_numeric(df_poi["longitude"], errors="coerce")
+    
         if "poi_subcategory" not in df_poi.columns:
             guess = df_poi.get("poi_category", "Unknown")
             df_poi["poi_subcategory"] = guess.astype(str)
+    
         df_poi["GEOID"] = _normalize_geoid(df_poi.get("GEOID"), 11)
+    
     else:
+        if blocks_path is None:
+            raise FileNotFoundError("❌ sf_census_blocks_with_population.geojson yok. GEOID atamak için gerekli.")
         df_poi = build_poi_clean_with_geoid(blocks_path, poi_geojson)
 
     log_shape(df_poi, "POI clean")
