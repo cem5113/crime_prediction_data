@@ -480,7 +480,7 @@ elif "datetime" in crime.columns:
 else:
     raise KeyError("❌ Crime'da date/datetime yok (FULL RUN merge için gerekli).")
 
-crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").astype("datetime64[ns]")
+crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").dt.normalize()
 
 # 7.1) satır bazında provenance: daha önce bus bağlandı mı?
 #     (yoksa ekle; varsa kullan)
@@ -503,7 +503,7 @@ if n_new == 0:
 
 # 7.2) bus_feat’e snapshot_date tek gün (bugünün snapshot’ı)
 bus_feat = bus_feat.copy()
-bus_feat["snapshot_date"] = pd.to_datetime(SNAPSHOT_TS).normalize().astype("datetime64[ns]")
+bus_feat["snapshot_date"] = pd.Timestamp(SNAPSHOT_TS).normalize()
 
 # NaT / GEOID boşları temizle (sadece new subset için)
 crime_new = crime.loc[mask_new].dropna(subset=["GEOID", "_crime_date"]).copy()
