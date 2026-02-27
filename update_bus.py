@@ -470,7 +470,9 @@ print(f"✅ BUS özet (GEOID-level) yazıldı → {BUS_SUMMARY_NAME}")
 # ✅ sadece gerçek refresh'te snapshot arşivle
 save_bus_snapshot(bus_feat, SNAPSHOT_TS, BUS_SNAPSHOT_DIR)
 
-# ========== 7) crime ile merge ==========
+# ========== 7) crime ile merge (INCREMENTAL / IDempotent) ==========
+
+# 7.0) crime_date üret
 if "date" in crime.columns:
     crime["_crime_date"] = pd.to_datetime(crime["date"], errors="coerce").dt.normalize()
 elif "datetime" in crime.columns:
@@ -478,27 +480,48 @@ elif "datetime" in crime.columns:
 else:
     raise KeyError("❌ Crime'da date/datetime yok (FULL RUN merge için gerekli).")
 
-bus_feat["snapshot_date"] = pd.to_datetime(SNAPSHOT_TS).normalize()
-
-# dtype unify (ns) + NaT drop
 crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").astype("datetime64[ns]")
-bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").astype("datetime64[ns]")
 
-crime = crime.dropna(subset=["GEOID", "_crime_date"]).copy()
+# 7.1) satır bazında provenance: daha önce bus bağlandı mı?
+#     (yoksa ekle; varsa kullan)
+BUS_STAMP_COL = os.getenv("BUS_STAMP_COL", "bus_snapshot_date").strip() or "bus_snapshot_date"
+if BUS_STAMP_COL not in crime.columns:
+    crime[BUS_STAMP_COL] = pd.NaT  # daha önce enrich edilmemiş → boş
+
+# sadece yeni satırlar: bus damgası olmayanlar
+mask_new = crime[BUS_STAMP_COL].isna()
+
+n_new = int(mask_new.sum())
+print(f"🧩 BUS incremental: yeni/enrich edilmemiş satır sayısı = {n_new} / {len(crime)}")
+
+# hiç yeni satır yoksa: dosyayı aynen yaz ve çık
+if n_new == 0:
+    crime = crime.drop(columns=["_crime_date"], errors="ignore")
+    safe_save_csv(crime, CRIME_OUTPUT)
+    print(f"✅ BUS incremental: yeni satır yok → çıktı aynen yazıldı → {CRIME_OUTPUT}")
+    raise SystemExit(0)
+
+# 7.2) bus_feat’e snapshot_date tek gün (bugünün snapshot’ı)
+bus_feat = bus_feat.copy()
+bus_feat["snapshot_date"] = pd.to_datetime(SNAPSHOT_TS).normalize().astype("datetime64[ns]")
+
+# NaT / GEOID boşları temizle (sadece new subset için)
+crime_new = crime.loc[mask_new].dropna(subset=["GEOID", "_crime_date"]).copy()
 bus_feat = bus_feat.dropna(subset=["GEOID", "snapshot_date"]).copy()
 
-# 🔒 overlap engeli (snapshot_date hariç)
-_overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
+# 7.3) overlap engeli (snapshot_date hariç) — sadece new subset ile kontrol
+_overlap = (set(crime_new.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
 if _overlap:
     print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
     bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
 
-# sort (merge_asof şartı) — ON key (_crime_date) global monoton olmalı
-crime = crime.sort_values(["_crime_date", "GEOID"], kind="mergesort").reset_index(drop=True)
-bus_feat = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+# 7.4) merge_asof şartı: ON key önce sort (global monoton)
+crime_new = crime_new.sort_values(["_crime_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+bus_feat  = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort").reset_index(drop=True)
 
-crime = pd.merge_asof(
-    crime,
+# 7.5) merge yalnızca yeni satırlar için
+merged_new = pd.merge_asof(
+    crime_new,
     bus_feat,
     left_on="_crime_date",
     right_on="snapshot_date",
@@ -507,7 +530,22 @@ crime = pd.merge_asof(
     allow_exact_matches=True
 )
 
-crime = crime.drop(columns=["_crime_date", "snapshot_date"], errors="ignore")
+# 7.6) yeni satırlara damga bas (provenance)
+merged_new[BUS_STAMP_COL] = merged_new["snapshot_date"]
+
+# temizlik: teknik kolonlar
+merged_new = merged_new.drop(columns=["snapshot_date"], errors="ignore")
+
+# 7.7) eski satırlar aynen kalsın, sadece new satırları güncelle
+#     - index ile güvenli set
+merged_new = merged_new.set_index(crime_new.index)   # orijinal indekslere geri bağla
+for col in merged_new.columns:
+    crime.loc[merged_new.index, col] = merged_new[col]
+
+# teknik kolonu en sonda kaldır
+crime = crime.drop(columns=["_crime_date"], errors="ignore")
+
+# tip/guard
 crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
 
 # ========== 8) kayıtlar ==========
