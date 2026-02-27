@@ -507,28 +507,37 @@ bus_feat["snapshot_date"] = pd.Timestamp(SNAPSHOT_TS).normalize()
 
 # NaT / GEOID boşları temizle (sadece new subset için)
 crime_new = crime.loc[mask_new].dropna(subset=["GEOID", "_crime_date"]).copy()
+
+# 🔒 orijinal satır kimliği (incremental geri yazım için ALTIN kural)
+crime_new["_row_id"] = crime_new.index
+
 bus_feat = bus_feat.dropna(subset=["GEOID", "snapshot_date"]).copy()
 
-# 7.4) merge_asof şartı: Hassasiyetleri eşitle (ns yapalım) ve sırala
-crime_new["_crime_date"] = pd.to_datetime(crime_new["_crime_date"]).dt.as_unit('ns')
-bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"]).dt.as_unit('ns')
+# overlap engeli (snapshot_date hariç)
+_overlap = (set(crime_new.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
+if _overlap:
+    print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
+    bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
 
-crime_new = crime_new.sort_values("_crime_date")
-bus_feat = bus_feat.sort_values("snapshot_date")
-
-# 7.5) merge_asof: Suç tarihinden ÖNCEKİ EN YAKIN durak verisini bulur
-# Bu sayede 1 Şubat'taki suç, 2 Şubat'ta gelen yeni durak verisini görmez!
-merged_new = pd.merge_asof(
-    crime_new,
-    bus_feat,
-    left_on="_crime_date",
-    right_on="snapshot_date",
-    by="GEOID",
-    direction="backward",  # Suç tarihinden geriye doğru en yakın snapshot'ı al
-    allow_exact_matches=True
+# 7.4) merge_asof şartı: datetime tipini ns'e sabitle + normalize
+crime_new["_crime_date"] = (
+    pd.to_datetime(crime_new["_crime_date"], errors="coerce")
+      .dt.tz_localize(None)
+      .dt.normalize()
+      .astype("datetime64[ns]")
+)
+bus_feat["snapshot_date"] = (
+    pd.to_datetime(bus_feat["snapshot_date"], errors="coerce")
+      .dt.tz_localize(None)
+      .dt.normalize()
+      .astype("datetime64[ns]")
 )
 
-# 7.5) merge yalnızca yeni satırlar için
+# merge_asof için ON key'e göre sırala (index drop YOK!)
+crime_new = crime_new.sort_values(["_crime_date", "GEOID"], kind="mergesort")
+bus_feat  = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort")
+
+# 7.5) merge_asof: time-safe (suç tarihi <= snapshot)
 merged_new = pd.merge_asof(
     crime_new,
     bus_feat,
@@ -539,23 +548,19 @@ merged_new = pd.merge_asof(
     allow_exact_matches=True
 )
 
-# 7.6) yeni satırlara damga bas (provenance)
+# 7.6) yeni satırlara damga bas
 merged_new[BUS_STAMP_COL] = merged_new["snapshot_date"]
 
-# temizlik: teknik kolonlar
+# teknik kolonlar
 merged_new = merged_new.drop(columns=["snapshot_date"], errors="ignore")
 
-# 7.7) eski satırlar aynen kalsın, sadece new satırları güncelle
-#     - index ile güvenli set
-merged_new = merged_new.set_index(crime_new.index)   # orijinal indekslere geri bağla
+# 7.7) geri yaz: _row_id üzerinden (DOĞRU satıra update)
+merged_new = merged_new.set_index("_row_id")
+
 for col in merged_new.columns:
+    if col in ("_crime_date",):  # istersen bu teknik kolonu yazma
+        continue
     crime.loc[merged_new.index, col] = merged_new[col]
-
-# teknik kolonu en sonda kaldır
-crime = crime.drop(columns=["_crime_date"], errors="ignore")
-
-# tip/guard
-crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
 
 # ========== 8) kayıtlar ==========
 safe_save_csv(crime, CRIME_OUTPUT)
