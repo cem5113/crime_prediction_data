@@ -509,15 +509,24 @@ bus_feat["snapshot_date"] = pd.Timestamp(SNAPSHOT_TS).normalize()
 crime_new = crime.loc[mask_new].dropna(subset=["GEOID", "_crime_date"]).copy()
 bus_feat = bus_feat.dropna(subset=["GEOID", "snapshot_date"]).copy()
 
-# 7.3) overlap engeli (snapshot_date hariç) — sadece new subset ile kontrol
-_overlap = (set(crime_new.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
-if _overlap:
-    print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
-    bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
+# 7.4) merge_asof şartı: Hassasiyetleri eşitle (ns yapalım) ve sırala
+crime_new["_crime_date"] = pd.to_datetime(crime_new["_crime_date"]).dt.as_unit('ns')
+bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"]).dt.as_unit('ns')
 
-# 7.4) merge_asof şartı: ON key önce sort (global monoton)
-crime_new = crime_new.sort_values(["_crime_date", "GEOID"], kind="mergesort").reset_index(drop=True)
-bus_feat  = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+crime_new = crime_new.sort_values("_crime_date")
+bus_feat = bus_feat.sort_values("snapshot_date")
+
+# 7.5) merge_asof: Suç tarihinden ÖNCEKİ EN YAKIN durak verisini bulur
+# Bu sayede 1 Şubat'taki suç, 2 Şubat'ta gelen yeni durak verisini görmez!
+merged_new = pd.merge_asof(
+    crime_new,
+    bus_feat,
+    left_on="_crime_date",
+    right_on="snapshot_date",
+    by="GEOID",
+    direction="backward",  # Suç tarihinden geriye doğru en yakın snapshot'ı al
+    allow_exact_matches=True
+)
 
 # 7.5) merge yalnızca yeni satırlar için
 merged_new = pd.merge_asof(
