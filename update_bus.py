@@ -254,17 +254,39 @@ if BUS_CACHE_OK and (not FORCE_BUS_REFRESH):
     print("   cache raw :", os.path.abspath(BUS_CANON_RAW))
     print("   cache feat:", os.path.abspath(BUS_SUMMARY_NAME))
 
-    # 1) cache bus feature (bus.csv) oku
+    # 0) önce _crime_date üret + before al
+    _before = crime.shape
+    if "date" in crime.columns:
+        crime["_crime_date"] = pd.to_datetime(crime["date"], errors="coerce").dt.normalize()
+    elif "datetime" in crime.columns:
+        crime["_crime_date"] = pd.to_datetime(crime["datetime"], errors="coerce").dt.normalize()
+    else:
+        raise KeyError("❌ Crime'da date/datetime yok (CACHE merge için gerekli).")
+    
+    # 1) cache bus feature (bus.csv) oku + snapshot_date garanti et
     bus_feat = pd.read_csv(BUS_SUMMARY_NAME, low_memory=False)
     if "GEOID" not in bus_feat.columns:
         raise KeyError("❌ bus.csv içinde GEOID yok (cache bozuk).")
     bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
     
-    # 🔒 overlap engeli (snapshot_date hariç)
+    # bus.csv içinde snapshot_date yoksa, bugünkü snapshot_ts’yi koy (tek tarih)
+    if "snapshot_date" not in bus_feat.columns:
+        bus_feat["snapshot_date"] = SNAPSHOT_TS
+    bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").dt.normalize()
+    
+    # NaT / GEOID boşları temizle
+    crime = crime.dropna(subset=["GEOID", "_crime_date"]).copy()
+    bus_feat = bus_feat.dropna(subset=["GEOID", "snapshot_date"]).copy()
+    
+    # overlap engeli (snapshot_date hariç)
     _overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
     if _overlap:
         print(f"🧹 BUS cache merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
         bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
+    
+    # ✅ merge_asof için doğru sort: ON key önce
+    crime = crime.sort_values(["_crime_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+    bus_feat = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort").reset_index(drop=True)
     
     crime = pd.merge_asof(
         crime,
@@ -272,15 +294,11 @@ if BUS_CACHE_OK and (not FORCE_BUS_REFRESH):
         left_on="_crime_date",
         right_on="snapshot_date",
         by="GEOID",
-        direction="backward"
+        direction="backward",
+        allow_exact_matches=True
     )
     
-    # snapshot kolonlarını dışarı verme
-    crime = crime.drop(columns=["snapshot_date", "_crime_date"], errors="ignore")
-
-    # snapshot kolonlarını dışarı verme
     crime = crime.drop(columns=["_crime_date", "snapshot_date"], errors="ignore")
-    
     crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
     
     log_delta(_before, crime.shape, "CRIME ⨯ BUS (CACHE TIME-SAFE enrich)")
@@ -460,89 +478,37 @@ elif "datetime" in crime.columns:
 else:
     raise KeyError("❌ Crime'da date/datetime yok (FULL RUN merge için gerekli).")
 
-bus_feat["snapshot_date"] = SNAPSHOT_TS
+bus_feat["snapshot_date"] = pd.to_datetime(SNAPSHOT_TS).normalize()
 
-# ✅ unit eşitle (ns)
-crime["_crime_date"]      = crime["_crime_date"].values.astype("datetime64[ns]")
-bus_feat["snapshot_date"] = bus_feat["snapshot_date"].values.astype("datetime64[ns]")
-
-# 🔒 _x / _y oluşmasını kesin engelle
-_overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID"}
-if _overlap:
-    print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
-    bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
-
-# ===== CACHE BRANCH FINAL (bus.csv tek snapshot kabul) =====
-
-_before = crime.shape
-
-# GEOID normalize
-crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
-bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
-
-# crime date hazırla
-if "date" in crime.columns:
-    crime["_crime_date"] = pd.to_datetime(crime["date"], errors="coerce").dt.normalize()
-elif "datetime" in crime.columns:
-    crime["_crime_date"] = pd.to_datetime(crime["datetime"], errors="coerce").dt.normalize()
-else:
-    raise KeyError("❌ Crime'da date/datetime yok. Time-safe bus merge için gerekli.")
-
-# bus.csv tek snapshot gibi ele al
-bus_feat["snapshot_date"] = SNAPSHOT_TS
-
-# sort
-crime = crime.sort_values(["GEOID", "_crime_date"])
-bus_feat = bus_feat.sort_values(["GEOID", "snapshot_date"])
-
-# dtype unify (ns)
+# dtype unify (ns) + NaT drop
 crime["_crime_date"] = pd.to_datetime(crime["_crime_date"], errors="coerce").astype("datetime64[ns]")
 bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"], errors="coerce").astype("datetime64[ns]")
 
-# merge
-crime = pd.merge_asof(
-    crime,
-    bus_feat,
-    left_on="_crime_date",
-    right_on="snapshot_date",
-    by="GEOID",
-    direction="backward"
-)
+crime = crime.dropna(subset=["GEOID", "_crime_date"]).copy()
+bus_feat = bus_feat.dropna(subset=["GEOID", "snapshot_date"]).copy()
 
 # 🔒 overlap engeli (snapshot_date hariç)
 _overlap = (set(crime.columns) & set(bus_feat.columns)) - {"GEOID", "snapshot_date"}
 if _overlap:
-    print(f"🧹 BUS cache merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
+    print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
     bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
 
-# ✅ time-safe: snapshot seç (geriye doğru)
+# sort (merge_asof şartı) — ON key (_crime_date) global monoton olmalı
+crime = crime.sort_values(["_crime_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+bus_feat = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort").reset_index(drop=True)
+
 crime = pd.merge_asof(
     crime,
     bus_feat,
     left_on="_crime_date",
     right_on="snapshot_date",
     by="GEOID",
-    direction="backward"
+    direction="backward",
+    allow_exact_matches=True
 )
 
-# snapshot kolonlarını dışarı verme (tek satır yeter)
 crime = crime.drop(columns=["_crime_date", "snapshot_date"], errors="ignore")
-
-# defaults
 crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
-
-log_delta(_before, crime.shape, "CRIME ⨯ BUS (CACHE TIME-SAFE enrich)")
-log_shape(crime, "CRIME (bus enrich sonrası - CACHE)")
-
-nan_counts = crime.isna().sum()
-nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
-print("🔎 NaN sayıları (sf_crime_04 yazılmadan önce) [CACHE]:")
-print("✅ NaN yok." if nan_counts.empty else nan_counts.to_string())
-
-# ✅ cache branch MUTLAKA burada bitmeli
-safe_save_csv(crime, CRIME_OUTPUT)
-print(f"✅ CACHE ile güncellendi → {CRIME_OUTPUT}")
-raise SystemExit(0)
 
 # ========== 8) kayıtlar ==========
 safe_save_csv(crime, CRIME_OUTPUT)
