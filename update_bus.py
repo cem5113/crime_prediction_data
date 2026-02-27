@@ -519,25 +519,37 @@ if _overlap:
     print(f"🧹 BUS merge overlap bulundu, bus_feat'ten düşürüldü: {sorted(_overlap)}")
     bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
 
-# 7.4) merge_asof şartı: datetime tipini ns'e sabitle + normalize
-crime_new["_crime_date"] = (
-    pd.to_datetime(crime_new["_crime_date"], errors="coerce")
-      .dt.tz_localize(None)
-      .dt.normalize()
-      .astype("datetime64[ns]")
-)
-bus_feat["snapshot_date"] = (
-    pd.to_datetime(bus_feat["snapshot_date"], errors="coerce")
-      .dt.tz_localize(None)
-      .dt.normalize()
-      .astype("datetime64[ns]")
-)
+# 7.4) Zaman ve Tip Hazırlığı
+crime_new["_crime_date"] = pd.to_datetime(crime_new["_crime_date"]).dt.tz_localize(None).dt.normalize().astype("datetime64[ns]")
+bus_feat["snapshot_date"] = pd.to_datetime(bus_feat["snapshot_date"]).dt.tz_localize(None).dt.normalize().astype("datetime64[ns]")
 
-# merge_asof için ON key'e göre sırala (index drop YOK!)
-crime_new = crime_new.sort_values(["_crime_date", "GEOID"], kind="mergesort")
-bus_feat  = bus_feat.sort_values(["snapshot_date", "GEOID"], kind="mergesort")
+# GEOID Tiplerini Kontrol Et (Eşleşmeme nedeni genelde budur)
+crime_new["GEOID"] = crime_new["GEOID"].astype(str).str.strip()
+bus_feat["GEOID"] = bus_feat["GEOID"].astype(str).str.strip()
 
-# 7.5) merge_asof: time-safe (suç tarihi <= snapshot)
+# ========== 🕵️ HATA TEŞHİS BLOĞU (PRINT) ==========
+print("\n--- 🔍 Eşleşme Analizi (Debug) ---")
+print(f"Crime Tarih Aralığı: {crime_new['_crime_date'].min()} ile {crime_new['_crime_date'].max()}")
+print(f"Bus Snapshot Tarihi: {bus_feat['snapshot_date'].unique()}")
+
+# Örnek bir GEOID üzerinden kontrol
+sample_geoid = crime_new["GEOID"].iloc[0]
+print(f"Örnek GEOID: {sample_geoid}")
+print(f"Bu GEOID Crime'da var mı? {'Evet' if sample_geoid in crime_new['GEOID'].values else 'Hayır'}")
+print(f"Bu GEOID Bus'ta var mı? {'Evet' if sample_geoid in bus_feat['GEOID'].values else 'Hayır'}")
+
+# Backward Merge Neden Başarısız Olabilir Testi
+earliest_bus = bus_feat["snapshot_date"].min()
+too_early_crimes = (crime_new["_crime_date"] < earliest_bus).sum()
+if too_early_crimes > 0:
+    print(f"⚠️ UYARI: {too_early_crimes} adet suç satırı, en eski otobüs snapshot'ından ({earliest_bus}) daha eski! 'backward' merge bunları NaT yapar.")
+# ===============================================
+
+# Merge için sıralama
+crime_new = crime_new.sort_values(["_crime_date", "GEOID"])
+bus_feat = bus_feat.sort_values(["snapshot_date", "GEOID"])
+
+# 7.5) Merge
 merged_new = pd.merge_asof(
     crime_new,
     bus_feat,
