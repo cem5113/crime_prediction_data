@@ -408,7 +408,7 @@ jobs:
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          FORCE_BUS_REFRESH: ${{ steps.gate.outputs.is_thursday }}
+          FORCE_BUS_REFRESH: ${{ steps.gate.outputs.is_friday }}
         run: |
           set -euo pipefail
           echo "🚌 BUS STEP"
