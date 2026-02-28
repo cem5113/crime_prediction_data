@@ -43,9 +43,16 @@ def _norm_geoid(s: pd.Series, L: int = 11) -> pd.Series:
          .str[:L].str.zfill(L)
     )
 
-# --- tarih yardımcıları: HER ZAMAN datetime64[ns] ---
+# --- tarih yardımcıları: HER ZAMAN datetime64[ns] (SF local day) ---
 def _as_date64(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce").dt.normalize()
+    # 1) mixed tz/naive olasılığına karşı her şeyi UTC olarak parse et (tek dtype garanti)
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+
+    # 2) SF gün anahtarı: UTC -> America/Los_Angeles
+    dt = dt.dt.tz_convert("America/Los_Angeles")
+
+    # 3) Gün başına indir (00:00) ve tz bilgisini at (merge/groupby için temiz)
+    return dt.dt.normalize().dt.tz_localize(None)
 
 def _ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
