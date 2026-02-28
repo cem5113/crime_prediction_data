@@ -38,7 +38,8 @@ def main():
     dcol = _pick_col(df.columns, "date", "datetime", "time")
     if not dcol:
         raise RuntimeError("Tarih kolonu bulunamadı (date/datetime/time)")
-    df["date"] = pd.to_datetime(df[dcol], errors="coerce").dt.date
+    dt = pd.to_datetime(df[dcol], errors="coerce", utc=True).dt.tz_convert("America/Los_Angeles")
+    df["date"] = dt.dt.date
 
     # GEOID alanı
     gcol = _pick_col(df.columns, "GEOID", "geoid", "geography_id", "geoid10")
