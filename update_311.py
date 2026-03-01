@@ -236,6 +236,11 @@ def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
             df[c] = pd.NA
 
     log_shape(df, "Base CSV (ham seed)")
+
+    if "requested_datetime" not in df.columns and "datetime" in df.columns:
+        # yine de devam eder ama uyarı ver
+        print("⚠️ Seed dosyasında 'requested_datetime' yok; ham/özet karışmış olabilir.")
+    
     return df[keep + ["GEOID"] if "GEOID" in df.columns else keep].copy()
 
 # ================== DOSYA YOLLARI ==================
@@ -488,13 +493,27 @@ def main():
             "service_name": "category",
             "service_subtype": "subcategory"
         })
+        
         df_new["datetime"] = pd.to_datetime(df_new["datetime"], errors="coerce", utc=True)
-        df_new["date"] = pd.to_datetime(df_new["datetime"]).dt.date
-        df_new["time"] = pd.to_datetime(df_new["datetime"]).dt.time
+        
+        # SF yerel date/time (DST-safe)
+        if SF_TZ is not None:
+            _dt_sf = df_new["datetime"].dt.tz_convert(SF_TZ)
+        else:
+            _dt_sf = df_new["datetime"]
+        
+        df_new["date"] = _dt_sf.dt.date
+        df_new["time"] = _dt_sf.dt.time
 
         # GEOID (mümkünse)
         df_new_geo = geotag_to_geoid11(df_new)
 
+        # --- lat/long boşsa latitude/longitude'dan doldur (sessiz NaN fix) ---
+        if "lat" in df_new_geo.columns and "latitude" in df_new_geo.columns:
+            df_new_geo["lat"] = df_new_geo["lat"].where(df_new_geo["lat"].notna(), df_new_geo["latitude"])
+        if "long" in df_new_geo.columns and "longitude" in df_new_geo.columns:
+            df_new_geo["long"] = df_new_geo["long"].where(df_new_geo["long"].notna(), df_new_geo["longitude"])
+    
         keep = ["id","datetime","date","time","lat","long","category","subcategory",
                 "agency_responsible","latitude","longitude","GEOID"]
         for c in keep:
@@ -686,20 +705,17 @@ def main():
             else:
                 crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
             keys = ["GEOID", "date", "hour_range"]
-            _sum = summary[["GEOID","date","hour_range","311_request_count"]].copy()
-            _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
-            if _overlap:
-                print(f"🧹 DATE-BASED overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
-                _sum = _sum.drop(columns=list(_overlap), errors="ignore")
             _before = crime.shape
             _sum = summary[["GEOID", "date", "hour_range", "311_request_count"]].copy()
-
+            
             _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
             if _overlap:
                 print(f"🧹 DATE-BASED merge overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
                 _sum = _sum.drop(columns=list(_overlap), errors="ignore")
             
             merged = crime.merge(_sum, on=keys, how="left")
+            log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
+            print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
             
             log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
             print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
