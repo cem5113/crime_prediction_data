@@ -449,10 +449,6 @@ jobs:
           CRIME_OUT: "${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv"
         run: |
           set -euo pipefail
-          echo "CWD=$(pwd)"
-          echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
-          ls -lah "${CRIME_DATA_DIR}" || true
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_05.csv" || { echo "❌ sf_crime_05.csv yok"; exit 2; }
       
           # Perşembe: refresh=1, diğer günler: cache=0
           DOW=$(TZ=America/Los_Angeles date +%u)
@@ -464,6 +460,15 @@ jobs:
             echo "🟡 Not Thursday → FORCE_POI_REFRESH=0 (cache mode)"
           fi
       
+          # TEK seçim noktası
+          if [ -f pipeline_make_sf_crime_06.py ]; then
+            python -u pipeline_make_sf_crime_06.py
+          elif [ -f update_poi.py ]; then
+            python -u update_poi.py
+          else
+            echo "POI adımı bulunamadı"; exit 2
+          fi
+            
           python -u update_poi.py
       
           # ============================================================
