@@ -19,8 +19,8 @@ def log_delta(before_shape, after_shape, label: str):
     ar, ac = after_shape
     print(f"🔗 {label}: {br}×{bc} → {ar}×{ac} (Δr={ar-br}, Δc={ac-bc})")
 
-def ensure_parent(path: str):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+def ensure_parent(path):
+    Path(str(path)).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 def safe_save_csv(df: pd.DataFrame, path: str):
     ensure_parent(path)
@@ -257,7 +257,9 @@ if BUS_CACHE_OK and (not FORCE_BUS_REFRESH):
         bus_feat = bus_feat.drop(columns=list(_overlap), errors="ignore")
 
     crime = crime.merge(bus_feat, on="GEOID", how="left", validate="many_to_one")
-    crime["bus_stop_count"] = crime.get("bus_stop_count", 0).fillna(0).astype(int)
+    if "bus_stop_count" not in crime.columns:
+        crime["bus_stop_count"] = 0
+    crime["bus_stop_count"] = pd.to_numeric(crime["bus_stop_count"], errors="coerce").fillna(0).astype(int)
 
     log_delta(_before, crime.shape, "CRIME ⨯ BUS (CACHE GEOID enrich)")
     log_shape(crime, "CRIME (bus enrich sonrası - CACHE)")
@@ -368,10 +370,14 @@ if blocks_ok and not bus_geo["GEOID"].isna().all():
     gdf_blocks_xy["cx"] = gdf_blocks_xy.geometry.centroid.x
     gdf_blocks_xy["cy"] = gdf_blocks_xy.geometry.centroid.y
 
+    bad = gdf_blocks_xy["cx"].isna() | gdf_blocks_xy["cy"].isna()
+    if bad.any():
+        print(f"⚠️ {int(bad.sum())} blok centroid NaN (geometry sorunu). Mesafe bu GEOID'lerde NaN kalacak.")
+
+    bus_pts = bus_geo.dropna(subset=["stop_lat","stop_lon"])[["stop_lat","stop_lon"]].copy()
     gdf_bus_xy = gpd.GeoDataFrame(
-        bus_geo.dropna(subset=["stop_lat", "stop_lon"])[["stop_lat", "stop_lon"]].copy(),
-        geometry=gpd.points_from_xy(bus_geo.dropna(subset=["stop_lat", "stop_lon"])["stop_lon"],
-                                    bus_geo.dropna(subset=["stop_lat", "stop_lon"])["stop_lat"]),
+        bus_pts,
+        geometry=gpd.points_from_xy(bus_pts["stop_lon"], bus_pts["stop_lat"]),
         crs="EPSG:4326",
     ).to_crs(3857)
 
@@ -397,12 +403,15 @@ bus_feat["GEOID"] = normalize_geoid(bus_feat["GEOID"], DEFAULT_GEOID_LEN)
 # sadece crime’da olan GEOID’leri tut
 bus_feat = bus_feat.merge(crime_geoids.to_frame(), on="GEOID", how="right")
 
+cov = bus_feat["distance_to_bus"].notna().mean() if "distance_to_bus" in bus_feat.columns else 0.0
+print(f"🧪 BUS mesafe coverage: {cov:.3%}")
+
 # binleme alanları (opsiyonel, görselleme/feature için faydalı)
 d = bus_feat["distance_to_bus"].replace([np.inf, -np.inf], np.nan).dropna()
 if len(d) >= 2 and d.max() > d.min():
     n_bins = freedman_diaconis_bin_count(d.to_numpy(), max_bins=10)
     _, dist_edges = pd.qcut(d, q=n_bins, retbins=True, duplicates="drop")
-    dist_labels = [f"{int(dist_edges[i])}-{int(dist_edges[i+1])}m" for i in range(len(dist_edges) - 1)]
+    dist_labels = [f"{dist_edges[i]:.1f}-{dist_edges[i+1]:.1f}m" for i in range(len(dist_edges)-1)]
     bus_feat["distance_to_bus_range"] = pd.cut(
         bus_feat["distance_to_bus"], bins=dist_edges, labels=dist_labels, include_lowest=True
     )
