@@ -432,7 +432,7 @@ if wx_cols:
 # -----------------------------------------------
 
 os.makedirs(os.path.dirname(WEATHER_CSV), exist_ok=True)
-allw.to_csv(WEATHER_CSV, index=False, encoding="utf-8-sig", lineterminator="\n")
+allw.to_csv(WEATHER_CSV, index=False, encoding="utf-8", lineterminator="\n")
 print(f"💾 Weather kaydedildi: {WEATHER_CSV} — {len(allw)} satır, {allw['date'].min()} → {allw['date'].max()}")
 
 # Bellek içi cache
