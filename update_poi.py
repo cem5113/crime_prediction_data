@@ -346,13 +346,16 @@ def build_poi_clean_with_geoid(blocks_path: str, poi_geojson_path: str) -> pd.Da
         geom_id_to_geoid = {id(g): geoid for g, geoid in zip(geoms, blocks["GEOID"])}
         geoid_list = []
         for pt in gdf.geometry.values:
-        try:
-            cands = tree.query(pt, predicate="contains")
-        except TypeError:
-            # eski shapely: predicate desteklemeyebilir
-            cands = [g for g in tree.query(pt) if g.contains(pt)]
+            try:
+                cands = tree.query(pt, predicate="contains")
+            except TypeError:
+                # eski shapely: predicate desteklemeyebilir
+                cands = [g for g in tree.query(pt) if g.contains(pt)]
+        
             geoid_list.append(geom_id_to_geoid[id(cands[0])] if cands else None)
-        joined = gdf.copy();  joined["GEOID"] = geoid_list
+        
+        joined = gdf.copy()
+        joined["GEOID"] = geoid_list
 
     keep = [c for c in ["id","lat","lon","poi_category","poi_subcategory","poi_name","GEOID"] if c in joined.columns]
     
