@@ -278,8 +278,12 @@ def _extract_cat_sub_name(tags: dict):
     return None, None, name
 
 def _normalize_geoid(series: pd.Series, target_len: int = 11) -> pd.Series:
-    s = series.astype(str).str.extract(r"(\d+)")[0]
-    return s.str[:target_len].str.zfill(target_len)
+    # NaN -> "" ve sadece rakamları al
+    s = pd.Series(series).astype(str).str.extract(r"(\d+)", expand=False).fillna("")
+    s = s.str[:target_len].str.zfill(target_len)
+    # boş kalanlar gerçek NA olsun (zfill ile "000...0" olmasın)
+    s = s.mask(s.eq("0" * target_len))
+    return s
 
 def _make_dynamic_labels(series: pd.Series, bin_count=5):
     vals = pd.to_numeric(series, errors="coerce").dropna().values
@@ -342,18 +346,31 @@ def build_poi_clean_with_geoid(blocks_path: str, poi_geojson_path: str) -> pd.Da
         geom_id_to_geoid = {id(g): geoid for g, geoid in zip(geoms, blocks["GEOID"])}
         geoid_list = []
         for pt in gdf.geometry.values:
+        try:
             cands = tree.query(pt, predicate="contains")
+        except TypeError:
+            # eski shapely: predicate desteklemeyebilir
+            cands = [g for g in tree.query(pt) if g.contains(pt)]
             geoid_list.append(geom_id_to_geoid[id(cands[0])] if cands else None)
         joined = gdf.copy();  joined["GEOID"] = geoid_list
 
     keep = [c for c in ["id","lat","lon","poi_category","poi_subcategory","poi_name","GEOID"] if c in joined.columns]
+    
     df = joined[keep].copy()
     if "id" not in df.columns:
         df["id"] = np.arange(len(df))
-    df = df.dropna(subset=["lat","lon"])
+    
+    df = df.dropna(subset=["lat","lon"]).copy()
     df["GEOID"] = _normalize_geoid(df["GEOID"], 11)
-
+    
+    # ✅ GEOID eşlenemeyen POI’leri dışarı al (aksi halde "0...0" / NaN kirletir)
+    before_n = len(df)
+    df = df.dropna(subset=["GEOID"]).copy()
+    if len(df) != before_n:
+        print(f"⚠️ GEOID eşlenemeyen POI drop: {before_n - len(df)} / {before_n}")
+    
     _safe_save_csv(df, POI_CLEAN_CSV)
+    
     print(f"✅ Kaydedildi: {POI_CLEAN_CSV}  |  Satır: {len(df):,}")
     try: print(df.head(5).to_string(index=False))
     except: pass
@@ -430,7 +447,7 @@ def build_geoid_level_poi_features(df_poi: pd.DataFrame, poi_risk: dict) -> pd.D
       - range etiketleri
     """
     dfp = df_poi.copy()
-    dfp["GEOID"] = _normalize_geoid(dfp.get("GEOID"), 11)
+    dfp["GEOID"] = _normalize_geoid(dfp["GEOID"], 11) if "GEOID" in dfp.columns else pd.NA
 
     # risk skoru kolonunu hazırla
     sub = dfp.get("poi_subcategory", "").astype(str)
@@ -478,17 +495,18 @@ def enrich_crime_by_geoid(df_crime: pd.DataFrame, geoid_poi: pd.DataFrame) -> pd
     if _overlap:
         print(f"🧹 POI merge overlap bulundu, geoid_poi'den düşürüldü: {sorted(_overlap)}")
         geoid_poi = geoid_poi.drop(columns=list(_overlap), errors="ignore")
-    out = out.merge(
-        geoid_poi,
-        on="GEOID",
-        how="left"
-    ).fillna({
+    out = out.merge(geoid_poi, on="GEOID", how="left").fillna({
         "poi_total_count": 0,
         "poi_risk_score": 0.0,
         "poi_dominant_type": "No_POI",
         "poi_total_count_range": "Q1 (0-0)",
         "poi_risk_score_range":  "Q1 (0-0)"
     })
+    
+    # ✅ tip garantisi
+    out["poi_total_count"] = pd.to_numeric(out["poi_total_count"], errors="coerce").fillna(0).astype(int)
+    out["poi_risk_score"]  = pd.to_numeric(out["poi_risk_score"],  errors="coerce").fillna(0.0).astype(float)
+    out["poi_dominant_type"] = out["poi_dominant_type"].astype(str)
     log_delta(before, out.shape, "CRIME ⨯ POI (GEOID-merge)")
     return out
 
