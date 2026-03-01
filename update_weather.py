@@ -193,12 +193,15 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
     if to_drop:
         crime = crime.drop(columns=to_drop, errors="ignore")
     out = crime.merge(w, left_on="_date_", right_on="date", how="left")
-
-    # 'date' çifti oluştuysa: weather tarafındaki 'date' kolonu redundant; drop et
-    # (crime'ın orijinal 'date' kolonu durur)
+    
+    # 🧪 WEATHER coverage (merge başarısı) — en azından tavg/tmax üzerinden ölç
+    cov_tavg = out["tavg"].notna().mean() if "tavg" in out.columns else 0.0
+    cov_tmax = out["tmax"].notna().mean() if "tmax" in out.columns else 0.0
+    print(f"🧪 WX coverage: tavg={cov_tavg:.3%} | tmax={cov_tmax:.3%}")
+    
     out.drop(columns=["date", "date_x", "date_y"], errors="ignore", inplace=True)
     out.drop(columns=["_date_"], errors="ignore", inplace=True)
-
+    
     print(f"🔗 CRIME ⨯ WEATHER (date-merge): {before[0]}×{before[1]} → {out.shape[0]}×{out.shape[1]} (Δr={out.shape[0]-before[0]}, Δc={out.shape[1]-before[1]})")
 
     # NaN raporu (özellikle yeni weather kolonları için)
@@ -370,13 +373,17 @@ def get_weather_df() -> pd.DataFrame:
     global _WEATHER_LATEST
     if _WEATHER_LATEST is not None:
         return _WEATHER_LATEST
+
     if os.path.exists(WEATHER_CSV):
         try:
             df = pd.read_csv(WEATHER_CSV, low_memory=False)
-            return normalize_weather_columns(df)
+            _WEATHER_LATEST = normalize_weather_columns(df)  # ✅ cache set
+            return _WEATHER_LATEST
         except Exception:
             pass
-    return pd.DataFrame(columns=["date","tavg","tmin","tmax","prcp","temp_range","is_rainy","is_hot_day"])
+
+    _WEATHER_LATEST = pd.DataFrame(columns=["date","tavg","tmin","tmax","prcp","temp_range","is_rainy","is_hot_day"])
+    return _WEATHER_LATEST
 
 # =====================================================================================
 # WEATHER GÜNCELLE (MERGE/08 YOK)
@@ -402,6 +409,9 @@ allw = allw[(allw["date"] >= win_start) & (allw["date"] <= win_end)].copy()
 
 # ✅ NEW: eksik günleri doldur
 allw = fill_missing_prev_year_same_week(allw)
+
+cov = allw["tavg"].notna().mean() if "tavg" in allw.columns else 0.0
+print(f"🧪 WX table coverage (tavg notna): {cov:.3%}")
 
 # Kaydet (local)
 nan_counts = allw.isna().sum()
