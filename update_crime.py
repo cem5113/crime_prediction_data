@@ -325,7 +325,41 @@ print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
 
 if not missing_dates:
     print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
-    
+
+print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
+
+if not missing_dates:
+    print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
+
+# ============================================================
+# ✅ BLOK: Census blocks geojson yükle (GEOID eşlemesi için)
+#   - df_new GEOID join'inden ÖNCE tanımlı olmalı
+# ============================================================
+gdf_blocks = None
+if os.path.exists(blocks_path):
+    try:
+        gdf_blocks = gpd.read_file(blocks_path)
+        # GEOID normalize
+        if "GEOID" in gdf_blocks.columns:
+            gdf_blocks["GEOID"] = (
+                gdf_blocks["GEOID"].astype(str)
+                .str.extract(r"(\d+)")[0]
+                .str[:DEFAULT_GEOID_LEN]
+            )
+        else:
+            print(f"⚠️ blocks dosyasında 'GEOID' kolonu yok: {blocks_path}")
+            gdf_blocks = None
+
+        # CRS garanti (join öncesi)
+        if gdf_blocks is not None:
+            gdf_blocks = (gdf_blocks.set_crs("EPSG:4326") if gdf_blocks.crs is None else gdf_blocks.to_crs("EPSG:4326"))
+            log_shape(gdf_blocks, "BLOCKS geojson")
+    except Exception as e:
+        print(f"⚠️ Blok dosyası okunamadı ({blocks_path}): {e}. GEOID eşlemesi atlanacak.")
+        gdf_blocks = None
+else:
+    print(f"ℹ️ {blocks_path} bulunamadı; GEOID eşlemesi atlanacak.")
+
 def _try_small_crime_request(params):
     p = dict(params); p["$limit"] = 1; p["$offset"] = 0
     r = requests.get(CRIME_API_URL, headers=headers, params=p, timeout=60)
