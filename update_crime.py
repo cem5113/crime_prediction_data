@@ -56,9 +56,12 @@ BULK_RANGE          = os.getenv("SFCRIME_BULK_RANGE", "1").lower() in ("1","true
 save_dir   = "."
 blocks_path = os.path.join(save_dir, "sf_census_blocks.geojson")
 
-# ---- CACHE/Y-only çıkış ----
-Y_CSV_NAME = os.getenv("Y_CSV_NAME", "sf_crime_y.csv")
-y_csv_path = os.path.join(save_dir, Y_CSV_NAME)
+# ---- OUTPUTS ----
+EVENT_CSV_NAME = os.getenv("EVENT_CSV_NAME", "sf_crime_x.csv")
+PANEL_CSV_NAME = os.getenv("PANEL_CSV_NAME", "sf_crime_y.csv")
+
+event_csv_path = os.path.join(save_dir, EVENT_CSV_NAME)
+panel_csv_path = os.path.join(save_dir, PANEL_CSV_NAME)
 
 # ---- GitHub Actions artifact (sf_crime_y.csv) ayarları ----
 GITHUB_REPO = os.getenv("GITHUB_REPO", "cem5113/crime_prediction_data")   # owner/repo
@@ -616,8 +619,8 @@ try:
 except Exception:
     pass
 
-print(f"🧾 Y output hedefi: {y_csv_path}")
-print("\n🧩 [QC] sf_crime_y (df_all) güncel özet")
+print(f"🧾 EVENT output hedefi: {event_csv_path}")
+print("\n🧩 [QC] sf_crime_x (df_all) güncel özet")
 print(f"🧮 Shape: {df_all.shape[0]} satır × {df_all.shape[1]} sütun")
 
 nan_counts = df_all.isna().sum().sort_values(ascending=False)
@@ -700,9 +703,65 @@ if "GEOID_std" in df_all.columns:
 print("\n🧾 [QC] category_std top-10:")
 print(df_all["category_std"].value_counts(dropna=False).head(10))
 
-event_out = Path(y_csv_path)  # default sf_crime_y.csv
+event_out = Path(event_csv_path) 
 safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
+
+# ============================================================
+# ✅ PANEL (GRID) ÜRET — sf_crime_y.csv
+#   - unit: GEOID × date × hour_range (3-hour)
+#   - Y_label: o slotta en az 1 event varsa 1, yoksa 0
+# ============================================================
+
+# 1) Event’ten slot anahtarları
+panel_evt = df_all.copy()
+panel_evt["date"] = pd.to_datetime(panel_evt["date"], errors="coerce").dt.date
+
+eh = pd.to_numeric(panel_evt["event_hour"], errors="coerce").fillna(0).astype(int) % 24
+start = (eh // 3) * 3
+panel_evt["hour_range"] = start.map(lambda s: f"{int(s):02d}-{int(min(s+3,24)):02d}")
+
+# 2) Slot bazında Y_label
+slot_y = (
+    panel_evt.dropna(subset=["GEOID","date","hour_range"])
+             .groupby(["GEOID","date","hour_range"], as_index=False, observed=True)
+             .size()
+             .rename(columns={"size":"y_count"})
+)
+slot_y["Y_label"] = (slot_y["y_count"] > 0).astype("int8")
+slot_y = slot_y.drop(columns=["y_count"])
+
+# 3) FULL GRID = tüm GEOID × tüm date × 8 hour_range
+all_geoids = (
+    panel_evt["GEOID"].dropna().astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    .dropna().unique()
+)
+
+dmin = panel_evt["date"].min()
+dmax = panel_evt["date"].max()
+all_dates = pd.date_range(dmin, dmax, freq="D").date
+hour_ranges = [f"{h:02d}-{h+3:02d}" for h in range(0,24,3)]
+
+grid = pd.MultiIndex.from_product(
+    [all_geoids, all_dates, hour_ranges],
+    names=["GEOID","date","hour_range"]
+).to_frame(index=False)
+
+panel = grid.merge(slot_y, on=["GEOID","date","hour_range"], how="left")
+panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
+
+# (opsiyonel ama downstream için çok iyi) takvim flag’leri
+panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
+panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
+panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
+
+season_map = {12:"Winter",1:"Winter",2:"Winter",3:"Spring",4:"Spring",5:"Spring",6:"Summer",7:"Summer",8:"Summer",9:"Fall",10:"Fall",11:"Fall"}
+panel["season"] = panel["month"].map(season_map).astype("category")
+
+# 4) Yaz
+print(f"🧾 PANEL output hedefi: {panel_csv_path}")
+safe_save(panel, panel_csv_path)
+print(f"💾 Panel (sf_crime_y) yazıldı → {panel_csv_path} | rows={len(panel):,}")
 
 try:
     _tmp = pd.read_csv(event_out, dtype={"GEOID": str}, low_memory=False)
@@ -723,16 +782,20 @@ except Exception as e:
 try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
 
-    # Artifact / çıktı klasörüne her zaman koy (workflow upload-artifact için)
-    shutil.copy2(event_out, "crime_prediction_data/sf_crime_y.csv")
+    # Artifact çıktıları (ikisi de)
+    shutil.copy2(event_out, f"crime_prediction_data/{Path(event_csv_path).name}")
+    shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
+    print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.csv")
 
-    # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI)
+    # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI) — DİKKAT:
+    # Eğer bunu açarsan, HANGİSİNİ base sayacağını seçmelisin.
+    # Ben güvenli tarafta kalıp paneli/base olarak ezmeyi önermiyorum.
     if WRITE_BASE_TO_REPO:
-        shutil.copy2(event_out, "crime_prediction_data/sf_crime.csv")
-        shutil.copy2(event_out, "sf_crime.csv")
-        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv güncellendi (repo workspace).")
+        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime.csv")
+        shutil.copy2(panel_csv_path, "sf_crime.csv")
+        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv panel ile güncellendi (repo workspace).")
     else:
-        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece sf_crime_y artifact çıktı).")
+        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece artifact yazıldı).")
 
 except Exception as e:
     print("Kopya uyarısı:", e)
