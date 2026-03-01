@@ -977,24 +977,25 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
             ${{ env.CRIME_DATA_DIR }}/week.parquet
 
-      - name: Upload week.csv & sf_crime_09.csv to Google Drive (OAuth via token)
+      - name: Upload week.csv & sf_crime_09.parquet to MyDrive/crime_inputs (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GDRIVE_FOLDER: ${{ env.GDRIVE_FOLDER }}
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Files check:"
           ls -lah "${CRIME_DATA_DIR}/week.csv"
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.csv"
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet"
 
           # rclone indir/kur (runner içine)
-          curl -fsSL https://rclone.org/install.sh | sudo bash
+          if ! command -v rclone >/dev/null; then
+            curl -fsSL https://rclone.org/install.sh | sudo bash
+          fi
 
-          # OAuth token ile remote config oluştur (client_id/secret boş -> rclone default)
+          # OAuth token ile remote config oluştur
           mkdir -p ~/.config/rclone
           cat > ~/.config/rclone/rclone.conf <<EOF
           [gdrive]
@@ -1005,20 +1006,16 @@ jobs:
           echo "Remote test:"
           rclone lsd gdrive: || true
 
-          # Hedef klasör yolu
-          DEST="gdrive:${GDRIVE_FOLDER}"
+          # ✅ MyDrive/crime_inputs hedefi
+          DEST="gdrive:crime_inputs"
 
-          # Önce hedefte eski dosyaları sil (varsa)
-          rclone deletefile "${DEST}/week.csv" || true
-          rclone deletefile "${DEST}/sf_crime_09.csv" || true
+          # ✅ Overwrite: copyto hedefte varsa üstüne yazar (delete gerekmez)
+          rclone copyto "${CRIME_DATA_DIR}/week.csv"            "${DEST}/week.csv"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet"
 
-          # Sonra yenisini yükle
-          rclone copyto "${CRIME_DATA_DIR}/week.csv"       "${DEST}/week.csv"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.csv" "${DEST}/sf_crime_09.csv"
-
-          rclone copyto "${CRIME_DATA_DIR}/week.parquet"        "${DEST}/week.parquet"        || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet" || true
+          # (opsiyonel) week.parquet de istiyorsan kalsın; istemiyorsan sil
+          rclone copyto "${CRIME_DATA_DIR}/week.parquet"        "${DEST}/week.parquet" || true
 
           echo "✅ Upload OK → ${DEST}"
-          rclone ls "${DEST}" | tail -n 20 || true
+          rclone ls "${DEST}" | tail -n 30 || true
 
