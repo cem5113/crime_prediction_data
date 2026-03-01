@@ -26,7 +26,7 @@ concurrency:
   group: full-pipeline-${{ github.ref }}
   cancel-in-progress: true
 env:
-  CRIME_DATA_DIR: ${{ github.workspace }}
+  CRIME_DATA_DIR: ${{ github.workspace }}/crime_prediction_data
   GEOID_LEN: "11"
   ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
   DEMOG_WHITELIST: ${{ vars.DEMOG_WHITELIST || '' }}
@@ -408,7 +408,7 @@ jobs:
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          FORCE_BUS_REFRESH: ${{ steps.gate.outputs.is_friday }}
+          FORCE_BUS_REFRESH: ${{ steps.gate.outputs.is_thursday }}
         run: |
           set -euo pipefail
           echo "🚌 BUS STEP"
@@ -417,7 +417,7 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}" || true
       
           python -u update_bus.py
-
+          
       - name: 06) Tren (BART) → sf_crime_05.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
