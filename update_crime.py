@@ -278,9 +278,26 @@ log_shape(df_old, "CRIME mevcut (df_old)")
 log_date_range(df_old, "date", "Suç (mevcut)")
 latest_date = df_old["date"].max()
 
-date_range = pd.date_range(start=latest_date + timedelta(days=1), end=today)
+# ✅ 1–2 gün gecikmeyi otomatik çöz: API’dan gerçek latest_available al
+api_latest = get_latest_available_date()  # bunu üstte tanımlamış olmalısın
+if api_latest:
+    latest_available = api_latest
+    print(f"🛰️ API latest available date: {latest_available}")
+else:
+    latest_available = today - timedelta(days=int(os.getenv("PUBLISH_LAG_FALLBACK_DAYS", "2")))
+    print(f"⚠️ API latest alınamadı → fallback latest_available: {latest_available}")
+
+# ✅ end=today değil, end=latest_available
+date_range = pd.date_range(start=latest_date + timedelta(days=1), end=latest_available)
 missing_dates = [d.date() for d in date_range]
-print(f"\U0001F4C6 Eksik tarihler: {len(missing_dates)}")
+
+# ✅ GUARD (Base zaten API'nın en son yayınladığı tarihteyse)
+if latest_date >= latest_available:
+    missing_dates = []
+    print(f"ℹ️ Base zaten güncel görünüyor: latest_date={latest_date} ≥ latest_available={latest_available}")
+
+print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
+
 if not missing_dates:
     print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
 
@@ -547,7 +564,7 @@ if raw_new is not None and not raw_new.empty:
         if "GEOID" not in df_new.columns:
             df_new["GEOID"] = np.nan
 else:
-    df_new = pd.DataFrame()
+    df_new = pd.DataFrame(columns=df_old.columns)
 
 log_shape(df_new, "CRIME yeni (indirilen)")
 log_date_range(df_new, "date", "Suç (yeni)")
