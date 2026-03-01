@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
+from datetime import datetime
+import requests
 
 # LOG/YARDIMCI
 def log_shape(df: pd.DataFrame, label: str):
@@ -149,22 +151,68 @@ if "GEOID" not in df.columns:
     raise KeyError("❌ Suç verisinde 'GEOID' kolonu yok.")
 df["GEOID"] = normalize_geoid(df["GEOID"], target_len=11)
 
-lat_pref = find_col(df.columns, ["centroid_lat", "latitude", "lat", "y"])
-lon_pref = find_col(df.columns, ["centroid_lon", "longitude", "lon", "x"])
+# ------------------------------------------------------------
+# ✅ FIX: sf_crime_06 panelinde lat/lon yok → tract_centroids_sf.csv ile tamamla
+# ------------------------------------------------------------
+CENTROID_CANDIDATES = [
+    str(in_dir / "tract_centroids_sf.csv"),
+    str(Path(CRIME_DATA_DIR) / "tract_centroids_sf.csv") if CRIME_DATA_DIR else "",
+    str(here("tract_centroids_sf.csv")),
+    str(here("crime_prediction_data", "tract_centroids_sf.csv")),
+]
+CENTROID_CANDIDATES = [p for p in CENTROID_CANDIDATES if p]
+
+def pick_existing(paths):
+    for p in paths:
+        if p and Path(p).expanduser().resolve().exists():
+            return str(Path(p).expanduser().resolve())
+    return None
+
+cent_path = pick_existing(CENTROID_CANDIDATES)
+if cent_path:
+    print(f"🧭 centroid kaynağı bulundu: {cent_path}")
+    cent = pd.read_csv(cent_path, low_memory=False, dtype={"GEOID": str})
+
+    # olası kolon adlarını yakala
+    c_lat = find_col(cent.columns, ["centroid_lat","lat","latitude","y"])
+    c_lon = find_col(cent.columns, ["centroid_lon","lon","longitude","x"])
+    if ("GEOID" in cent.columns) and (c_lat is not None) and (c_lon is not None):
+        cent["GEOID"] = normalize_geoid(cent["GEOID"], target_len=11)
+        cent = cent[["GEOID", c_lat, c_lon]].rename(columns={c_lat:"centroid_lat", c_lon:"centroid_lon"})
+        cent["centroid_lat"] = pd.to_numeric(cent["centroid_lat"], errors="coerce")
+        cent["centroid_lon"] = pd.to_numeric(cent["centroid_lon"], errors="coerce")
+        cent = cent.dropna(subset=["GEOID","centroid_lat","centroid_lon"]).drop_duplicates("GEOID")
+
+        # df’de centroid yoksa merge et
+        if ("centroid_lat" not in df.columns) or ("centroid_lon" not in df.columns):
+            _b = df.shape
+            df = df.merge(cent, on="GEOID", how="left")
+            log_delta(_b, df.shape, "CRIME ⨯ tract_centroids_sf")
+    else:
+        print("⚠️ tract_centroids_sf.csv bulundu ama GEOID/lat/lon kolonları okunamadı.")
+else:
+    print("⚠️ tract_centroids_sf.csv bulunamadı. centroid üretimi için başka kaynak gerekir.")
+    
+lat_pref = find_col(df.columns, ["centroid_lat"])
+lon_pref = find_col(df.columns, ["centroid_lon"])
 if lat_pref is None or lon_pref is None:
-    raise KeyError("❌ 'latitude/longitude' veya 'centroid_lat/centroid_lon' benzeri kolonlar bulunamadı.")
+    lat_pref = find_col(df.columns, ["latitude", "lat", "y"])
+    lon_pref = find_col(df.columns, ["longitude", "lon", "x"])
+
+if lat_pref is None or lon_pref is None:
+    raise KeyError("❌ centroid_lat/centroid_lon veya latitude/longitude bulunamadı. (tract_centroids_sf.csv merge edilmemiş olabilir)")
 
 lat_tmp = pd.to_numeric(df[lat_pref], errors="coerce")
 lon_tmp = pd.to_numeric(df[lon_pref], errors="coerce")
 
-tmp = df.loc[lat_tmp.notna() & lon_tmp.notna(), ["GEOID"]].copy()
-tmp["centroid_lat"] = lat_tmp[lat_tmp.notna() & lon_tmp.notna()].astype(float).values
-tmp["centroid_lon"] = lon_tmp[lat_tmp.notna() & lon_tmp.notna()].astype(float).values
-
 geo = (
-    tmp.groupby("GEOID", as_index=False)[["centroid_lat", "centroid_lon"]]
-       .mean()
+    df.assign(_lat=lat_tmp, _lon=lon_tmp)
+      .loc[lambda x: x["_lat"].notna() & x["_lon"].notna(), ["GEOID", "_lat", "_lon"]]
+      .rename(columns={"_lat": "centroid_lat", "_lon": "centroid_lon"})
+      .groupby("GEOID", as_index=False)[["centroid_lat", "centroid_lon"]]
+      .mean()
 )
+
 log_shape(geo, "GEOID centroid (hazır)")
 
 # -----------------------------------------------------------------------------
@@ -212,7 +260,7 @@ else:
                 "osm_id": el.get("id"),
                 "osm_type": el.get("type"),
                 "source": "OpenStreetMap/Overpass",
-                "data_as_of": dt.datetime.utcnow().strftime("%Y-%m-%d"),
+                "data_as_of": datetime.utcnow().strftime("%Y-%m-%d"),
             })
         return pd.DataFrame(rows)
 
