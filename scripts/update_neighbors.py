@@ -137,6 +137,7 @@ def main():
 
     # tarih alanı
     dcol = _pick_col(df.columns, "date", "datetime", "time")
+    
     if not dcol:
         raise RuntimeError("Tarih kolonu bulunamadı (date/datetime/time)")
 
