@@ -347,7 +347,18 @@ if blocks_ok and not stops.empty:
         gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks[["geometry", "GEOID"]], how="left", predicate="within")
     except Exception as e:
         print(f"⚠️ sjoin(within) başarısız ({e}). sjoin_nearest(max_distance=5 m) deneniyor…")
-        gdf_joined = gpd.sjoin_nearest(gdf_stops, gdf_blocks[["geometry", "GEOID"]], how="left", max_distance=5)
+
+        gdf_stops_m  = gdf_stops.to_crs(epsg=3857)
+        gdf_blocks_m = gdf_blocks[["geometry", "GEOID"]].to_crs(epsg=3857)
+        
+        gdf_joined_m = gpd.sjoin_nearest(
+            gdf_stops_m,
+            gdf_blocks_m,
+            how="left",
+            max_distance=50
+        )
+
+        gdf_joined = gdf_joined_m.to_crs(epsg=4326)
 
     gdf_joined = gdf_joined.drop(columns=["index_right"], errors="ignore")
     gdf_joined["GEOID"] = normalize_geoid(gdf_joined["GEOID"], DEFAULT_GEOID_LEN)
@@ -377,6 +388,10 @@ if blocks_ok:
     gdf_blocks_3857["cy"] = gdf_blocks_3857.geometry.centroid.y
     blocks_xy = np.vstack([gdf_blocks_3857["cx"].values, gdf_blocks_3857["cy"].values]).T
 
+    bad = gdf_blocks_3857["cx"].isna() | gdf_blocks_3857["cy"].isna()
+    if bad.any():
+        print(f"⚠️ {bad.sum()} blok centroid NaN (geometry sorunu). Mesafe bu GEOID'lerde NaN kalacak.")
+    
     tmp_pts = train_stops_geo.dropna(subset=["stop_lat", "stop_lon"]).copy()
     gdf_train_xy = gpd.GeoDataFrame(
         tmp_pts[["stop_lat", "stop_lon"]].copy(),
@@ -412,6 +427,9 @@ geo_metrics["GEOID"] = normalize_geoid(geo_metrics["GEOID"], DEFAULT_GEOID_LEN)
 geo_metrics = geo_metrics.sort_values("GEOID").drop_duplicates("GEOID", keep="first")
 assert geo_metrics["GEOID"].is_unique, "TRAIN: GEOID eşsiz değil!"
 log_shape(geo_metrics, "GEOID-bazlı metrikler (ham)")
+
+cov = geo_metrics["distance_to_train"].notna().mean() if "distance_to_train" in geo_metrics.columns else 0.0
+print(f"🧪 TRAIN mesafe coverage: {cov:.3%}")
 
 # Binleme
 dist = pd.to_numeric(geo_metrics["distance_to_train"], errors="coerce").replace([np.inf, -np.inf], np.nan)
