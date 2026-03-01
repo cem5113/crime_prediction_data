@@ -260,65 +260,7 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
 
 # Başla: veri yükle & eksik günler
 
-today = datetime.now(SF_TZ).date()
-
-base_path = ensure_base_csv_remote_first()
-if base_path is None:
-    raise SystemExit(1)
-
-print(f"📦 Base path seçildi: {base_path}")
-df_old = read_existing_crime_csv(base_path)
-if df_old is None:
-    raise SystemExit(1)
-
-if "date" not in df_old.columns:
-    raise SystemExit("❌ Base veri içinde 'date' kolonu yok.")
-
-log_shape(df_old, "CRIME mevcut (df_old)")
-log_date_range(df_old, "date", "Suç (mevcut)")
-latest_date = df_old["date"].max()
-
-# ✅ 1–2 gün gecikmeyi otomatik çöz: API’dan gerçek latest_available al
-api_latest = get_latest_available_date()  # bunu üstte tanımlamış olmalısın
-if api_latest:
-    latest_available = api_latest
-    print(f"🛰️ API latest available date: {latest_available}")
-else:
-    latest_available = today - timedelta(days=int(os.getenv("PUBLISH_LAG_FALLBACK_DAYS", "2")))
-    print(f"⚠️ API latest alınamadı → fallback latest_available: {latest_available}")
-
-# ✅ end=today değil, end=latest_available
-date_range = pd.date_range(start=latest_date + timedelta(days=1), end=latest_available)
-missing_dates = [d.date() for d in date_range]
-
-# ✅ GUARD (Base zaten API'nın en son yayınladığı tarihteyse)
-if latest_date >= latest_available:
-    missing_dates = []
-    print(f"ℹ️ Base zaten güncel görünüyor: latest_date={latest_date} ≥ latest_available={latest_available}")
-
-print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
-
-if not missing_dates:
-    print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
-
-# Blok geojson
-gdf_blocks = None
-if os.path.exists(blocks_path):
-    try:
-        gdf_blocks = gpd.read_file(blocks_path)
-        gdf_blocks["GEOID"] = gdf_blocks["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
-        if "GEOID" in df_old.columns:
-            df_old["GEOID"] = df_old["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
-        log_shape(gdf_blocks, "BLOCKS geojson")
-    except Exception as e:
-        print(f"\u26A0\ufe0f Blok dosyası okunamadı ({blocks_path}): {e}. GEOID eşlemesi atlanacak.")
-        gdf_blocks = None
-else:
-    print(f"ℹ️ {blocks_path} bulunamadı; GEOID eşlemesi atlanacak.")
-
-
 # API çekme (gün/gün veya aralık)
-
 headers = {"X-App-Token": SFCRIME_APP_TOKEN} if SFCRIME_APP_TOKEN else {}
 
 def get_latest_available_date() -> datetime.date | None:
@@ -340,6 +282,49 @@ def get_latest_available_date() -> datetime.date | None:
         except Exception:
             continue
     return None
+
+# Başla: veri yükle & eksik günler
+
+today = datetime.now(SF_TZ).date()
+
+base_path = ensure_base_csv_remote_first()
+if base_path is None:
+    raise SystemExit(1)
+
+print(f"📦 Base path seçildi: {base_path}")
+df_old = read_existing_crime_csv(base_path)
+if df_old is None:
+    raise SystemExit(1)
+
+if "date" not in df_old.columns:
+    raise SystemExit("❌ Base veri içinde 'date' kolonu yok.")
+
+log_shape(df_old, "CRIME mevcut (df_old)")
+log_date_range(df_old, "date", "Suç (mevcut)")
+latest_date = df_old["date"].max()
+
+# ✅ 1–2 gün gecikmeyi otomatik çöz: API’dan gerçek latest_available al
+api_latest = get_latest_available_date()
+if api_latest:
+    latest_available = api_latest
+    print(f"🛰️ API latest available date: {latest_available}")
+else:
+    latest_available = today - timedelta(days=int(os.getenv("PUBLISH_LAG_FALLBACK_DAYS", "2")))
+    print(f"⚠️ API latest alınamadı → fallback latest_available: {latest_available}")
+
+# ✅ end=today değil, end=latest_available
+date_range = pd.date_range(start=latest_date + timedelta(days=1), end=latest_available)
+missing_dates = [d.date() for d in date_range]
+
+# ✅ GUARD
+if latest_date >= latest_available:
+    missing_dates = []
+    print(f"ℹ️ Base zaten güncel görünüyor: latest_date={latest_date} ≥ latest_available={latest_available}")
+
+print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
+
+if not missing_dates:
+    print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
     
 def _try_small_crime_request(params):
     p = dict(params); p["$limit"] = 1; p["$offset"] = 0
