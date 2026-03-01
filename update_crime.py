@@ -189,26 +189,26 @@ def download_url_to_file(url: str, dst: Path, timeout: int = 120) -> bool:
 def ensure_base_csv_remote_first() -> Path | None:
     """
     Sıra:
-      1) GitHub Actions artifact içinden sf_crime_y.csv (GH_TOKEN şart)
-      2) releases/latest/download/sf_crime.csv (CRIME_BASE_URL)
-      3) repo/local: sf_crime_y.csv veya sf_crime.csv
-
-    Remote dosyalar RUNNER_TEMP (/tmp) altına yazılır → run-bitince zaten kalıcı repo dosyasını ezmez.
+      1) Artifact içinden EVENT base: sf_crime_x.csv (tercih) / sf_crime.csv (event)
+      2) Release latest: sf_crime.csv (event)
+      3) Local fallback: önce event-level, en son panel-level
     """
-    # 1) Artifact → TMP_BASE_Y
+    # 1) Artifact → (event-level tercih)
     if PREFER_REMOTE_BASE and GH_TOKEN:
         blob = fetch_file_from_latest_artifact(
-            pick_names=[Y_CSV_NAME, "sf_crime_y.csv", "sf_crime.csv"],
+            pick_names=[EVENT_CSV_NAME, "sf_crime_x.csv", "sf_crime.csv", PANEL_CSV_NAME, "sf_crime_y.csv"],
             artifact_name=ARTIFACT_NAME,
         )
         if blob and _is_valid_csv_bytes(blob):
-            _write_bytes_atomic(TMP_BASE_Y, blob)
-            print(f"📦 Base (artifact) indirildi → {TMP_BASE_Y}")
-            return TMP_BASE_Y
+            # indirilen dosyayı event mi panel mi ayırmadan TMP'ye yazıyoruz
+            # (okuyunca schema-guard karar verecek)
+            _write_bytes_atomic(TMP_BASE_CSV, blob)
+            print(f"📦 Base (artifact) indirildi → {TMP_BASE_CSV}")
+            return TMP_BASE_CSV
         else:
             print("⚠️ Artifact base bulunamadı/uygun değil (boş/küçük/LFS).")
 
-    # 2) Release latest → TMP_BASE_CSV veya TMP_BASE_GZ
+    # 2) Release latest → TMP_BASE_CSV veya TMP_BASE_GZ (aynı)
     if PREFER_REMOTE_BASE and CRIME_BASE_URL:
         dst = TMP_BASE_GZ if CRIME_BASE_URL.endswith(".gz") else TMP_BASE_CSV
         ok = download_url_to_file(CRIME_BASE_URL, dst)
@@ -218,13 +218,15 @@ def ensure_base_csv_remote_first() -> Path | None:
         else:
             print(f"⚠️ Release latest base indirilemedi/uygun değil: {CRIME_BASE_URL}")
 
-    # 3) Local fallback (repo içi)
+    # 3) Local fallback (repo içi) — ✅ event-level önce, panel-level en son
     local_candidates = [
+        Path("crime_prediction_data/sf_crime_x.csv"),
+        Path("sf_crime_x.csv"),
+        Path("crime_prediction_data/sf_crime.csv"),
+        Path("sf_crime.csv"),
+        Path("crime_prediction_data/sf_crime.csv.gz"),
         Path("crime_prediction_data/sf_crime_y.csv"),
         Path("sf_crime_y.csv"),
-        Path("sf_crime.csv"),
-        Path("crime_prediction_data/sf_crime.csv"),
-        Path("crime_prediction_data/sf_crime.csv.gz"),
     ]
     for p in local_candidates:
         if _is_valid_local_csv(p):
@@ -302,6 +304,26 @@ else:
 
 headers = {"X-App-Token": SFCRIME_APP_TOKEN} if SFCRIME_APP_TOKEN else {}
 
+def get_latest_available_date() -> datetime.date | None:
+    """
+    Socrata üzerinden dataset'te gerçekten var olan en son tarihi bulur.
+    1–2 gün gecikme / tatil boşluğu gibi durumlarda anchor'ı otomatik doğru kurar.
+    """
+    dt_candidates = ["incident_datetime", "incident_date", "datetime"]
+    for dt_col in dt_candidates:
+        try:
+            params = {"$select": f"max({dt_col}) as max_dt", "$limit": 1}
+            r = requests.get(CRIME_API_URL, headers=headers, params=params, timeout=60)
+            r.raise_for_status()
+            js = r.json()
+            if js and js[0].get("max_dt"):
+                dt = pd.to_datetime(js[0]["max_dt"], errors="coerce")
+                if pd.notna(dt):
+                    return dt.date()
+        except Exception:
+            continue
+    return None
+    
 def _try_small_crime_request(params):
     p = dict(params); p["$limit"] = 1; p["$offset"] = 0
     r = requests.get(CRIME_API_URL, headers=headers, params=p, timeout=60)
