@@ -828,12 +828,14 @@ jobs:
           set -euo pipefail
       
           # script seç (ÖNCE)
-          if [ -f scripts/make_neighbors.py ]; then
+          if [ -f scripts/update_neighbors.py ]; then
+            PY="scripts/update_neighbors.py"
+          elif [ -f scripts/make_neighbors.py ]; then
             PY="scripts/make_neighbors.py"
           elif [ -f make_neighbors.py ]; then
             PY="make_neighbors.py"
           else
-            echo "⚠️ make_neighbors.py bulunamadı, adım atlanıyor."
+            echo "⚠️ neighbors script bulunamadı, adım atlanıyor."
             exit 0
           fi
       
@@ -851,6 +853,39 @@ jobs:
       
           echo "✅ Neighbors çıktı: ${CRIME_DATA_DIR}/sf_crime_09.csv"
           head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
+
+          # =========================
+          # 🧪 Coverage report (nei_7d_sum / neighbor_crime_7d vb.)
+          # =========================
+          python - <<'PY'
+          import os, pandas as pd
+
+          D = os.environ["CRIME_DATA_DIR"]
+          p = os.path.join(D, "sf_crime_09.csv")
+          df = pd.read_csv(p, low_memory=False)
+
+          # kolon adayları (senin script: nei_7d_sum)
+          cands = [
+              "nei_7d_sum",
+              "neighbor_crime_7d",
+              "neighbor_crime_3d",
+              "neighbor_crime_1d",
+          ]
+          found = [c for c in cands if c in df.columns]
+
+          print("🧪 NEIGHBOR coverage check")
+          print("rows:", len(df), "cols:", df.shape[1])
+
+          if not found:
+              print("⚠️ Neighbor kolonu bulunamadı. Adaylar:", cands)
+          else:
+              for c in found:
+                  s = pd.to_numeric(df[c], errors="coerce")
+                  cov = float(s.notna().mean())
+                  nan = int(s.isna().sum())
+                  zero = int((s.fillna(0) == 0).sum())
+                  print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
+          PY
 
       - name: sf_crime_09.csv → parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
