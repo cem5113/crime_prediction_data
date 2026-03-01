@@ -718,7 +718,7 @@ if _neighbor_roll is not None:
     _enriched = _enriched.merge(_neighbor_roll[["GEOID","date"] + [f"911_neighbors_last{W}d" for W in (3, 7)]], on=["GEOID","date"], how="left")
 
 KEEP_911_COLS = [
-    "GEOID", "date", "hr_key",
+    "GEOID", "date", "hour_range", "hr_key",
     "911_request_count_hour_range",
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
@@ -752,9 +752,18 @@ dropped = before - len(crime)
 if dropped:
     log(f"🧹 crime grid: GEOID boş/bozuk satır atıldı: {dropped}")
 
-if "event_hour" not in crime.columns:
-    raise ValueError("❌ Suç grid dosyasında 'event_hour' yok.")
-crime["hr_key"] = ((pd.to_numeric(crime["event_hour"], errors="coerce").fillna(0).astype(int)) // 3) * 3
+# Panel yeni kontrat: hour_range var (tercih), yoksa event_hour fallback
+if "hour_range" in crime.columns:
+    hr_pat2 = re.compile(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
+    def _hr_key_from_hr_range(x):
+        m = hr_pat2.match(str(x))
+        return int(m.group(1)) % 24 if m else None
+    crime["hr_key"] = crime["hour_range"].apply(_hr_key_from_hr_range).astype("Int16")
+elif "event_hour" in crime.columns:
+    crime["hr_key"] = ((pd.to_numeric(crime["event_hour"], errors="coerce").fillna(0).astype(int)) // 3) * 3
+    crime["hr_key"] = crime["hr_key"].astype("Int16")
+else:
+    raise ValueError("❌ Suç grid dosyasında ne 'hour_range' ne de 'event_hour' var.")
 
 has_date_col = ("date" in crime.columns) or ("datetime" in crime.columns)
 if has_date_col:
@@ -763,7 +772,7 @@ if has_date_col:
     else:
         crime["date"] = to_date(crime["date"])
 
-    keys = ["GEOID", "date", "hr_key"]
+    keys = ["GEOID", "date", "hour_range"]
 
     # --- _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları düşür ---
     overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
@@ -771,11 +780,21 @@ if has_date_col:
         log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
         _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
 
+    # overlap temizliği (key dışı)
+    overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
+    if overlap:
+        log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
+        _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
+    
     merged = crime.merge(_enriched, on=keys, how="left")
-    log("🔗 Join modu: DATE-BASED (GEOID, date, hr_key)")
+    log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
 
 else:
     cal_keys = ["GEOID","hr_key","day_of_week","season"]
+    # hour_range varsa hr_key üret (yoksa zaten yukarıda üretiyoruz)
+    if "hr_key" not in crime.columns or crime["hr_key"].isna().all():
+        if "hour_range" in crime.columns:
+            crime["hr_key"] = crime["hour_range"].apply(_hr_key_from_range).astype("Int16")
     agg_cols = [
         "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
@@ -804,9 +823,17 @@ fill_cols = [
     "911_geo_hr_last3d","911_geo_hr_last7d",
 ] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
 
+FLOAT_COLS = set([
+    "hr_cnt","daily_cnt",
+    "911_geo_last3d","911_geo_last7d",
+    "911_geo_hr_last3d","911_geo_hr_last7d",
+    "911_neighbors_last3d","911_neighbors_last7d",
+])
+
 for c in fill_cols:
     if c in merged.columns:
-        merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype("int32")
+        v = pd.to_numeric(merged[c], errors="coerce").fillna(0)
+        merged[c] = v.astype("float32") if c in FLOAT_COLS else v.astype("int32")
 
 try:
     nan_counts = merged.isna().sum()
