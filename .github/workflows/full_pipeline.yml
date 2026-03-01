@@ -828,33 +828,29 @@ jobs:
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          NEIGHBOR_INPUT_CSV:  ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
+          NEIGHBOR_OUTPUT_CSV: ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
+          NEIGHBOR_FILE:       ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+          GEOID_LEN: "11"
         shell: bash
         run: |
           set -euo pipefail
-      
-          # script seç (ÖNCE)
           if [ -f scripts/update_neighbors.py ]; then
             PY="scripts/update_neighbors.py"
-          elif [ -f scripts/make_neighbors.py ]; then
-            PY="scripts/make_neighbors.py"
-          elif [ -f make_neighbors.py ]; then
-            PY="make_neighbors.py"
           else
-            echo "⚠️ neighbors script bulunamadı, adım atlanıyor."
-            exit 0
+            echo "⚠️ scripts/update_neighbors.py yok"; exit 2
           fi
-      
+
           echo "✅ Using PY=$PY"
           ls -lah "$PY" || true
-      
-          # input kontrol
+
           [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
-      
-          # çalıştır
+          [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
+
           python -u "$PY"
-      
-          # output kontrol
+
           [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
+          head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
       
           echo "✅ Neighbors çıktı: ${CRIME_DATA_DIR}/sf_crime_09.csv"
           head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
