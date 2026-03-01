@@ -90,9 +90,19 @@ def main():
     # Orijinal tabloya merge → 09
     df_out = df.copy()
     df_out["date"] = pd.to_datetime(df_out["date"]).dt.date
-    df_out = df_out.merge(d4, left_on=["GEOID", "date"], right_on=["GEOID", "date"], how="left")
+    
+    df_out = df_out.merge(d4, on=["GEOID", "date"], how="left")
+    
+    # 🧪 NEIGHBOR coverage (fillna ÖNCESİ gerçek coverage)
+    cov_nei = df_out["nei_7d_sum"].notna().mean() if "nei_7d_sum" in df_out.columns else 0.0
+    print(f"🧪 NEI 7d coverage (nei_7d_sum notna): {cov_nei:.3%}")
+    
     df_out["nei_7d_sum"] = pd.to_numeric(df_out["nei_7d_sum"], errors="coerce").fillna(0.0)
-
+    
+    # (opsiyonel) fillna sonrası kontrol: artık hep dolu olmalı
+    # cov2 = df_out["nei_7d_sum"].notna().mean()
+    # print(f"🧪 NEI 7d after fillna notna: {cov2:.3%}")
+    
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     df_out.to_csv(OUT_CSV, index=False)
     print(f"✅ 08 → 09 tamam: {IN_CSV.name} → {OUT_CSV.name} (rows={len(df_out)})")
