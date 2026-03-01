@@ -188,26 +188,26 @@ def main():
     )
     d2 = d2.rename(columns={"geoid": "GEOID"})  # ana GEOID
 
-    # ✅ FIX-3: date NaT olanları at (asfreq patlamasın)
-    d2 = d2.dropna(subset=["date"])
+    d2 = d2.groupby(["GEOID", "date"], as_index=False)["crime_count"].sum()
 
+    # ✅ 1) Önce GEOID×date seviyesinde komşu crime_count'u tekilleştir (duplicate date kalkar)
+    d2 = d2.groupby(["GEOID", "date"], as_index=False)["crime_count"].sum()
+    
+    # Rolling + lag
     d2 = d2.sort_values(["GEOID", "date"])
-
+    
     def _agg(x: pd.DataFrame) -> pd.DataFrame:
-        x = x.dropna(subset=["date"])
-        if x.empty:
-            # hiç gün yoksa boş dön
-            return x.assign(nei_7d_sum=0).reset_index(drop=True)
-
+        # x artık GEOID×date tekil => asfreq güvenli
         x = x.set_index("date").asfreq("D", fill_value=0)
         roll = x["crime_count"].rolling(WINDOW_DAYS).sum().shift(LAG_DAYS)
         x["nei_7d_sum"] = roll
         return x.reset_index()
-
-    d3 = (d2.groupby("GEOID", group_keys=False).apply(_agg).reset_index(drop=True))
-    d3["date"] = pd.to_datetime(d3["date"], errors="coerce").dt.date
-
-    d4 = (d3.groupby(["GEOID", "date"], as_index=False)["nei_7d_sum"].sum())
+    
+    d3 = d2.groupby("GEOID", group_keys=False).apply(_agg).reset_index(drop=True)
+    d3["date"] = d3["date"].dt.date
+    
+    # ✅ Artık d3 zaten GEOID×date tekil; sum'a bile gerek yok ama kalsın güvenli:
+    d4 = d3.groupby(["GEOID", "date"], as_index=False)["nei_7d_sum"].sum()
     d4["nei_7d_sum"] = pd.to_numeric(d4["nei_7d_sum"], errors="coerce").fillna(0.0)
 
     # Orijinal tabloya merge → 09
