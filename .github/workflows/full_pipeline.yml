@@ -1012,8 +1012,7 @@ jobs:
           # ✅ Overwrite: copyto hedefte varsa üstüne yazar (delete gerekmez)
           rclone copyto "${CRIME_DATA_DIR}/week.csv"            "${DEST}/week.csv"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet"
-
-          # (opsiyonel) week.parquet de istiyorsan kalsın; istemiyorsan sil
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_x.csv"
           rclone copyto "${CRIME_DATA_DIR}/week.parquet"        "${DEST}/week.parquet" || true
 
           echo "✅ Upload OK → ${DEST}"
