@@ -58,7 +58,8 @@ def five_year_window(today: date):
         start = today.replace(year=today.year - 5)
     except ValueError:
         start = today - timedelta(days=365*5 + 2)
-    return (start + timedelta(days=1), today)
+    # ✅ +1 kaldırıldı → tam 5 yıl aralığı
+    return (start, today)
 
 today = date.today()
 win_start, win_end = five_year_window(today)
@@ -186,25 +187,19 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
     w = w[wcols].copy()
 
     # merge
-    
     before = crime.shape
     weather_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
     to_drop = [c for c in weather_cols if c in crime.columns]
     if to_drop:
         crime = crime.drop(columns=to_drop, errors="ignore")
-    out = crime.merge(w, left_on="_date_", right_on="date", how="left")
-    
-    # 🧪 WEATHER coverage (merge başarısı) — en azından tavg/tmax üzerinden ölç
+    w2 = w.rename(columns={"date": "wx_date"}).copy()
+    out = crime.merge(w2, left_on="_date_", right_on="wx_date", how="left")
     cov_tavg = out["tavg"].notna().mean() if "tavg" in out.columns else 0.0
     cov_tmax = out["tmax"].notna().mean() if "tmax" in out.columns else 0.0
     print(f"🧪 WX coverage: tavg={cov_tavg:.3%} | tmax={cov_tmax:.3%}")
-    
-    out.drop(columns=["date", "date_x", "date_y"], errors="ignore", inplace=True)
+    out.drop(columns=["wx_date"], errors="ignore", inplace=True)
     out.drop(columns=["_date_"], errors="ignore", inplace=True)
-    
     print(f"🔗 CRIME ⨯ WEATHER (date-merge): {before[0]}×{before[1]} → {out.shape[0]}×{out.shape[1]} (Δr={out.shape[0]-before[0]}, Δc={out.shape[1]-before[1]})")
-
-    # NaN raporu (özellikle yeni weather kolonları için)
     new_weather_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
     new_weather_cols = [c for c in new_weather_cols if c in out.columns]
     nan_report(out, "sf_crime_08 yazılmadan önce (tüm kolonlar)")
@@ -279,7 +274,22 @@ def fill_missing_prev_year_same_week(allw: pd.DataFrame) -> pd.DataFrame:
     # rapor
     remain = out[num_cols].isna().sum().sum()
     if remain > 0:
-        print(f"⚠️ Prev-year same-week ile doldurulamayan NaN sayısı: {remain}")
+        print(f"⚠️ Prev-year same-week ile doldurulamayan NaN sayısı: {remain} → ffill/bfill uygulanacak")
+
+        # ✅ Edge fallback: ilk/son günlerde prev-year yoksa ileri/geri doldur
+        out = out.sort_values("date")
+        out[num_cols] = out[num_cols].ffill().bfill()
+
+        # türevleri yeniden hesapla (ffill/bfill sonrası)
+        out["temp_range"] = (out["tmax"] - out["tmin"]).astype(float)
+        out["is_rainy"]   = (pd.to_numeric(out["prcp"], errors="coerce").fillna(0) > 0).astype("Int64")
+        out["is_hot_day"] = (pd.to_numeric(out["tmax"], errors="coerce") > HOT_DAY_THRESHOLD_C).astype("Int64")
+
+        remain2 = out[num_cols].isna().sum().sum()
+        if remain2 > 0:
+            print(f"⚠️ ffill/bfill sonrası bile NaN kaldı: {remain2}")
+        else:
+            print("✅ Edge fallback sonrası NaN kalmadı.")
     else:
         print("✅ Tüm eksikler prev-year same-week ile dolduruldu.")
 
@@ -445,6 +455,46 @@ if Github is not None and (PROBE_GH_STATUS or UPLOAD_WEATHER_TO_GH):
 if ENRICH_CRIME_WITH_WEATHER:
     try:
         enrich_crime_with_weather(CRIME_IN_PATH, CRIME_OUT_PATH, _WEATHER_LATEST)
+
+        # ✅ (Ek güvenlik) sf_crime_08 içindeki weather kolonlarında NaN kalmasın
+        #    - Normalde allw artık full + ffill/bfill olduğu için NaN kalmamalı
+        #    - Yine de edge-case (date parse / dosya bozuk) durumunda düzeltir
+        if os.path.exists(CRIME_OUT_PATH):
+            try:
+                _df08 = pd.read_csv(CRIME_OUT_PATH, low_memory=False)
+
+                _wx_cols = ["tavg", "tmin", "tmax", "prcp", "temp_range", "is_rainy", "is_hot_day"]
+                _wx_cols = [c for c in _wx_cols if c in _df08.columns]
+
+                if _wx_cols:
+                    _miss = int(_df08[_wx_cols].isna().any(axis=1).sum())
+                    if _miss > 0:
+                        print(f"⚠️ sf_crime_08 weather NaN satırı: {_miss} → ffill/bfill uygulanıyor", flush=True)
+                        _df08 = _df08.sort_values(["GEOID", "date"] if ("GEOID" in _df08.columns and "date" in _df08.columns) else None)
+                        for c in _wx_cols:
+                            _df08[c] = pd.to_numeric(_df08[c], errors="coerce")
+                            _df08[c] = _df08[c].ffill().bfill()
+
+                        # is_rainy / is_hot_day tekrar Int64
+                        for c in ["is_rainy", "is_hot_day"]:
+                            if c in _df08.columns:
+                                _df08[c] = pd.to_numeric(_df08[c], errors="coerce").fillna(0).astype("Int64")
+
+                        _df08.to_csv(CRIME_OUT_PATH, index=False)
+                        print("✅ sf_crime_08 weather NaN düzeltildi ve yeniden yazıldı.", flush=True)
+
+            except Exception as e:
+                print(f"⚠️ sf_crime_08 NaN-fix adımı atlandı: {e}", flush=True)
+
+        # ✅ sf_crime_08.csv ilk 5 satır (log için)
+        if os.path.exists(CRIME_OUT_PATH):
+            print("sf_crime_08.csv — ilk 5 satır:", flush=True)
+            try:
+                _h = pd.read_csv(CRIME_OUT_PATH, nrows=5, low_memory=False)
+                print(_h.to_csv(index=False), flush=True)
+            except Exception as e:
+                print(f"⚠️ sf_crime_08 head okunamadı: {e}", flush=True)
+
     except Exception as e:
         print(f"❌ Crime-weather merge hatası: {e}")
 else:
