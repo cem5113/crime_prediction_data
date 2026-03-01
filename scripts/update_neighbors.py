@@ -132,7 +132,8 @@ def main():
     if not NEIGHBOR_FILE.exists():
         raise FileNotFoundError(f"Komşuluk dosyası bulunamadı: {NEIGHBOR_FILE}")
 
-    df = pd.read_csv(IN_CSV, low_memory=False, dtype=str)
+    df = pd.read_csv(IN_CSV, low_memory=False, dtype=str, encoding="utf-8-sig")
+    df.columns = df.columns.str.replace("\ufeff", "", regex=False)
 
     # tarih alanı
     dcol = _pick_col(df.columns, "date", "datetime", "time")
