@@ -576,61 +576,6 @@ jobs:
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_weather_5years.csv" "${CRIME_DATA_DIR}/sf_weather_5years.parquet" || true
 
-      - name: Convert sf_crime_x.csv to sf_crime_x.parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-        run: |
-          set -euo pipefail
-          
-          # Convert sf_crime_x.csv to sf_crime_x.parquet
-          echo "✅ Converting sf_crime_x.csv to sf_crime_x.parquet"
-          csv_path="${CRIME_DATA_DIR}/sf_crime_x.csv"
-          parquet_path="${CRIME_DATA_DIR}/sf_crime_x.parquet"
-
-      - name: Install rclone
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-      
-      - name: Setup rclone configuration
-        run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [gdrive]
-          type = drive
-          token = ${RCLONE_GDRIVE_TOKEN}
-          EOF
-      
-      - name: Upload sf_crime_x.parquet to MyDrive/crime_inputs
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "✅ Uploading sf_crime_x.parquet to Google Drive"
-          DEST="gdrive:crime_inputs"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet" "${DEST}/sf_crime_x.parquet"
-          echo "✅ Upload completed for sf_crime_x.parquet to ${DEST}"
-          rclone ls "${DEST}" | tail -n 30 || true
-    
-          # Check if the CSV exists
-          if [ -f "$csv_path" ]; then
-            # Convert to parquet using Python and pandas
-            python - <<'PY'
-            import pandas as pd
-            csv_file = '$csv_path'
-            parquet_file = '$parquet_path'
-            df = pd.read_csv(csv_file)
-            df.to_parquet(parquet_file, index=False, engine="pyarrow")
-            print(f"✅ Converted {csv_file} to {parquet_file}")
-            PY
-          else
-            echo "❌ $csv_path not found, skipping conversion."
-            exit 1
-          fi
-          
       - name: Normalize grid outputs (put under CRIME_DATA_DIR)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
@@ -970,6 +915,33 @@ jobs:
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
+      - name: Convert sf_crime_09.csv to sf_crime_09.parquet
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pandas as pd
+          D = os.environ["CRIME_DATA_DIR"]
+          csvp = os.path.join(D, "sf_crime_09.csv")
+          parp = os.path.join(D, "sf_crime_09.parquet")
+      
+          df = pd.read_csv(csvp, low_memory=False)
+      
+          # GEOID kritikse stringe sabitle (opsiyonel ama öneririm)
+          if "GEOID" in df.columns:
+              df["GEOID"] = (
+                  df["GEOID"].astype(str)
+                    .str.replace(r"\D", "", regex=True)
+                    .str.zfill(11)
+              )
+      
+          df.to_parquet(parp, index=False, engine="pyarrow")
+          print("✅ wrote", parp, "shape=", df.shape)
+          PY
+          ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
+
       - name: 10.9) Quick verify (after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
@@ -1032,7 +1004,7 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
             ${{ env.CRIME_DATA_DIR }}/week.parquet
 
-      - name: Upload week.csv & outputs to MyDrive/crime_inputs (overwrite)
+      - name:  (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
@@ -1046,10 +1018,29 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet"
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.csv" || true
       
+          # Convert sf_crime_x.csv to sf_crime_x.parquet
+          echo "Converting sf_crime_x.csv to sf_crime_x.parquet"
+          python - <<'PY'
+          import os
+          import pandas as pd
+      
+          # Define file paths
+          CRIME_DATA_DIR = os.environ["CRIME_DATA_DIR"]
+          csv_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.csv")
+          parquet_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.parquet")
+      
+          # Read CSV and convert to Parquet
+          df = pd.read_csv(csv_file)
+          df.to_parquet(parquet_file, index=False, engine="pyarrow")
+          print(f"✅ Successfully converted {csv_file} to {parquet_file}")
+          PY
+      
+          # Install rclone if not already installed
           if ! command -v rclone >/dev/null; then
             curl -fsSL https://rclone.org/install.sh | sudo bash
           fi
       
+          # Set up rclone configuration
           mkdir -p ~/.config/rclone
           cat > ~/.config/rclone/rclone.conf <<EOF
           [gdrive]
@@ -1057,13 +1048,15 @@ jobs:
           token = ${RCLONE_GDRIVE_TOKEN}
           EOF
       
+          # Define destination directory on Google Drive
           DEST="gdrive:crime_inputs"
       
+          # Upload files to Google Drive
           rclone copyto "${CRIME_DATA_DIR}/week.csv"             "${DEST}/week.csv"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"  "${DEST}/sf_crime_09.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"       "${DEST}/sf_crime_x.csv" || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"   "${DEST}/sf_crime_x.parquet" || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet"         "${DEST}/week.parquet"  || true
       
           echo "✅ Upload OK → ${DEST}"
           rclone ls "${DEST}" | tail -n 30 || true
-
