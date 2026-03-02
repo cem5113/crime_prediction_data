@@ -1020,14 +1020,33 @@ jobs:
       
           # Convert sf_crime_x.csv to sf_crime_x.parquet
           echo "Converting sf_crime_x.csv to sf_crime_x.parquet"
+          
           python - <<'PY'
           import os
           import pandas as pd
-      
-          # Define file paths
+          
           CRIME_DATA_DIR = os.environ["CRIME_DATA_DIR"]
+          
           csv_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.csv")
           parquet_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.parquet")
+          
+          df_tmp = pd.read_csv(csv_file)
+          
+          # GEOID NORMALIZATION 
+          if "GEOID" in df_tmp.columns:
+              df_tmp["GEOID"] = (
+                  df_tmp["GEOID"]
+                      .astype("string")
+                      .str.replace(r"\.0$", "", regex=True)
+                      .str.zfill(11)
+              )
+          
+          df_tmp.to_parquet(parquet_file, index=False)
+          
+          print("Saved:", parquet_file)
+          print("GEOID length distribution:")
+          print(df_tmp["GEOID"].str.len().value_counts())
+          PY
       
           # Read CSV and convert to Parquet
           df = pd.read_csv(csv_file)
