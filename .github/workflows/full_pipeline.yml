@@ -999,9 +999,10 @@ jobs:
           csv_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.csv")
           parquet_file = os.path.join(CRIME_DATA_DIR, "sf_crime_x.parquet")
           
+          # Read the CSV file
           df_tmp = pd.read_csv(csv_file)
           
-          # GEOID NORMALIZATION 
+          # GEOID NORMALIZATION
           if "GEOID" in df_tmp.columns:
               df_tmp["GEOID"] = (
                   df_tmp["GEOID"]
@@ -1010,24 +1011,20 @@ jobs:
                       .str.zfill(11)
               )
           
+          # Save to Parquet
           df_tmp.to_parquet(parquet_file, index=False)
           
           print("Saved:", parquet_file)
           print("GEOID length distribution:")
           print(df_tmp["GEOID"].str.len().value_counts())
           PY
-      
-          # Read CSV and convert to Parquet
-          df = pd.read_csv(csv_file)
-          df.to_parquet(parquet_file, index=False, engine="pyarrow")
-          print(f"✅ Successfully converted {csv_file} to {parquet_file}")
-          PY
-      
+          
           # Install rclone if not already installed
           if ! command -v rclone >/dev/null; then
+            echo "rclone not found, installing..."
             curl -fsSL https://rclone.org/install.sh | sudo bash
           fi
-      
+          
           # Set up rclone configuration
           mkdir -p ~/.config/rclone
           cat > ~/.config/rclone/rclone.conf <<EOF
@@ -1035,16 +1032,17 @@ jobs:
           type = drive
           token = ${RCLONE_GDRIVE_TOKEN}
           EOF
-      
+          
           # Define destination directory on Google Drive
           DEST="gdrive:crime_inputs"
-      
+          
           # Upload files to Google Drive
+          echo "Uploading files to Google Drive..."
           rclone copyto "${CRIME_DATA_DIR}/week.csv"             "${DEST}/week.csv"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"  "${DEST}/sf_crime_09.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"       "${DEST}/sf_crime_x.csv" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"   "${DEST}/sf_crime_x.parquet" || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet"         "${DEST}/week.parquet"  || true
-      
-          echo "✅ Upload OK → ${DEST}"
+          
+          echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 30 || true
