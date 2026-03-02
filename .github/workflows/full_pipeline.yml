@@ -588,6 +588,10 @@ jobs:
           csv_path="${CRIME_DATA_DIR}/sf_crime_x.csv"
           parquet_path="${CRIME_DATA_DIR}/sf_crime_x.parquet"
 
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
       - name: Upload sf_crime_x.parquet to MyDrive/crime_inputs
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
@@ -620,7 +624,7 @@ jobs:
             echo "❌ $csv_path not found, skipping conversion."
             exit 1
           fi
-
+          
       - name: Normalize grid outputs (put under CRIME_DATA_DIR)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
