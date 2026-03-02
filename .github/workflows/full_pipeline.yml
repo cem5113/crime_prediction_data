@@ -888,33 +888,6 @@ jobs:
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
 
-      - name: sf_crime_09.csv → parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os, pandas as pd
-          D = os.environ["CRIME_DATA_DIR"]
-          csvp = os.path.join(D, "sf_crime_09.csv")
-          parp = os.path.join(D, "sf_crime_09.parquet")
-
-          df = pd.read_csv(csvp, low_memory=False)
-
-          # GEOID kritikse stringe sabitle (opsiyonel ama öneririm)
-          if "GEOID" in df.columns:
-              df["GEOID"] = (
-                  df["GEOID"].astype(str)
-                    .str.replace(r"\D", "", regex=True)
-                    .str.zfill(11)
-              )
-
-          df.to_parquet(parp, index=False, engine="pyarrow")
-          print("✅ wrote", parp, "shape=", df.shape)
-          PY
-          ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
-
       - name: Convert sf_crime_09.csv to sf_crime_09.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
@@ -923,25 +896,21 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import os, pandas as pd
-          D = os.environ["CRIME_DATA_DIR"]
-          csvp = os.path.join(D, "sf_crime_09.csv")
-          parp = os.path.join(D, "sf_crime_09.parquet")
-      
+          D = os.environ['CRIME_DATA_DIR']
+          csvp = os.path.join(D, 'sf_crime_09.csv')
+          parp = os.path.join(D, 'sf_crime_09.parquet')
+
           df = pd.read_csv(csvp, low_memory=False)
-      
+
           # GEOID kritikse stringe sabitle (opsiyonel ama öneririm)
-          if "GEOID" in df.columns:
-              df["GEOID"] = (
-                  df["GEOID"].astype(str)
-                    .str.replace(r"\D", "", regex=True)
-                    .str.zfill(11)
-              )
-      
-          df.to_parquet(parp, index=False, engine="pyarrow")
-          print("✅ wrote", parp, "shape=", df.shape)
+          if 'GEOID' in df.columns:
+              df['GEOID'] = df['GEOID'].astype(str).str.replace(r'\D', '', regex=True).str.zfill(11)
+
+          df.to_parquet(parp, index=False, engine='pyarrow')
+          print('✅ wrote', parp, 'shape=', df.shape)
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
-
+          
       - name: 10.9) Quick verify (after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
