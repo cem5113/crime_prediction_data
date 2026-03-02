@@ -591,7 +591,16 @@ jobs:
       - name: Install rclone
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
-
+      
+      - name: Setup rclone configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [gdrive]
+          type = drive
+          token = ${RCLONE_GDRIVE_TOKEN}
+          EOF
+      
       - name: Upload sf_crime_x.parquet to MyDrive/crime_inputs
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
@@ -600,12 +609,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
-          # Upload the converted parquet file to Google Drive
           echo "✅ Uploading sf_crime_x.parquet to Google Drive"
           DEST="gdrive:crime_inputs"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet" "${DEST}/sf_crime_x.parquet"
-          
           echo "✅ Upload completed for sf_crime_x.parquet to ${DEST}"
           rclone ls "${DEST}" | tail -n 30 || true
     
