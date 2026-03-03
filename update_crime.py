@@ -799,15 +799,21 @@ eh = pd.to_numeric(panel_evt["event_hour"], errors="coerce").fillna(0).astype(in
 start = (eh // 3) * 3
 panel_evt["hour_range"] = start.map(lambda s: f"{int(s):02d}-{int(min(s+3,24)):02d}")
 
-# 2) Slot bazında Y_label
+# 2) Slot bazında y_count + y_event/Y_label
 slot_y = (
     panel_evt.dropna(subset=["GEOID","date","hour_range"])
              .groupby(["GEOID","date","hour_range"], as_index=False, observed=True)
              .size()
-             .rename(columns={"size":"y_count"})
+             .rename(columns={"size": "y_count"})
 )
-slot_y["Y_label"] = (slot_y["y_count"] > 0).astype("int8")
-slot_y = slot_y.drop(columns=["y_count"])
+
+slot_y["y_count"] = pd.to_numeric(slot_y["y_count"], errors="coerce").fillna(0).astype("int16")
+
+# İstersen BLOK-0/BLOK-1 terminolojisiyle:
+slot_y["y_event"] = (slot_y["y_count"] > 0).astype("int8")
+
+# Geriye dönük uyumluluk (mevcut pipeline Y_label bekliyorsa):
+slot_y["Y_label"] = slot_y["y_event"].astype("int8")
 
 # 3) FULL GRID = tüm GEOID × tüm date × 8 hour_range
 all_geoids = (
@@ -826,9 +832,11 @@ grid = pd.MultiIndex.from_product(
 ).to_frame(index=False)
 
 panel = grid.merge(slot_y, on=["GEOID","date","hour_range"], how="left")
+
+panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
+panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
 panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
 
-# (opsiyonel ama downstream için çok iyi) takvim flag’leri
 panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
 panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
 panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
