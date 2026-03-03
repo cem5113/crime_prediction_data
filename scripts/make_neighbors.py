@@ -131,38 +131,39 @@ NEIGH_PATH = Path(
 GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 
 # ---------- core ----------
-def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataFrame:
+def neighbor_daily_features(
+    base: pd.DataFrame,
+    neigh: pd.DataFrame,
+    publish_lag_days: int = 2,
+) -> pd.DataFrame:
     """
-    base: GEOID×date×base_cnt (her GEOID-gün için olay sayısı)
+    base: GEOID×date×base_cnt (her GEOID-gün için olay sayısı)  ✅ base_cnt = gerçek olay sayısı olmalı
     neigh: geoid, neighbor
+
+    publish_lag_days:
+      - suçların sisteme düşme/yayımlanma gecikmesi (tipik 1–3 gün)
+      - D günü feature'ı, en fazla D-1-publish_lag_days gününe kadar bilinen olayları kullanır.
 
     Adımlar:
       - neighbors ⨯ base (neighbor→date→count)
       - geoid×date toplamla → neighbor_cnt_day
-      - geoid bazında tarihe göre sırala, shift(1) ve rolling(3,7):
-          neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d
+      - her geoid için günlük seri asfreq('D') ile tamamla
+      - leak-free + publish-lag’li shift ve rolling:
+          neighbor_crime_1d = shift(1+lag)
+          neighbor_crime_3d = shift(1+lag).rolling(3).sum()
+          neighbor_crime_7d = shift(1+lag).rolling(7).sum()
     """
+    # ---- normalize base ----
     b = base.copy()
     b["GEOID"]    = _norm_geoid(b["GEOID"], GEOID_LEN)
     b["date"]     = _as_date64(b["date"])
     b["base_cnt"] = pd.to_numeric(b["base_cnt"], errors="coerce").fillna(0).astype("int64")
+    b = b.dropna(subset=["GEOID", "date"])
 
-    # Tam tarih kapsaması: her GEOID için min→max arası tüm günler (eksikler 0)
-    full = []
-    for g, gdf in b.groupby("GEOID", dropna=False):
-        gdf = gdf.sort_values("date")
-        rng = pd.date_range(gdf["date"].min(), gdf["date"].max(), freq="D")
-        aux = pd.DataFrame({"GEOID": g, "date": rng})
-        aux = aux.merge(gdf[["date","base_cnt"]], on="date", how="left")
-        aux["base_cnt"] = aux["base_cnt"].fillna(0).astype("int64")
-        full.append(aux)
-
-    b2 = pd.concat(full, ignore_index=True)
-
-    # Komşuluk: geoid (src) → neighbor (dst)
+    # ---- komşuluk normalize ----
     nb = neigh.rename(columns={
-        _pick(neigh.columns, "geoid","src","source"): "geoid",
-        _pick(neigh.columns, "neighbor","dst","target"): "neighbor"
+        _pick(neigh.columns, "geoid", "src", "source"): "geoid",
+        _pick(neigh.columns, "neighbor", "dst", "target"): "neighbor"
     }).copy()
 
     if "geoid" not in nb.columns or "neighbor" not in nb.columns:
@@ -170,36 +171,50 @@ def neighbor_daily_features(base: pd.DataFrame, neigh: pd.DataFrame) -> pd.DataF
 
     nb["geoid"]    = _norm_geoid(nb["geoid"], GEOID_LEN)
     nb["neighbor"] = _norm_geoid(nb["neighbor"], GEOID_LEN)
-    nb = nb.dropna()
+    nb = nb.dropna(subset=["geoid", "neighbor"]).drop_duplicates()
 
-    # Komşu günlük sayıları: nb (geoid, neighbor) ⨯ base (neighbor, date, base_cnt)
-    nb_merge = nb.merge(b2.rename(columns={"GEOID":"neighbor"}), on="neighbor", how="left")
+    # ---- neighbor'ın base_cnt'sini ana geoid'e taşı ----
+    b_neighbor = b.rename(columns={"GEOID": "neighbor"})
+    nb_merge = nb.merge(b_neighbor, on="neighbor", how="left")
 
     day_sum = (
-        nb_merge.groupby(["geoid","date"], dropna=False)["base_cnt"]
+        nb_merge.groupby(["geoid", "date"], dropna=False)["base_cnt"]
                 .sum().reset_index(name="neighbor_cnt_day")
     )
 
-    # Rolling pencereler: geoid bazında tarih sırasıyla, dünü dahil (shift1)
-    day_sum = day_sum.sort_values(["geoid","date"])
-    day_sum["nb_last1d"] = day_sum.groupby("geoid")["neighbor_cnt_day"].shift(1).fillna(0)
+    # ---- GEOID bazında tam günlük seri + publish lag'li rolling (BUG-FIX) ----
+    shift_k = int(publish_lag_days) + 1  # leak-free (dünü) + yayın gecikmesi
 
-    for W in (3,7):
-        day_sum[f"nb_last{W}d"] = (
-            day_sum.groupby("geoid")["neighbor_cnt_day"]
-                   .shift(1)  # sızıntı yok, bugünü hariç tutuyoruz
-                   .rolling(W, min_periods=1).sum()
-        ).fillna(0)
+    def _per_geoid(gdf: pd.DataFrame) -> pd.DataFrame:
+        gdf = gdf.sort_values("date").set_index("date")
+        gdf = gdf.asfreq("D", fill_value=0)  # eksik günler 0
 
-    out = day_sum.rename(columns={
-        "geoid": "GEOID",
-        "nb_last1d": "neighbor_crime_1d",
-        "nb_last3d": "neighbor_crime_3d",
-        "nb_last7d": "neighbor_crime_7d",
-    })[["GEOID","date","neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]]
+        s = gdf["neighbor_cnt_day"].astype("int64")
 
-    out["date"] = _as_date64(out["date"])
-    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]:
+        gdf["neighbor_crime_1d"] = s.shift(shift_k).fillna(0).astype("int64")
+        gdf["neighbor_crime_3d"] = (
+            s.shift(shift_k).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
+        )
+        gdf["neighbor_crime_7d"] = (
+            s.shift(shift_k).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
+        )
+
+        return gdf.reset_index()
+
+    out = (
+        day_sum.groupby("geoid", group_keys=False)
+               .apply(_per_geoid)
+               .reset_index(drop=True)
+    )
+
+    out = out.rename(columns={"geoid": "GEOID"})[
+        ["GEOID", "date", "neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
+    ]
+
+    out["GEOID"] = _norm_geoid(out["GEOID"], GEOID_LEN)
+    out["date"]  = _as_date64(out["date"])
+
+    for c in ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("int64")
 
     return out
