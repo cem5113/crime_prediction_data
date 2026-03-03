@@ -124,6 +124,7 @@ BULK_RANGE      = os.getenv("SF911_BULK_RANGE", "1").lower() in ("1","true","yes
 IS_V3           = "/api/v3/views/" in SF911_API_URL
 V3_PAGE_LIMIT   = int(os.getenv("SF_V3_PAGE_LIMIT", "1000"))
 SF911_RECENT_HOURS = int(os.getenv("SF911_RECENT_HOURS", "6"))
+SF911_REINGEST_DAYS = int(os.getenv("SF911_REINGEST_DAYS", "14"))  
 
 # Release taban URL — `_y` ÖNCELİKLİ, sonra eski ada düş
 RAW_911_URL_ENV = os.getenv("RAW_911_URL", "").strip()
@@ -609,7 +610,10 @@ today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
 if base_max_date is None:
     fetch_start, fetch_end = today_sf, today_sf
 else:
-    fetch_start, fetch_end = base_max_date + timedelta(days=1), today_sf
+    fetch_start = base_max_date - timedelta(days=max(1, SF911_REINGEST_DAYS))
+    fetch_end   = today_sf
+    if fetch_start < five_years_ago:
+        fetch_start = five_years_ago
     if fetch_start > fetch_end:
         fetch_start = fetch_end
 log(f"🗓️ İndirme aralığı: {fetch_start} → {fetch_end} ({(fetch_end - fetch_start).days + 1} gün)")
