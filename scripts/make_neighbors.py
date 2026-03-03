@@ -1,3 +1,24 @@
+# ============================================================
+# ✅ enrich_with_neighbors_fr.py (FULL REVIZE v2.0 — PANEL-SAFE / LEAK-FREE / PUBLISH-LAG AWARE)
+#
+# Amaç:
+#   sf_crime_08.csv (panel) -> neighbor_crime_1d/3d/7d ekleyip sf_crime_09.csv üretmek
+#
+# Kritik düzeltmeler:
+#   ✅ PANEL-SAFE base_cnt: "tüm satırlar olay" YANLIŞTI -> artık y_count / crime_count / Y_label üzerinden
+#   ✅ Leak-free + publish lag: 1d/3d/7d = (d-1) ve ayrıca yayın gecikmesi (24–48h) -> shift_k = 1 + publish_lag_days
+#   ✅ Sadece komşu GEOID’lerin günlük olaylarını toplar (neighbor_cnt_day)
+#   ✅ Günlük seri asfreq('D') ile tamamlanır (eksik gün=0)
+#   ✅ Merge geri: GEOID×date anahtarıyla panelin tüm hour_range satırlarına yayılır
+#   ✅ Opsiyonel legacy alias: nei_7d_sum istersen neighbor_crime_7d ile doldurulur
+#   ✅ Kolon garanti: merge sonrası neighbor_crime_1d/3d/7d yoksa HARD FAIL
+#
+# Not:
+#   Senin istediğin "son suç tarihine göre 1d/3d/7d" mantığı publish_lag_days ile karşılanır:
+#     - suçlar 24–48 saat sonra yayımlanıyorsa publish_lag_days=2 (default)
+#     - D gününün feature'ı, en fazla D-1-2 = D-3 gününe kadar "bilinen" suçları kullanır
+# ============================================================
+
 from __future__ import annotations
 
 import os
@@ -27,7 +48,7 @@ def _safe_write_csv(df: pd.DataFrame, p: Path):
     # küçük downcast
     for c in df.select_dtypes(include=["float64"]).columns:
         df[c] = pd.to_numeric(df[c], downcast="float")
-    for c in df.select_dtypes(include=["int64","Int64"]).columns:
+    for c in df.select_dtypes(include=["int64", "Int64"]).columns:
         df[c] = pd.to_numeric(df[c], downcast="integer")
 
     tmp = p.with_suffix(p.suffix + ".tmp")
@@ -45,13 +66,13 @@ def _norm_geoid(s: pd.Series, L: int = 11) -> pd.Series:
 
 # --- tarih yardımcıları: HER ZAMAN datetime64[ns] (SF local day) ---
 def _as_date64(s: pd.Series) -> pd.Series:
-    # 1) mixed tz/naive olasılığına karşı her şeyi UTC olarak parse et (tek dtype garanti)
+    # 1) mixed tz/naive olasılığına karşı her şeyi UTC parse et
     dt = pd.to_datetime(s, errors="coerce", utc=True)
 
     # 2) SF gün anahtarı: UTC -> America/Los_Angeles
     dt = dt.dt.tz_convert("America/Los_Angeles")
 
-    # 3) Gün başına indir (00:00) ve tz bilgisini at (merge/groupby için temiz)
+    # 3) Gün başına indir (00:00) ve tz bilgisini at
     return dt.dt.normalize().dt.tz_localize(None)
 
 def _ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
@@ -62,8 +83,8 @@ def _ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
             cand = c
             break
 
-    if cand is None and {"year","month","day"}.issubset(d.columns):
-        d["date"] = _as_date64(pd.to_datetime(d[["year","month","day"]], errors="coerce"))
+    if cand is None and {"year", "month", "day"}.issubset(d.columns):
+        d["date"] = _as_date64(pd.to_datetime(d[["year", "month", "day"]], errors="coerce"))
     elif cand is not None:
         d["date"] = _as_date64(d[cand])
     else:
@@ -97,67 +118,89 @@ def _normalize_keys(df: pd.DataFrame, geoid_len: int = 11) -> pd.DataFrame:
     d = _ensure_date_col(d)
     return d
 
-def find_latest_sf_crime(base_dir: Path) -> Path:
-    files = sorted(base_dir.glob("sf_crime_*.csv"))
-    if not files:
-        raise FileNotFoundError(f"❌ sf_crime_*.csv bulunamadı: {base_dir}")
-
-    def _ver(p: Path):
-        m = re.search(r"sf_crime_(\d+)\.csv", p.name)
-        return int(m.group(1)) if m else -1
-
-    files.sort(key=_ver, reverse=True)
-    return files[0]
-
-def bump_version_name(p: Path) -> Path:
-    m = re.search(r"(sf_crime_)(\d+)(\.csv)", p.name)
-    if not m:
-        return p.with_name("sf_crime_01.csv")
-    prefix, num, suffix = m.groups()
-    new_num = int(num) + 1
-    return p.with_name(f"{prefix}{new_num:02d}{suffix}")
-
 # ---------- config ----------
 BASE_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
 
 FR_IN_ENV  = os.environ.get("sf_CRIME_IN",  "sf_crime_08.csv")
 FR_OUT_ENV = os.environ.get("sf_CRIME_OUT", "sf_crime_09.csv")
 
-# neighbors.csv için: env verilmemişse çalışma dizinindeki neighbors.csv
-NEIGH_PATH = Path(
-    os.environ.get("NEIGH_FILE", "neighbors.csv")
-)
-
+NEIGH_PATH = Path(os.environ.get("NEIGH_FILE", "neighbors.csv"))
 GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 
+# publish lag (24–48h) default: 2 gün
+PUBLISH_LAG_DAYS = int(os.environ.get("PUBLISH_LAG_DAYS", "2"))
+
+# legacy alias istersen: 1 -> nei_7d_sum = neighbor_crime_7d
+MAKE_LEGACY_NEI7 = os.environ.get("MAKE_LEGACY_NEI7", "0").lower() in ("1", "true", "yes", "on")
+
+
 # ---------- core ----------
+def _build_base_daily_counts(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    PANEL (GEOID×date×hour_range) içinden GEOID×date günlük gerçek olay sayısını üretir.
+    Öncelik:
+      1) y_count
+      2) crime_count
+      3) Y_label (0/1)
+    """
+    d = panel.copy()
+
+    # en iyi kolon hangisi?
+    if "y_count" in d.columns:
+        src = "y_count"
+        s = pd.to_numeric(d["y_count"], errors="coerce").fillna(0.0)
+    elif "crime_count" in d.columns:
+        src = "crime_count"
+        s = pd.to_numeric(d["crime_count"], errors="coerce").fillna(0.0)
+    elif "Y_label" in d.columns:
+        src = "Y_label"
+        s = pd.to_numeric(d["Y_label"], errors="coerce").fillna(0.0)
+    else:
+        raise RuntimeError("❌ base_cnt üretmek için y_count / crime_count / Y_label bulunamadı.")
+
+    d["_cnt_src_"] = s
+
+    base = (
+        d.groupby(["GEOID", "date"], dropna=False)["_cnt_src_"]
+         .sum()
+         .reset_index(name="base_cnt")
+    )
+
+    # int'e indir (negatif varsa 0'a kırp)
+    base["base_cnt"] = pd.to_numeric(base["base_cnt"], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
+
+    log(f"🧮 base_cnt üretildi (kaynak={src}) | rows={len(base):,} | base_cnt.sum={int(base['base_cnt'].sum()):,}")
+    return base
+
+
 def neighbor_daily_features(
     base: pd.DataFrame,
     neigh: pd.DataFrame,
     publish_lag_days: int = 2,
 ) -> pd.DataFrame:
     """
-    base: GEOID×date×base_cnt (her GEOID-gün için olay sayısı)  ✅ base_cnt = gerçek olay sayısı olmalı
+    base: GEOID×date×base_cnt (günlük gerçek olay sayısı)  ✅ base_cnt doğru olmalı
     neigh: geoid, neighbor
 
     publish_lag_days:
       - suçların sisteme düşme/yayımlanma gecikmesi (tipik 1–3 gün)
-      - D günü feature'ı, en fazla D-1-publish_lag_days gününe kadar bilinen olayları kullanır.
+      - D günü feature'ı: en fazla D-1-publish_lag_days gününe kadar bilinen olaylar
+        => shift_k = 1 + publish_lag_days
 
-    Adımlar:
-      - neighbors ⨯ base (neighbor→date→count)
-      - geoid×date toplamla → neighbor_cnt_day
-      - her geoid için günlük seri asfreq('D') ile tamamla
-      - leak-free + publish-lag’li shift ve rolling:
-          neighbor_crime_1d = shift(1+lag)
-          neighbor_crime_3d = shift(1+lag).rolling(3).sum()
-          neighbor_crime_7d = shift(1+lag).rolling(7).sum()
+    Çıktı:
+      GEOID×date:
+        neighbor_crime_1d
+        neighbor_crime_3d
+        neighbor_crime_7d
     """
     # ---- normalize base ----
     b = base.copy()
+    if "GEOID" not in b.columns or "date" not in b.columns or "base_cnt" not in b.columns:
+        raise RuntimeError("❌ base beklenen kolonlar: GEOID, date, base_cnt")
+
     b["GEOID"]    = _norm_geoid(b["GEOID"], GEOID_LEN)
     b["date"]     = _as_date64(b["date"])
-    b["base_cnt"] = pd.to_numeric(b["base_cnt"], errors="coerce").fillna(0).astype("int64")
+    b["base_cnt"] = pd.to_numeric(b["base_cnt"], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
     b = b.dropna(subset=["GEOID", "date"])
 
     # ---- komşuluk normalize ----
@@ -177,12 +220,15 @@ def neighbor_daily_features(
     b_neighbor = b.rename(columns={"GEOID": "neighbor"})
     nb_merge = nb.merge(b_neighbor, on="neighbor", how="left")
 
+    # neighbor tarafında base_cnt yoksa 0
+    nb_merge["base_cnt"] = pd.to_numeric(nb_merge["base_cnt"], errors="coerce").fillna(0).astype("int64")
+
     day_sum = (
         nb_merge.groupby(["geoid", "date"], dropna=False)["base_cnt"]
                 .sum().reset_index(name="neighbor_cnt_day")
     )
 
-    # ---- GEOID bazında tam günlük seri + publish lag'li rolling (BUG-FIX) ----
+    # ---- GEOID bazında tam günlük seri + publish lag'li rolling ----
     shift_k = int(publish_lag_days) + 1  # leak-free (dünü) + yayın gecikmesi
 
     def _per_geoid(gdf: pd.DataFrame) -> pd.DataFrame:
@@ -191,13 +237,10 @@ def neighbor_daily_features(
 
         s = gdf["neighbor_cnt_day"].astype("int64")
 
+        # D gününün feature'ı: en son "bilinen" gün = D-shift_k
         gdf["neighbor_crime_1d"] = s.shift(shift_k).fillna(0).astype("int64")
-        gdf["neighbor_crime_3d"] = (
-            s.shift(shift_k).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
-        )
-        gdf["neighbor_crime_7d"] = (
-            s.shift(shift_k).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
-        )
+        gdf["neighbor_crime_3d"] = s.shift(shift_k).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
+        gdf["neighbor_crime_7d"] = s.shift(shift_k).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
 
         return gdf.reset_index()
 
@@ -215,28 +258,28 @@ def neighbor_daily_features(
     out["date"]  = _as_date64(out["date"])
 
     for c in ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("int64")
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
 
     return out
 
+
 def main() -> int:
-    log("🚀 enrich_with_neighbors_fr.py (sf_crime_08 → sf_crime_09)")
-    
+    log("🚀 enrich_with_neighbors_fr.py (sf_crime_08 → sf_crime_09) — FULL REVIZE v2.0")
+
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # ---- input/output sf_crime ----
+
     fr_in = BASE_DIR / FR_IN_ENV if not Path(FR_IN_ENV).is_absolute() else Path(FR_IN_ENV)
     fr_out = BASE_DIR / FR_OUT_ENV if not Path(FR_OUT_ENV).is_absolute() else Path(FR_OUT_ENV)
-    
+
     log(f"📥 FR input : {fr_in}")
     log(f"📤 FR output: {fr_out}")
-    log(f"📂 NEIGH PATH: {NEIGH_PATH}")
-    
+    log(f"📂 NEIGH PATH: {NEIGH_PATH.resolve()}")
+    log(f"⏳ PUBLISH_LAG_DAYS={PUBLISH_LAG_DAYS}  (shift_k={PUBLISH_LAG_DAYS+1})")
+
     df_raw = _read_csv(fr_in)
     if df_raw.empty:
         raise RuntimeError("❌ Girdi CSV boş veya okunamadı.")
 
-    # Komşuluk dosyası
     if not NEIGH_PATH.exists():
         raise FileNotFoundError(f"❌ neighbors.csv bulunamadı: {NEIGH_PATH.resolve()}")
 
@@ -246,52 +289,67 @@ def main() -> int:
 
     # ---- normalize input ----
     df = _normalize_keys(df_raw, GEOID_LEN)
-    df = df.dropna(subset=["GEOID","date"])
+    df = df.dropna(subset=["GEOID", "date"])
     log(f"🧹 Normalize sonrası satır: {len(df):,}")
 
-    # ---- base_cnt: TÜM SATIRLAR OLAY KABUL, Y_label ÖNEMSİZ ----
-    df_events = df.copy()
-    log(f"🔍 Tüm satırlar olay olarak kabul edildi: {len(df_events):,}")
-
-    # GEOID×date için günlük olay sayısı (base_cnt)
-    base = (
-        df_events.groupby(["GEOID","date"], dropna=False)
-                 .size().reset_index(name="base_cnt")
-    )
-
-    log(f"🧮 base_cnt hazır: {len(base):,} satır (GEOID×date, tüm satırlardan)")
+    # ---- base_cnt: PANELDEN DOĞRU ÜRET ----
+    base = _build_base_daily_counts(df)
 
     # ---- neighbor features ----
-    feats = neighbor_daily_features(base, neigh)
+    feats = neighbor_daily_features(base, neigh, publish_lag_days=PUBLISH_LAG_DAYS)
     log(
-        f"✨ neighbor feats: {len(feats):,} satır (GEOID×date) — eklenecek kolonlar: "
+        f"✨ neighbor feats: {len(feats):,} satır (GEOID×date) — kolonlar: "
         f"[neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d]"
     )
 
-    # ---- merge back to original (her satıra) ----
+    # ---- merge back to panel (her hour_range satırına aynı günlük değerler yayılır) ----
     feats["GEOID"] = _norm_geoid(feats["GEOID"], GEOID_LEN)
     feats["date"]  = _as_date64(feats["date"])
 
     nb_cols = ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
     df = df.drop(columns=[c for c in nb_cols if c in df.columns], errors="ignore")
-    df_out = df.merge(feats, on=["GEOID","date"], how="left")
 
-    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]:
+    df_out = df.merge(feats, on=["GEOID", "date"], how="left")
+
+    # fill
+    for c in nb_cols:
         if c in df_out.columns:
-            df_out[c] = pd.to_numeric(df_out[c], errors="coerce").fillna(0).astype("int64")
+            df_out[c] = pd.to_numeric(df_out[c], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
+
+    # ---- legacy alias (opsiyonel) ----
+    if MAKE_LEGACY_NEI7:
+        if "nei_7d_sum" not in df_out.columns:
+            df_out["nei_7d_sum"] = df_out["neighbor_crime_7d"].astype("int64")
+            log("🧷 legacy: nei_7d_sum = neighbor_crime_7d eklendi.")
+        else:
+            # varsa güncellemek istersen:
+            # df_out["nei_7d_sum"] = df_out["neighbor_crime_7d"].astype("int64")
+            log("🧷 legacy: nei_7d_sum zaten var (dokunmadım).")
+
+    # ---- HARD GUARANTEE: kolonlar var mı? ----
+    missing = [c for c in nb_cols if c not in df_out.columns]
+    if missing:
+        raise RuntimeError(f"❌ Merge sonrası komşu kolonları yok: {missing}")
+
+    # ---- kalite kontrol: beklenen aralıklar ----
+    log("🔎 QC:")
+    log(f"  neighbor_crime_1d sum={int(df_out['neighbor_crime_1d'].sum()):,}")
+    log(f"  neighbor_crime_3d sum={int(df_out['neighbor_crime_3d'].sum()):,}")
+    log(f"  neighbor_crime_7d sum={int(df_out['neighbor_crime_7d'].sum()):,}")
 
     _safe_write_csv(df_out, fr_out)
 
     # Preview
     try:
-        cols = ["GEOID","date","neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]
+        cols = ["GEOID", "date"] + nb_cols
         log("— OUTPUT preview —")
-        log(df_out[cols].head(8).to_string(index=False))
+        log(df_out[cols].head(10).to_string(index=False))
     except Exception:
         pass
 
     log("✅ Tamam.")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
