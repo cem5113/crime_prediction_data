@@ -1,229 +1,223 @@
 #!/usr/bin/env python3
-# scripts/update_neighbors.py
+# =============================================================================
+# ✅ scripts/update_neighbors.py (FULL REVIZE v2.1 — PANEL-SAFE / LEAK-FREE / PUBLISH-LAG AWARE)
+#
+# Üretir:
+#   neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d  (GEOID×date)
+#   + panelin tüm hour_range satırlarına GEOID×date ile yayar
+# Opsiyonel:
+#   nei_7d_sum = neighbor_crime_7d (legacy)
+#
+# ENV:
+#   CRIME_DATA_DIR
+#   NEIGHBOR_INPUT_CSV   (default: sf_crime_08.csv)
+#   NEIGHBOR_OUTPUT_CSV  (default: sf_crime_09.csv)
+#   NEIGHBOR_FILE        (default: neighbors.csv)
+#   GEOID_LEN            (default: 11)
+#   PUBLISH_LAG_DAYS     (default: 2)   # 24–48h için 2
+#   MAKE_LEGACY_NEI7     (default: 1)   # legacy nei_7d_sum üret
+# =============================================================================
+
 from __future__ import annotations
 
-import os, re
+import os
+import re
 from pathlib import Path
 import pandas as pd
 
-# =============================================================================
-# PATHS (FIXED)
-# =============================================================================
 ROOT = Path(__file__).resolve().parent.parent
-
 DATA_DIR = Path(os.environ.get("CRIME_DATA_DIR", str(ROOT / "crime_prediction_data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# =============================================================================
-# ENV (input/output)
-# =============================================================================
-IN_CSV_ENV  = os.environ.get("NEIGHBOR_INPUT_CSV", "sf_crime_08.csv")
+IN_CSV_ENV  = os.environ.get("NEIGHBOR_INPUT_CSV",  "sf_crime_08.csv")
 OUT_CSV_ENV = os.environ.get("NEIGHBOR_OUTPUT_CSV", "sf_crime_09.csv")
 NEIGHBOR_FILE_ENV = os.environ.get("NEIGHBOR_FILE", "neighbors.csv")
 
 GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
-WINDOW_DAYS = int(os.environ.get("NEIGHBOR_WINDOW_DAYS", "7"))
-LAG_DAYS    = int(os.environ.get("NEIGHBOR_LAG_DAYS", "1"))
 
-# =============================================================================
-# HELPERS (PATH RESOLVE)
-# =============================================================================
-def _pick_latest_sf(base: Path) -> Path | None:
-    files = list(base.glob("sf_crime_*.csv"))
-    if not files:
-        return None
+PUBLISH_LAG_DAYS = int(os.environ.get("PUBLISH_LAG_DAYS", "2"))
+SHIFT_K = 1 + PUBLISH_LAG_DAYS   # leak-free (d-1) + publish lag
 
-    def ver(p: Path) -> int:
-        m = re.search(r"sf_crime_(\d+)\.csv$", p.name)
-        return int(m.group(1)) if m else -1
+MAKE_LEGACY_NEI7 = os.environ.get("MAKE_LEGACY_NEI7", "1").lower() in ("1","true","yes","on")
 
-    files.sort(key=ver, reverse=True)
-    return files[0]
+def _resolve(p: str) -> Path:
+    q = Path(p)
+    return q.resolve() if q.is_absolute() else (DATA_DIR / q).resolve()
 
-def _resolve_path(p: Path) -> Path:
-    if p.is_absolute():
-        return p.resolve()
-    return (DATA_DIR / p).resolve()
+IN_CSV = _resolve(IN_CSV_ENV)
+OUT_CSV = _resolve(OUT_CSV_ENV)
+NEIGHBOR_FILE = _resolve(NEIGHBOR_FILE_ENV)
 
-def _resolve_in_csv(p: Path) -> Path:
-    if p.is_absolute() and p.exists():
-        return p.resolve()
+def _norm_geoid(s: pd.Series) -> pd.Series:
+    return (
+        s.astype(str)
+         .str.extract(r"(\d+)", expand=False)
+         .fillna("")
+         .str[:GEOID_LEN]
+         .str.zfill(GEOID_LEN)
+    )
 
-    cand = _resolve_path(p)
-    if cand.exists():
-        return cand
-
-    name = cand.name
-    if name == "sf_crime_08.csv":
-        alt = cand.with_name("sf_crime_8.csv")
-        if alt.exists():
-            return alt.resolve()
-    if name == "sf_crime_8.csv":
-        alt = cand.with_name("sf_crime_08.csv")
-        if alt.exists():
-            return alt.resolve()
-
-    latest = _pick_latest_sf(DATA_DIR)
-    if latest and latest.exists():
-        print(f"ℹ️ IN_CSV bulunamadı: {cand} | latest fallback: {latest}", flush=True)
-        return latest.resolve()
-
-    raise FileNotFoundError(f"Girdi bulunamadı: {cand}")
-
-IN_CSV  = _resolve_in_csv(Path(IN_CSV_ENV))
-OUT_CSV = _resolve_path(Path(OUT_CSV_ENV))
-NEIGHBOR_FILE = _resolve_path(Path(NEIGHBOR_FILE_ENV))
-
-# =============================================================================
-# CORE HELPERS
-# =============================================================================
-def _norm_geoid(s: pd.Series, L: int = GEOID_LEN) -> pd.Series:
-    return (s.astype(str).str.extract(r"(\d+)", expand=False).str[:L].str.zfill(L))
-
-def _pick_col(dcols, *cands):
-    low = {c.lower(): c for c in dcols}
+def _pick_col(cols, *cands):
+    low = {c.lower(): c for c in cols}
     for c in cands:
         if c.lower() in low:
             return low[c.lower()]
     return None
 
-def _safe_build_date(df: pd.DataFrame, dcol: str) -> pd.Series:
+def _as_date64_any(s: pd.Series) -> pd.Series:
     """
-    ✅ FIX-1: date kolonu 'YYYY-MM-DD' ise UTC convert yapma -> gün kayması olmasın.
-    datetime/time ise tz-aware ise convert; naive ise LA lokalize.
+    SF local day -> tz-naive midnight (datetime64[ns])
+    date string ise gün kayması yapmaz; datetime ise SF gününe çevirir.
     """
-    x = pd.to_datetime(df[dcol], errors="coerce")
-
-    if dcol.lower() == "date":
-        return x.dt.date
-
-    # datetime/time için:
-    # tz-aware ise LA'ya çevir, naive ise LA kabul et
+    # date gibi geliyorsa (YYYY-MM-DD), utc convert yapmadan parse
+    dt = pd.to_datetime(s, errors="coerce")
+    # tz-aware ise SF'ye çevir
     try:
-        tz = x.dt.tz
+        if getattr(dt.dt, "tz", None) is not None:
+            dt = dt.dt.tz_convert("America/Los_Angeles")
+        else:
+            # naive ama saat içeriyorsa: SF kabul et
+            # (tam date ise zaten 00:00)
+            pass
     except Exception:
-        tz = None
+        pass
+    return dt.dt.normalize()
 
-    if tz is None:
-        x = x.dt.tz_localize("America/Los_Angeles", nonexistent="shift_forward", ambiguous="NaT")
+def _build_base_daily_counts(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Günlük gerçek olay sayısı (GEOID×date -> base_cnt)
+    Öncelik: y_count > crime_count > Y_label
+    """
+    if "y_count" in panel.columns:
+        src = "y_count"
+        s = pd.to_numeric(panel["y_count"], errors="coerce").fillna(0)
+    elif "crime_count" in panel.columns:
+        src = "crime_count"
+        s = pd.to_numeric(panel["crime_count"], errors="coerce").fillna(0)
+    elif "Y_label" in panel.columns:
+        src = "Y_label"
+        s = pd.to_numeric(panel["Y_label"], errors="coerce").fillna(0)
     else:
-        x = x.dt.tz_convert("America/Los_Angeles")
+        raise RuntimeError("❌ y_count / crime_count / Y_label yok; base_cnt üretilemedi.")
 
-    return x.dt.date
+    tmp = panel[["GEOID","date"]].copy()
+    tmp["_cnt_"] = s.clip(lower=0)
 
-def _safe_pick_count_col(df: pd.DataFrame) -> str:
+    base = (
+        tmp.groupby(["GEOID","date"], as_index=False)["_cnt_"].sum()
+           .rename(columns={"_cnt_":"base_cnt"})
+    )
+    base["base_cnt"] = pd.to_numeric(base["base_cnt"], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
+    print(f"🧮 base_cnt source={src} | rows={len(base):,} | sum={int(base['base_cnt'].sum()):,}", flush=True)
+    return base
+
+def _neighbor_daily_features(base: pd.DataFrame, nbr: pd.DataFrame) -> pd.DataFrame:
     """
-    ✅ FIX-2: crime_count yoksa 0'a düşme.
-    Sende tipik adaylar: y_count/hr_cnt/Y_label/y_event
+    base: GEOID,date,base_cnt  (date: datetime64[ns] midnight)
+    nbr: geoid, neighbor
     """
-    return (
-        _pick_col(df.columns, "crime_count", "y_count", "count", "hr_cnt", "Y_label", "y_event")
-        or ""
+    b = base.copy()
+    b["GEOID"] = _norm_geoid(b["GEOID"])
+    b["date"] = pd.to_datetime(b["date"], errors="coerce")
+    b["base_cnt"] = pd.to_numeric(b["base_cnt"], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
+    b = b.dropna(subset=["GEOID","date"])
+
+    n = nbr.copy()
+    n["geoid"] = _norm_geoid(n["geoid"])
+    n["neighbor"] = _norm_geoid(n["neighbor"])
+    n = n.dropna().drop_duplicates()
+    n = n[n["geoid"] != n["neighbor"]]
+
+    # neighbor->base bağla
+    b_nei = b.rename(columns={"GEOID":"neighbor"})
+    m = n.merge(b_nei, on="neighbor", how="left")
+    m["base_cnt"] = pd.to_numeric(m["base_cnt"], errors="coerce").fillna(0).astype("int64")
+
+    day_sum = (
+        m.groupby(["geoid","date"], as_index=False)["base_cnt"]
+         .sum()
+         .rename(columns={"geoid":"GEOID", "base_cnt":"neighbor_cnt_day"})
     )
 
-# =============================================================================
-# MAIN
-# =============================================================================
+    day_sum = day_sum.sort_values(["GEOID","date"])
+
+    def per_geoid(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.set_index("date").asfreq("D", fill_value=0)
+        s = g["neighbor_cnt_day"].astype("int64")
+        g["neighbor_crime_1d"] = s.shift(SHIFT_K).fillna(0).astype("int64")
+        g["neighbor_crime_3d"] = s.shift(SHIFT_K).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
+        g["neighbor_crime_7d"] = s.shift(SHIFT_K).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
+        return g.reset_index()
+
+    out = day_sum.groupby("GEOID", group_keys=False).apply(per_geoid).reset_index(drop=True)
+    return out[["GEOID","date","neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]]
+
 def main():
     print("=============================================================", flush=True)
-    print("🧭 update_neighbors.py", flush=True)
-    print(f"ROOT         : {ROOT}", flush=True)
-    print(f"DATA_DIR     : {DATA_DIR}", flush=True)
-    print(f"IN_CSV       : {IN_CSV}", flush=True)
-    print(f"OUT_CSV      : {OUT_CSV}", flush=True)
-    print(f"NEIGHBOR_FILE: {NEIGHBOR_FILE}", flush=True)
+    print("🧭 update_neighbors.py — FULL REVIZE v2.1", flush=True)
+    print("DATA_DIR     :", DATA_DIR, flush=True)
+    print("IN_CSV       :", IN_CSV, flush=True)
+    print("OUT_CSV      :", OUT_CSV, flush=True)
+    print("NEIGHBOR_FILE:", NEIGHBOR_FILE, flush=True)
+    print(f"PUBLISH_LAG_DAYS={PUBLISH_LAG_DAYS} (SHIFT_K={SHIFT_K})", flush=True)
     print("=============================================================", flush=True)
 
     if not IN_CSV.exists():
-        raise FileNotFoundError(f"Girdi bulunamadı: {IN_CSV}")
+        raise FileNotFoundError(f"❌ IN_CSV yok: {IN_CSV}")
     if not NEIGHBOR_FILE.exists():
-        raise FileNotFoundError(f"Komşuluk dosyası bulunamadı: {NEIGHBOR_FILE}")
+        raise FileNotFoundError(f"❌ neighbors.csv yok: {NEIGHBOR_FILE}")
 
-    df = pd.read_csv(IN_CSV, low_memory=False, dtype=str, encoding="utf-8-sig")
+    df = pd.read_csv(IN_CSV, low_memory=False)
     df.columns = df.columns.str.replace("\ufeff", "", regex=False)
 
-    # --- tarih alanı ---
-    dcol = _pick_col(df.columns, "date", "datetime", "time")
-    if not dcol:
-        raise RuntimeError("Tarih kolonu bulunamadı (date/datetime/time)")
-
-    df["date"] = _safe_build_date(df, dcol)
-
-    # --- GEOID alanı ---
+    # GEOID
     gcol = _pick_col(df.columns, "GEOID", "geoid", "geography_id", "geoid10")
     if not gcol:
-        raise RuntimeError("GEOID kolonu bulunamadı")
+        raise RuntimeError("❌ GEOID kolonu yok")
     df["GEOID"] = _norm_geoid(df[gcol])
 
-    # --- crime_count türet ---
-    ccol = _safe_pick_count_col(df)
-    if not ccol:
-        raise RuntimeError("crime_count/y_count/hr_cnt/Y_label/y_event kolonlarından hiçbiri bulunamadı.")
+    # date
+    dcol = _pick_col(df.columns, "date", "datetime", "time", "timestamp")
+    if not dcol:
+        raise RuntimeError("❌ date/datetime/time yok")
+    df["date"] = _as_date64_any(df[dcol])
 
-    # Standartlaştır: crime_count
-    df["crime_count"] = pd.to_numeric(df[ccol], errors="coerce").fillna(0).astype(int)
+    df = df.dropna(subset=["GEOID","date"])
+    print(f"📖 panel rows={len(df):,} cols={df.shape[1]}", flush=True)
 
-    # Günlük toplam
-    daily = (df[["GEOID", "date", "crime_count"]]
-             .groupby(["GEOID", "date"], as_index=False)["crime_count"].sum())
-    daily["date"] = pd.to_datetime(daily["date"], errors="coerce")
+    # base_cnt
+    base = _build_base_daily_counts(df)
 
-    # neighbors.csv oku (çeşitli başlık varyantları)
-    nbr = pd.read_csv(NEIGHBOR_FILE, dtype=str)
+    # neighbors
+    nbr = pd.read_csv(NEIGHBOR_FILE, low_memory=False, dtype=str)
     s = _pick_col(nbr.columns, "geoid", "GEOID", "src", "source")
-    t = _pick_col(nbr.columns, "neighbor", "NEIGHBOR_GEOID", "neighbor_geoid", "dst", "target")
+    t = _pick_col(nbr.columns, "neighbor", "neighbor_geoid", "dst", "target")
     if not s or not t:
-        raise RuntimeError(f"neighbors.csv başlıkları anlaşılamadı: {nbr.columns.tolist()}")
+        raise RuntimeError(f"❌ neighbors başlıkları tanınmadı: {nbr.columns.tolist()}")
+    nbr = nbr.rename(columns={s:"geoid", t:"neighbor"})[["geoid","neighbor"]]
 
-    nbr = nbr.rename(columns={s: "geoid", t: "neighbor"})[["geoid", "neighbor"]].dropna().drop_duplicates()
-    for c in ("geoid", "neighbor"):
-        nbr[c] = _norm_geoid(nbr[c])
+    feats = _neighbor_daily_features(base, nbr)
+    print(f"✨ feats rows={len(feats):,} cols={feats.shape[1]}", flush=True)
 
-    # Komşu serilerini bağla
-    d2 = nbr.merge(
-        daily.rename(columns={"GEOID": "neighbor"}),
-        left_on="neighbor",
-        right_on="neighbor",
-        how="left"
-    )
-    d2 = d2.rename(columns={"geoid": "GEOID"})  # ana GEOID
-
-    d2 = d2.groupby(["GEOID", "date"], as_index=False)["crime_count"].sum()
-
-    # ✅ 1) Önce GEOID×date seviyesinde komşu crime_count'u tekilleştir (duplicate date kalkar)
-    d2 = d2.groupby(["GEOID", "date"], as_index=False)["crime_count"].sum()
-    
-    # Rolling + lag
-    d2 = d2.sort_values(["GEOID", "date"])
-    
-    def _agg(x: pd.DataFrame) -> pd.DataFrame:
-        # x artık GEOID×date tekil => asfreq güvenli
-        x = x.set_index("date").asfreq("D", fill_value=0)
-        roll = x["crime_count"].rolling(WINDOW_DAYS).sum().shift(LAG_DAYS)
-        x["nei_7d_sum"] = roll
-        return x.reset_index()
-    
-    d3 = d2.groupby("GEOID", group_keys=False).apply(_agg).reset_index(drop=True)
-    d3["date"] = d3["date"].dt.date
-    
-    # ✅ Artık d3 zaten GEOID×date tekil; sum'a bile gerek yok ama kalsın güvenli:
-    d4 = d3.groupby(["GEOID", "date"], as_index=False)["nei_7d_sum"].sum()
-    d4["nei_7d_sum"] = pd.to_numeric(d4["nei_7d_sum"], errors="coerce").fillna(0.0)
-
-    # Orijinal tabloya merge → 09
+    # merge back
     df_out = df.copy()
-    df_out["date"] = pd.to_datetime(df_out["date"], errors="coerce").dt.date
-    df_out = df_out.merge(d4, on=["GEOID", "date"], how="left")
+    # aynı kolonları varsa temizle
+    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d","nei_7d_sum"]:
+        if c in df_out.columns:
+            df_out = df_out.drop(columns=[c])
 
-    cov_nei = df_out["nei_7d_sum"].notna().mean() if "nei_7d_sum" in df_out.columns else 0.0
-    print(f"🧪 NEI 7d coverage (nei_7d_sum notna): {cov_nei:.3%}", flush=True)
+    df_out = df_out.merge(feats, on=["GEOID","date"], how="left")
+    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]:
+        if c not in df_out.columns:
+            raise RuntimeError(f"❌ HARD FAIL: {c} merge sonrası yok!")
+        df_out[c] = pd.to_numeric(df_out[c], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
 
-    df_out["nei_7d_sum"] = pd.to_numeric(df_out["nei_7d_sum"], errors="coerce").fillna(0.0)
+    if MAKE_LEGACY_NEI7:
+        df_out["nei_7d_sum"] = df_out["neighbor_crime_7d"].astype("int64")
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     df_out.to_csv(OUT_CSV, index=False)
-
-    print(f"✅ 08 → 09 tamam: {IN_CSV.name} → {OUT_CSV.name} (rows={len(df_out)})", flush=True)
+    print(f"✅ wrote: {OUT_CSV} (rows={len(df_out):,}, cols={df_out.shape[1]})", flush=True)
 
 if __name__ == "__main__":
     main()
