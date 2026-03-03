@@ -106,6 +106,7 @@ FIVE_YEARS     = 5 * 365
 TODAY          = datetime.utcnow().date()
 DEFAULT_START  = TODAY - timedelta(days=FIVE_YEARS)
 BACKFILL_DAYS  = int(os.getenv("BACKFILL_DAYS", "0"))
+REINGEST_DAYS  = int(os.getenv("SF311_REINGEST_DAYS", "14"))
 
 # ================== SOCRATA ==================
 def socrata_get(session: requests.Session, url, params):
@@ -374,17 +375,32 @@ def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 def decide_start_date(df_existing):
+    # 1) Backfill override
     if BACKFILL_DAYS > 0:
         start = TODAY - timedelta(days=BACKFILL_DAYS)
         print(f"📌 Mod: backfill | start={start}")
         return start, "backfill"
+
+    # 2) Hiç veri yoksa full 5y
     if df_existing.empty or not df_existing["datetime"].notna().any():
         print(f"📌 Mod: full-5y (dosya yok/boş) | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
-    last = pd.to_datetime(df_existing["datetime"], errors="coerce").max().date()
-    start = last + timedelta(days=1)
-    print(f"📌 Mod: incremental | start={start} | window ≥ {DEFAULT_START}")
-    return start, "incremental"
+
+    # 3) Incremental: gecikmeli gelen kayıtlar için overlap/backfill penceresi uygula
+    last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
+    if pd.isna(last_dt):
+        print(f"📌 Mod: full-5y (datetime parse edilemedi) | window ≥ {DEFAULT_START}")
+        return DEFAULT_START, "full-5y"
+
+    last_date = last_dt.date()
+
+    # ✅ kritik revize: +1 gün yerine geriye sar
+    start = last_date - timedelta(days=max(1, REINGEST_DAYS))
+    if start < DEFAULT_START:
+        start = DEFAULT_START
+
+    print(f"📌 Mod: incremental+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d | window ≥ {DEFAULT_START}")
+    return start, "incremental+overlap"
 
 # ================== İNDİRME (TARİH CHUNK) ==================
 def download_by_date_chunks(start_date):
