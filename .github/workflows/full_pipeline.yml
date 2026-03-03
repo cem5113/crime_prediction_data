@@ -935,6 +935,66 @@ jobs:
             fi
           done
 
+      - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          GEOID_LEN: "11"
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, re
+          import pandas as pd
+
+          D = os.environ["CRIME_DATA_DIR"]
+          GEOID_LEN = int(os.environ.get("GEOID_LEN","11"))
+
+          # Dönüştürülecek CSV listesi: 01-09 + core
+          csv_files = [
+              "sf_crime_x.csv",
+              "sf_crime_y.csv",
+              "sf_crime_01.csv","sf_crime_02.csv","sf_crime_03.csv",
+              "sf_crime_04.csv","sf_crime_05.csv","sf_crime_06.csv",
+              "sf_crime_07.csv","sf_crime_08.csv","sf_crime_09.csv",
+              "sf_weather_5years.csv",
+              "week.csv",
+          ]
+
+          def norm_geoid(df):
+              if "GEOID" in df.columns:
+                  df["GEOID"] = (
+                      df["GEOID"].astype(str)
+                               .str.replace(r"\D", "", regex=True)
+                               .str.zfill(GEOID_LEN)
+                  )
+              return df
+
+          def to_parquet(csv_name: str):
+              csv_path = os.path.join(D, csv_name)
+              if not os.path.isfile(csv_path):
+                  print("⚠️ missing:", csv_path)
+                  return
+
+              # okuma (low_memory false: dtype karışmasını azaltır)
+              df = pd.read_csv(csv_path, low_memory=False)
+              df = norm_geoid(df)
+
+              pq_path = os.path.join(D, csv_name.replace(".csv", ".parquet"))
+              df.to_parquet(pq_path, index=False, engine="pyarrow")
+              print("✅ wrote", os.path.basename(pq_path), "shape=", df.shape)
+
+          for f in csv_files:
+              to_parquet(f)
+
+          # Ek: 01-09 dışında tüm sf_crime_*.csv varsa toplu dönüştür (güvenli)
+          for name in os.listdir(D):
+              if re.fullmatch(r"sf_crime_\d{2}\.csv", name) and name not in csv_files:
+                  to_parquet(name)
+          PY
+
+          echo "=== Parquet outputs (crime dir) ==="
+          ls -lah "${CRIME_DATA_DIR}" | grep -E "\.parquet$" || true
+          
       - name: Upload artifact (datasets only, after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         continue-on-error: true
@@ -972,7 +1032,19 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
             ${{ env.CRIME_DATA_DIR }}/week.parquet
-
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_y.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_01.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
+            ${{ env.CRIME_DATA_DIR }}/week.parquet
       - name:  (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
