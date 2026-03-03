@@ -51,6 +51,7 @@ CHUNK_LIMIT         = int(os.getenv("SFCRIME_CHUNK_LIMIT", "50000"))
 MAX_RETRIES         = int(os.getenv("SFCRIME_MAX_RETRIES", "4"))
 SLEEP_BETWEEN_REQS  = float(os.getenv("SFCRIME_SLEEP", "0.2"))
 BULK_RANGE          = os.getenv("SFCRIME_BULK_RANGE", "1").lower() in ("1","true","yes","on")
+CRIME_REINGEST_DAYS = int(os.getenv("SFCRIME_REINGEST_DAYS", "14"))  
 
 # Yol/çıktılar
 save_dir   = "."
@@ -313,7 +314,11 @@ else:
     print(f"⚠️ API latest alınamadı → fallback latest_available: {latest_available}")
 
 # ✅ end=today değil, end=latest_available
-date_range = pd.date_range(start=latest_date + timedelta(days=1), end=latest_available)
+start_missing = latest_date - timedelta(days=max(1, CRIME_REINGEST_DAYS))
+if start_missing < start_date_5y if "start_date_5y" in globals() else False:
+    start_missing = start_date_5y
+
+date_range = pd.date_range(start=start_missing, end=latest_available)
 missing_dates = [d.date() for d in date_range]
 
 # ✅ GUARD
@@ -605,6 +610,21 @@ if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
 
 # ============================================================
+# ✅ DUPLICATE GUARD (reingest overlap güvenliği)
+# ============================================================
+
+if "id" in df_all.columns:
+    before = len(df_all)
+    df_all = df_all.drop_duplicates(["id"], keep="last")
+    print(f"🧹 Duplicate (id) temizlendi: {before - len(df_all)} satır")
+else:
+    key_cols = [c for c in ["datetime","latitude","longitude"] if c in df_all.columns]
+    if len(key_cols) == 3:
+        before = len(df_all)
+        df_all = df_all.drop_duplicates(key_cols, keep="last")
+        print(f"🧹 Duplicate (datetime+lat+lon) temizlendi: {before - len(df_all)} satır")
+        
+# ============================================================
 # ✅ NEW: category/subcategory NaN handling (Unknown + flags)
 # ============================================================
 if {"category", "subcategory"}.issubset(df_all.columns):
@@ -822,7 +842,7 @@ safe_save(panel, panel_csv_path)
 print(f"💾 Panel (sf_crime_y) yazıldı → {panel_csv_path} | rows={len(panel):,}")
 
 try:
-    _tmp = pd.read_csv(event_out, dtype={"GEOID": str}, low_memory=False)
+    _tmp = pd.read_csv(panel_csv_path, dtype={"GEOID": str}, low_memory=False)
     print("\n📄 [QC] Dosyadan okunan sf_crime_y.csv özeti")
     print(f"🧮 Shape(file): {_tmp.shape[0]} satır × {_tmp.shape[1]} sütun")
 
