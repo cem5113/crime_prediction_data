@@ -1,6 +1,20 @@
-# update_train.py  (SON REVIZE — MOBILITYDB "latest.zip" OTOMATİK)
+# update_train.py  (FULL REVIZE — MOBILITYDB "latest.zip" OTOMATİK + WEEKLY CACHE + STABİL BINLER)
+# -----------------------------------------------------------------------------
+# Amaç:
+#  - sf_crime_04.csv içindeki GEOID evrenine göre tren (BART GTFS) duraklarını indir
+#  - durakları census bloklarına (sf_census_blocks.geojson) eşleyip GEOID ata
+#  - GEOID seviyesinde metrikler üret:
+#       distance_to_train (metre)
+#       train_stop_count  (p75 yarıçap içinde durak sayısı)
+#       distance_to_train_range (STABİL bin)
+#       train_stop_count_range  (STABİL bin)
+#  - Haftalık cache politikası:
+#       TRAIN_STOPS_WITH_GEOID + train.csv varsa ve FORCE_TRAIN_REFRESH=0 ise indirme/hesaplamayı atla
+#  - Bin drift'i önlemek için:
+#       train_bins.json içine edges kaydet (ilk üretimde), sonraki koşularda aynı edges ile cut
+# -----------------------------------------------------------------------------
 
-import os, io, zipfile, time, re
+import os, io, zipfile, time, re, json
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +93,23 @@ def freedman_diaconis_bin_count(data: np.ndarray, max_bins: int = 10) -> int:
         return min(max_bins, max(2, int(np.sqrt(len(data)))))
     return max(2, min(max_bins, int(np.ceil((data.max() - data.min()) / bw))))
 
+def save_bins_json(path: str, payload: dict) -> None:
+    ensure_parent(path)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+def load_bins_json(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ train_bins.json okunamadı: {e}")
+        return None
+
 # =========================
 # ENV / Yollar
 # =========================
@@ -100,15 +131,13 @@ CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_05.csv")
 TRAIN_STOPS_WITH_GEOID = os.path.join(BASE_DIR, os.getenv("TRAIN_STOPS_NAME", "sf_train_stops_with_geoid.csv"))
 TRAIN_LEGACY_RAW_Y     = os.path.join(BASE_DIR, os.getenv("TRAIN_LEGACY_RAW_Y", "train_y.csv"))  # legacy ham
 TRAIN_SUMMARY_NAME     = os.path.join(BASE_DIR, os.getenv("TRAIN_SUMMARY_NAME", "train.csv"))     # legacy özet/feature
+TRAIN_BINS_PATH        = os.path.join(BASE_DIR, os.getenv("TRAIN_BINS_PATH", "train_bins.json"))
 
 # =========================
 # WEEKLY CACHE POLICY (TRAIN)
 # =========================
 FORCE_TRAIN_REFRESH = os.getenv("FORCE_TRAIN_REFRESH", "0").strip().lower() in ("1", "true", "yes")
 
-# TRAIN cache dosyaları mevcutsa ve force yoksa:
-# - GTFS indirmeyi ve geoid-metric hesaplamayı atla
-# - sadece bu cache'lerle CRIME merge yapıp sf_crime_05 yaz
 TRAIN_CACHE_OK = (
     os.path.exists(TRAIN_STOPS_WITH_GEOID) and
     os.path.exists(TRAIN_SUMMARY_NAME)
@@ -116,7 +145,7 @@ TRAIN_CACHE_OK = (
 
 if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
     print("✅ TRAIN cache bulundu ve FORCE_TRAIN_REFRESH=0 → indirme/hesaplama atlanıyor.")
-    print("   cache stops:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
+    print("   cache stops  :", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
     print("   cache metrics:", os.path.abspath(TRAIN_SUMMARY_NAME))
 
     # 1) cache metrikleri oku
@@ -128,6 +157,8 @@ if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
     # 2) crime oku + merge + yaz
     crime = pd.read_csv(CRIME_INPUT, dtype={"GEOID": str}, low_memory=False)
     _before = crime.shape
+    if "GEOID" not in crime.columns:
+        raise KeyError("❌ Suç verisinde 'GEOID' kolonu yok.")
     crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
 
     _overlap = (set(crime.columns) & set(geo_metrics.columns)) - {"GEOID"}
@@ -144,7 +175,6 @@ if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
     log_delta(_before, crime_enriched.shape, "CRIME ⨯ TRAIN (CACHE GEOID enrich)")
     log_shape(crime_enriched, "CRIME (train enrich sonrası - CACHE)")
 
-    # NaN raporu
     nan_counts = crime_enriched.isna().sum()
     nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
     print("🔎 NaN sayıları (sf_crime_05 yazılmadan önce) [CACHE]:")
@@ -153,7 +183,7 @@ if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
     safe_save_csv(crime_enriched, CRIME_OUTPUT)
     print(f"✅ CACHE ile güncellendi → {CRIME_OUTPUT}")
     raise SystemExit(0)
-    
+
 # Census GeoJSON adayları
 CENSUS_CANDIDATES = [
     os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
@@ -208,9 +238,11 @@ ALLOW_STUB = os.getenv("ALLOW_STUB_ON_API_FAIL", "1").strip().lower() not in ("0
 # =========================
 # 1) GTFS stops.txt indir/çıkar (retry/backoff)
 # =========================
-def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: float = 1.7) -> pd.DataFrame | None:
+def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: float = 1.7) -> tuple[pd.DataFrame | None, str | None]:
     sess = requests.Session()
     for url in urls:
+        if not url:
+            continue
         print(f"🚉 BART GTFS deneniyor: {url}")
         for attempt in range(max_retries + 1):
             try:
@@ -238,7 +270,7 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                         raise FileNotFoundError("stops.txt GTFS paketinde bulunamadı.")
                     with zf.open(members[0], "r") as f:
                         stops = pd.read_csv(f, dtype={"stop_lat": float, "stop_lon": float})
-                return stops
+                return stops, url
 
             except Exception as e:
                 if attempt >= max_retries:
@@ -249,7 +281,7 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
                     time.sleep(sleep_s)
 
         print(f"↪️ URL başarısız: {url}")
-    return None
+    return None, None
 
 # =========================
 # 2) Suç verisini oku (GEOID evreni)
@@ -265,9 +297,9 @@ print(f"🧩 CRIME farklı GEOID sayısı: {crime_geoids.size}")
 # =========================
 # 3) GTFS duraklarını edin / cache / stub
 # =========================
-stops = download_gtfs_stops(GTFS_URLS, max_retries=4, backoff_base=1.7)
+stops, gtfs_url_used = download_gtfs_stops(GTFS_URLS, max_retries=4, backoff_base=1.7)
+
 if stops is None:
-    # cache'ten oku
     if os.path.exists(TRAIN_STOPS_WITH_GEOID):
         print("⚠️ GTFS indirilemedi; mevcut cache kullanılacak:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
         try:
@@ -289,13 +321,11 @@ if stops is None:
 # Kolon isimleri normalize
 low = {c.lower(): c for c in stops.columns}
 if "stop_lat" not in low or "stop_lon" not in low:
-    # bazı GTFS'lerde 'stop_latitude/stop_longitude' olabilir
     for a, b in (("stop_latitude", "stop_longitude"), ("latitude", "longitude"), ("lat", "lon"), ("lat", "long")):
         if a in low and b in low:
             stops.rename(columns={low[a]: "stop_lat", low[b]: "stop_lon"}, inplace=True)
             break
 else:
-    # doğru isimler varsa standardize
     if low["stop_lat"] != "stop_lat":
         stops.rename(columns={low["stop_lat"]: "stop_lat"}, inplace=True)
     if low["stop_lon"] != "stop_lon":
@@ -346,18 +376,16 @@ if blocks_ok and not stops.empty:
     try:
         gdf_joined = gpd.sjoin(gdf_stops, gdf_blocks[["geometry", "GEOID"]], how="left", predicate="within")
     except Exception as e:
-        print(f"⚠️ sjoin(within) başarısız ({e}). sjoin_nearest(max_distance=5 m) deneniyor…")
-
+        print(f"⚠️ sjoin(within) başarısız ({e}). sjoin_nearest(max_distance=50 m) deneniyor…")
         gdf_stops_m  = gdf_stops.to_crs(epsg=3857)
         gdf_blocks_m = gdf_blocks[["geometry", "GEOID"]].to_crs(epsg=3857)
-        
+
         gdf_joined_m = gpd.sjoin_nearest(
             gdf_stops_m,
             gdf_blocks_m,
             how="left",
             max_distance=50
         )
-
         gdf_joined = gdf_joined_m.to_crs(epsg=4326)
 
     gdf_joined = gdf_joined.drop(columns=["index_right"], errors="ignore")
@@ -380,8 +408,10 @@ except Exception as e:
     print(f"⚠️ Legacy train_y.csv yazılamadı: {e}")
 
 # =========================
-# 6) GEOID-level metrikler (distance & count) + binleme
+# 6) GEOID-level metrikler (distance & count) + STABİL binleme
 # =========================
+radius_m = None
+
 if blocks_ok:
     gdf_blocks_3857 = gdf_blocks[["GEOID", "geometry"]].copy().to_crs(epsg=3857)
     gdf_blocks_3857["cx"] = gdf_blocks_3857.geometry.centroid.x
@@ -390,8 +420,8 @@ if blocks_ok:
 
     bad = gdf_blocks_3857["cx"].isna() | gdf_blocks_3857["cy"].isna()
     if bad.any():
-        print(f"⚠️ {bad.sum()} blok centroid NaN (geometry sorunu). Mesafe bu GEOID'lerde NaN kalacak.")
-    
+        print(f"⚠️ {int(bad.sum())} blok centroid NaN (geometry sorunu). Mesafe bu GEOID'lerde NaN kalacak.")
+
     tmp_pts = train_stops_geo.dropna(subset=["stop_lat", "stop_lon"]).copy()
     gdf_train_xy = gpd.GeoDataFrame(
         tmp_pts[["stop_lat", "stop_lon"]].copy(),
@@ -408,16 +438,15 @@ if blocks_ok:
     if len(train_xy) > 0 and len(blocks_xy) > 0:
         tree = cKDTree(train_xy)
         nearest_dist, _ = tree.query(blocks_xy, k=1)
-        geo_metrics["distance_to_train"] = nearest_dist
+        geo_metrics["distance_to_train"] = nearest_dist.astype(float)
 
         finite_d = nearest_dist[np.isfinite(nearest_dist)]
         if finite_d.size > 0 and np.nanmax(finite_d) > 0:
-            radius = float(np.nanpercentile(finite_d, 75))  # p75 yarıçap
-            neighbor_lists = tree.query_ball_point(blocks_xy, r=radius)
+            radius_m = float(np.nanpercentile(finite_d, 75))  # p75 yarıçap
+            neighbor_lists = tree.query_ball_point(blocks_xy, r=radius_m)
             geo_metrics["train_stop_count"] = [len(lst) for lst in neighbor_lists]
-            print(f"🟢 Sayım yarıçapı (p75): ~{int(round(radius))} m")
+            print(f"🟢 Sayım yarıçapı (p75): ~{int(round(radius_m))} m")
 else:
-    # GeoJSON yoksa: CRIME GEOID evrenine stub
     geo_metrics = pd.DataFrame({"GEOID": crime_geoids})
     geo_metrics["distance_to_train"] = np.nan
     geo_metrics["train_stop_count"] = 0
@@ -431,27 +460,69 @@ log_shape(geo_metrics, "GEOID-bazlı metrikler (ham)")
 cov = geo_metrics["distance_to_train"].notna().mean() if "distance_to_train" in geo_metrics.columns else 0.0
 print(f"🧪 TRAIN mesafe coverage: {cov:.3%}")
 
-# Binleme
+# -------------------------
+# STABİL BINLEME (train_bins.json)
+# -------------------------
+bins_payload = load_bins_json(TRAIN_BINS_PATH)
+
+dist_edges = None
+cnt_edges  = None
+
+if isinstance(bins_payload, dict):
+    dist_edges = bins_payload.get("distance_edges")
+    cnt_edges  = bins_payload.get("count_edges")
+
+# distance_to_train_range
 dist = pd.to_numeric(geo_metrics["distance_to_train"], errors="coerce").replace([np.inf, -np.inf], np.nan)
 finite_dist = dist.dropna()
-if len(finite_dist) >= 2 and finite_dist.max() > finite_dist.min():
-    n_bins = freedman_diaconis_bin_count(finite_dist.to_numpy(), max_bins=10)
-    _, edges = pd.qcut(finite_dist, q=n_bins, retbins=True, duplicates="drop")
+
+if dist_edges and isinstance(dist_edges, list) and len(dist_edges) >= 2:
+    edges = np.array(dist_edges, dtype=float)
     labels = [f"{int(round(edges[i]))}-{int(round(edges[i+1]))}m" for i in range(len(edges) - 1)]
     geo_metrics["distance_to_train_range"] = pd.cut(dist, bins=edges, labels=labels, include_lowest=True)
 else:
-    geo_metrics["distance_to_train_range"] = "0-0m"
+    if len(finite_dist) >= 2 and finite_dist.max() > finite_dist.min():
+        n_bins = freedman_diaconis_bin_count(finite_dist.to_numpy(), max_bins=10)
+        _, edges = pd.qcut(finite_dist, q=n_bins, retbins=True, duplicates="drop")
+        edges = np.array(edges, dtype=float)
+        labels = [f"{int(round(edges[i]))}-{int(round(edges[i+1]))}m" for i in range(len(edges) - 1)]
+        geo_metrics["distance_to_train_range"] = pd.cut(dist, bins=edges, labels=labels, include_lowest=True)
+        dist_edges = edges.tolist()
+    else:
+        geo_metrics["distance_to_train_range"] = "0-0m"
+        dist_edges = None
 
+# train_stop_count_range
 cnt = pd.to_numeric(geo_metrics["train_stop_count"], errors="coerce").fillna(0)
-if cnt.nunique() > 1:
-    n_c_bins = freedman_diaconis_bin_count(cnt.to_numpy(), max_bins=8)
-    _, c_edges = pd.qcut(cnt, q=n_c_bins, retbins=True, duplicates="drop")
-    c_labels = [f"{int(round(c_edges[i]))}-{int(round(c_edges[i+1]))}" for i in range(len(c_edges) - 1)]
-    geo_metrics["train_stop_count_range"] = pd.cut(cnt, bins=c_edges, labels=c_labels, include_lowest=True)
+
+if cnt_edges and isinstance(cnt_edges, list) and len(cnt_edges) >= 2:
+    edges = np.array(cnt_edges, dtype=float)
+    labels = [f"{int(round(edges[i]))}-{int(round(edges[i+1]))}" for i in range(len(edges) - 1)]
+    geo_metrics["train_stop_count_range"] = pd.cut(cnt, bins=edges, labels=labels, include_lowest=True)
 else:
-    geo_metrics["train_stop_count_range"] = f"{int(cnt.min())}-{int(cnt.max())}"
+    if cnt.nunique() > 1:
+        n_c_bins = freedman_diaconis_bin_count(cnt.to_numpy(), max_bins=8)
+        _, edges = pd.qcut(cnt, q=n_c_bins, retbins=True, duplicates="drop")
+        edges = np.array(edges, dtype=float)
+        labels = [f"{int(round(edges[i]))}-{int(round(edges[i+1]))}" for i in range(len(edges) - 1)]
+        geo_metrics["train_stop_count_range"] = pd.cut(cnt, bins=edges, labels=labels, include_lowest=True)
+        cnt_edges = edges.tolist()
+    else:
+        geo_metrics["train_stop_count_range"] = f"{int(cnt.min())}-{int(cnt.max())}"
+        cnt_edges = None
 
 log_shape(geo_metrics, "GEOID-bazlı metrikler (binlenmiş)")
+
+# edges kaydet (ilk üretimde veya güncellemede)
+payload_out = {
+    "distance_edges": dist_edges,
+    "count_edges": cnt_edges,
+    "created_at_utc": pd.Timestamp.utcnow().isoformat(),
+    "gtfs_url_used": gtfs_url_used,
+    "radius_m_p75": radius_m,
+}
+save_bins_json(TRAIN_BINS_PATH, payload_out)
+print(f"✅ TRAIN bin kenarları kaydedildi → {TRAIN_BINS_PATH}")
 
 # =========================
 # 7) GEOID-level özeti de yaz (legacy: train.csv)
@@ -465,6 +536,8 @@ print(f"✅ TRAIN özet (GEOID-level) yazıldı → {TRAIN_SUMMARY_NAME}")
 crime = pd.read_csv(CRIME_INPUT, dtype={"GEOID": str}, low_memory=False)
 _before = crime.shape
 
+if "GEOID" not in crime.columns:
+    raise KeyError("❌ Suç verisinde 'GEOID' kolonu yok.")
 crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
 geo_metrics["GEOID"] = normalize_geoid(geo_metrics["GEOID"], DEFAULT_GEOID_LEN)
 
@@ -480,17 +553,15 @@ crime_enriched = crime.merge(
     geo_metrics,
     on="GEOID",
     how="left",
-    validate="many_to_one"  # satır patlaması yok
+    validate="many_to_one"
 )
 
 log_delta(_before, crime_enriched.shape, "CRIME ⨯ TRAIN (GEOID enrich)")
 log_shape(crime_enriched, "CRIME (train enrich sonrası)")
 
 # =========================
-# 9) Kaydet & önizleme
+# 9) NaN raporu + Kaydet & önizleme
 # =========================
-
-# -------- NaN raporu (kayıttan hemen önce) --------
 nan_counts = crime_enriched.isna().sum()
 nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
 
@@ -499,11 +570,11 @@ if nan_counts.empty:
     print("✅ NaN yok.")
 else:
     print(nan_counts.to_string())
-# -----------------------------------------------
 
 safe_save_csv(crime_enriched, CRIME_OUTPUT)
 print("📦 Yeni sütunlar eklendi (örnek):", ["distance_to_train", "distance_to_train_range", "train_stop_count", "train_stop_count_range"])
 print(f"✅ Güncellenmiş veri kaydedildi → {CRIME_OUTPUT}")
+
 try:
     print("sf_crime_05.csv — ilk 5 satır")
     print(crime_enriched.head(5).to_string(index=False))
