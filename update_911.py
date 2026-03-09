@@ -668,13 +668,21 @@ _hr_unique = (final_911[["GEOID","hr_key","date","911_request_count_hour_range"]
               .groupby(["GEOID","hr_key","date"], as_index=False, observed=True)["911_request_count_hour_range"].sum())
 _hr_unique = _hr_unique.rename(columns={"911_request_count_hour_range":"hr_cnt"}).sort_values(["GEOID","hr_key","date"]).reset_index(drop=True)
 
-for W in (3, 7):
-    _day_unique[f"911_geo_last{W}d"] = (
-        _day_unique.groupby("GEOID")["daily_cnt"].transform(lambda s: s.rolling(W, min_periods=1).sum().shift(1))
-    ).astype("float32")
-    _hr_unique[f"911_geo_hr_last{W}d"] = (
-        _hr_unique.groupby(["GEOID","hr_key"])["hr_cnt"].transform(lambda s: s.rolling(W, min_periods=1).sum().shift(1))
-    ).astype("float32")
+ROLLING_SLOT_WINDOWS = {
+    "1h": 1,
+    "3h": 1,
+    "6h": 2,
+    "24h": 8,
+    "3d": 24,
+    "7d": 56,
+}
+
+for label, n_slots in ROLLING_SLOT_WINDOWS.items():
+    _day_unique[f"911_geo_last{label}"] = (
+        _day_unique.groupby("GEOID")["daily_cnt"]
+        .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
+        .astype("float32")
+    )
 
 # KOMŞU GEOID ÖZELLİKLERİ (günlük baz)
 def build_neighbors(method: str = "touches", radius_m: float = 500.0) -> pd.DataFrame:
@@ -710,27 +718,54 @@ if neighbors_df is not None and not neighbors_df.empty:
     day_nbr = neighbors_df.merge(_day_unique.rename(columns={"GEOID":"nbr"}), on="nbr", how="left")
     day_nbr = day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"].sum().rename(columns={"daily_cnt":"nbr_daily_cnt"})
     _neighbor_roll = day_nbr.sort_values(["GEOID","date"]).reset_index(drop=True)
-    for W in (3, 7):
-        _neighbor_roll[f"911_neighbors_last{W}d"] = (
-            _neighbor_roll.groupby("GEOID")["nbr_daily_cnt"].transform(lambda s: s.rolling(W, min_periods=1).sum().shift(1))
-        ).astype("float32")
+    for label, n_slots in ROLLING_SLOT_WINDOWS.items():
+        _neighbor_roll[f"911_neighbors_last{label}"] = (
+            _neighbor_roll.groupby("GEOID")["nbr_daily_cnt"]
+            .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
+            .astype("float32")
+        )
 
 # MERGE STRATEJİSİ
 _enriched = final_911.merge(_hr_unique, on=["GEOID","hr_key","date"], how="left")
 _enriched = _enriched.merge(_day_unique, on=["GEOID","date"], how="left")
 if _neighbor_roll is not None:
-    _enriched = _enriched.merge(_neighbor_roll[["GEOID","date"] + [f"911_neighbors_last{W}d" for W in (3, 7)]], on=["GEOID","date"], how="left")
+    _enriched = _enriched.merge(
+        _neighbor_roll[
+            ["GEOID", "date"] + [
+                "911_neighbors_last1h",
+                "911_neighbors_last3h",
+                "911_neighbors_last6h",
+                "911_neighbors_last24h",
+                "911_neighbors_last3d",
+                "911_neighbors_last7d",
+            ]
+        ],
+        on=["GEOID", "date"],
+        how="left"
+    )
 
 KEEP_911_COLS = [
     "GEOID", "date", "hour_range", "hr_key",
     "911_request_count_hour_range",
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
-    "911_geo_last3d", "911_geo_last7d",
-    "911_geo_hr_last3d", "911_geo_hr_last7d",
+
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
+    "911_geo_last3d",
+    "911_geo_last7d",
 ]
 if _neighbor_roll is not None:
-    KEEP_911_COLS += ["911_neighbors_last3d", "911_neighbors_last7d"]
+    KEEP_911_COLS += [
+        "911_neighbors_last1h",
+        "911_neighbors_last3h",
+        "911_neighbors_last6h",
+        "911_neighbors_last24h",
+        "911_neighbors_last3d",
+        "911_neighbors_last7d",
+    ]
 
 # _enriched içinde olmayanları otomatik ele
 KEEP_911_COLS = [c for c in KEEP_911_COLS if c in _enriched.columns]
@@ -802,9 +837,23 @@ else:
     agg_cols = [
         "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
-        "911_geo_last3d","911_geo_last7d",
-        "911_geo_hr_last3d","911_geo_hr_last7d",
-    ] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
+    
+        "911_geo_last1h",
+        "911_geo_last3h",
+        "911_geo_last6h",
+        "911_geo_last24h",
+        "911_geo_last3d",
+        "911_geo_last7d",
+    ] + (
+        [
+            "911_neighbors_last1h",
+            "911_neighbors_last3h",
+            "911_neighbors_last6h",
+            "911_neighbors_last24h",
+            "911_neighbors_last3d",
+            "911_neighbors_last7d",
+        ] if _neighbor_roll is not None else []
+    )
     cal_agg = (_enriched.groupby(cal_keys, as_index=False, observed=True)[agg_cols]
                         .median(numeric_only=True))
     if "day_of_week" not in crime.columns:
@@ -822,16 +871,41 @@ else:
 fill_cols = [
     "911_request_count_hour_range",
     "911_request_count_daily(before_24_hours)",
-    "hr_cnt", "daily_cnt",               # 👈 SADECE BUNU EKLEDİK
-    "911_geo_last3d","911_geo_last7d",
-    "911_geo_hr_last3d","911_geo_hr_last7d",
-] + ([f"911_neighbors_last{W}d" for W in (3, 7)] if _neighbor_roll is not None else [])
+    "hr_cnt", "daily_cnt",
+
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
+    "911_geo_last3d",
+    "911_geo_last7d",
+] + (
+    [
+        "911_neighbors_last1h",
+        "911_neighbors_last3h",
+        "911_neighbors_last6h",
+        "911_neighbors_last24h",
+        "911_neighbors_last3d",
+        "911_neighbors_last7d",
+    ] if _neighbor_roll is not None else []
+)
 
 FLOAT_COLS = set([
-    "hr_cnt","daily_cnt",
-    "911_geo_last3d","911_geo_last7d",
-    "911_geo_hr_last3d","911_geo_hr_last7d",
-    "911_neighbors_last3d","911_neighbors_last7d",
+    "hr_cnt", "daily_cnt",
+
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
+    "911_geo_last3d",
+    "911_geo_last7d",
+
+    "911_neighbors_last1h",
+    "911_neighbors_last3h",
+    "911_neighbors_last6h",
+    "911_neighbors_last24h",
+    "911_neighbors_last3d",
+    "911_neighbors_last7d",
 ])
 
 for c in fill_cols:
