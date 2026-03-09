@@ -605,6 +605,8 @@ else:
     df_all = pd.concat([df_old, df_new], ignore_index=True)
 
 # normalize
+if "id" not in df_all.columns:
+    df_all["id"] = np.nan
 df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
     df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
@@ -857,11 +859,11 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
     out["_row_id_tmp"] = np.arange(len(out))
     out = out.sort_values(["GEOID", "slot_start_dt"]).copy()
 
-    ev_groups = {g: x["datetime"].view("int64").to_numpy() for g, x in ev.groupby("GEOID", sort=False)}
+    ev_groups = {g: x["datetime"].astype("int64").to_numpy() for g, x in ev.groupby("GEOID", sort=False)}
 
     for geoid, idx in out.groupby("GEOID", sort=False).groups.items():
         slot_vals = pd.to_datetime(out.loc[idx, "slot_start_dt"], errors="coerce")
-        slot_ns = slot_vals.view("int64").to_numpy()
+        slot_ns = slot_vals.astype("int64").to_numpy()
 
         ev_ns = ev_groups.get(str(geoid))
         if ev_ns is None or len(ev_ns) == 0:
@@ -960,22 +962,25 @@ except Exception:
 # ✅ Veri yayın gecikmesi nedeniyle grid'i son yayınlanan slot başlangıcına kadar kes
 latest_published_dt = pd.to_datetime(panel_evt["datetime"], errors="coerce").max()
 if pd.notna(latest_published_dt):
+    latest_published_dt = pd.Timestamp(latest_published_dt)
     try:
-        if getattr(pd.Series([latest_published_dt]).dt, "tz", None) is None:
-            latest_published_dt = pd.Timestamp(latest_published_dt).tz_localize(
+        if latest_published_dt.tz is None:
+            latest_published_dt = latest_published_dt.tz_localize(
                 SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
             )
         else:
-            latest_published_dt = pd.Timestamp(latest_published_dt).tz_convert(SF_TZ)
+            latest_published_dt = latest_published_dt.tz_convert(SF_TZ)
     except Exception:
-        latest_published_dt = pd.Timestamp(latest_published_dt)
+        pass
 
     latest_anchor_slot = latest_published_dt.floor("3h")
     grid = grid[grid["slot_start_dt"] <= latest_anchor_slot].copy()
     print(f"🕒 Grid son yayınlanan slot'a göre kesildi: {latest_anchor_slot}")
 
-panel = grid.merge(slot_y, on=["GEOID","date","hour_range"], how="left")
-panel = add_exact_past_crime_features(panel, panel_evt)
+slot_y = slot_y[["GEOID", "date", "hour_range", "y_count", "y_event", "Y_label"]].copy()
+
+panel = grid.merge(slot_y, on=["GEOID", "date", "hour_range"], how="left")
+panel = add_exact_past_crime_features(panel, df_all)
 
 panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
 panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
