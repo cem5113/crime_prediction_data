@@ -807,6 +807,7 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
             "crime_count_last_3h",
             "crime_count_last_6h",
             "crime_count_last_24h",
+            "crime_count_last_3d",
             "crime_count_last_7d",
         ]:
             out[c] = 0
@@ -823,6 +824,7 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
             "crime_count_last_3h",
             "crime_count_last_6h",
             "crime_count_last_24h",
+            "crime_count_last_3d",
             "crime_count_last_7d",
         ]:
             out[c] = 0
@@ -849,6 +851,7 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
         "crime_count_last_3h":  pd.Timedelta(hours=3).value,
         "crime_count_last_6h":  pd.Timedelta(hours=6).value,
         "crime_count_last_24h": pd.Timedelta(hours=24).value,
+        "crime_count_last_3d":  pd.Timedelta(days=3).value,
         "crime_count_last_7d":  pd.Timedelta(days=7).value,
     }
 
