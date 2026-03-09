@@ -789,7 +789,6 @@ print(f"💾 Event-level cache yazıldı → {event_out}")
 
 # ============================================================
 # ✅ PAST CRIME FEATURES (event-time exact, leakage-safe)
-#   - crime_count_last_1h
 #   - crime_count_last_3h
 #   - crime_count_last_6h
 #   - crime_count_last_24h
@@ -803,7 +802,6 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
 
     if out.empty:
         for c in [
-            "crime_count_last_1h",
             "crime_count_last_3h",
             "crime_count_last_6h",
             "crime_count_last_24h",
@@ -820,7 +818,6 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
     ev = event_df.copy()
     if ev.empty or ("GEOID" not in ev.columns) or ("datetime" not in ev.columns):
         for c in [
-            "crime_count_last_1h",
             "crime_count_last_3h",
             "crime_count_last_6h",
             "crime_count_last_24h",
@@ -847,7 +844,6 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
 
     # int64 ns tabanlı hızlı pencere sayımı
     windows = {
-        "crime_count_last_1h":  pd.Timedelta(hours=1).value,
         "crime_count_last_3h":  pd.Timedelta(hours=3).value,
         "crime_count_last_6h":  pd.Timedelta(hours=6).value,
         "crime_count_last_24h": pd.Timedelta(hours=24).value,
