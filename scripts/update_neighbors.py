@@ -3,7 +3,8 @@
 # ✅ scripts/update_neighbors.py (FULL REVIZE v2.1 — PANEL-SAFE / LEAK-FREE / PUBLISH-LAG AWARE)
 #
 # Üretir:
-#   neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d  (GEOID×date)
+#   neighbor_crime_1h, neighbor_crime_3h, neighbor_crime_6h,
+#   neighbor_crime_24h, neighbor_crime_3d, neighbor_crime_7d  (GEOID×date)
 #   + panelin tüm hour_range satırlarına GEOID×date ile yayar
 # Opsiyonel:
 #   nei_7d_sum = neighbor_crime_7d (legacy)
@@ -144,13 +145,33 @@ def _neighbor_daily_features(base: pd.DataFrame, nbr: pd.DataFrame) -> pd.DataFr
     def per_geoid(g: pd.DataFrame) -> pd.DataFrame:
         g = g.set_index("date").asfreq("D", fill_value=0)
         s = g["neighbor_cnt_day"].astype("int64")
-        g["neighbor_crime_1d"] = s.shift(SHIFT_K).fillna(0).astype("int64")
-        g["neighbor_crime_3d"] = s.shift(SHIFT_K).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
-        g["neighbor_crime_7d"] = s.shift(SHIFT_K).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
+    
+        # günlük seri olduğu için 1h/3h/6h/24h kolonları
+        # gerçek saatlik değil, publish-lag-aware kısa dönem approx'tır
+        s_shift = s.shift(SHIFT_K)
+    
+        g["neighbor_crime_1h"]  = s_shift.fillna(0).astype("int64")
+        g["neighbor_crime_3h"]  = s_shift.fillna(0).astype("int64")
+        g["neighbor_crime_6h"]  = s_shift.fillna(0).astype("int64")
+        g["neighbor_crime_24h"] = s_shift.fillna(0).astype("int64")
+        g["neighbor_crime_3d"]  = s_shift.rolling(3, min_periods=1).sum().fillna(0).astype("int64")
+        g["neighbor_crime_7d"]  = s_shift.rolling(7, min_periods=1).sum().fillna(0).astype("int64")
+    
         return g.reset_index()
-
+    
     out = day_sum.groupby("GEOID", group_keys=False).apply(per_geoid).reset_index(drop=True)
-    return out[["GEOID","date","neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]]
+    return out[
+        [
+            "GEOID",
+            "date",
+            "neighbor_crime_1h",
+            "neighbor_crime_3h",
+            "neighbor_crime_6h",
+            "neighbor_crime_24h",
+            "neighbor_crime_3d",
+            "neighbor_crime_7d",
+        ]
+    ]
 
 def main():
     print("=============================================================", flush=True)
@@ -202,12 +223,27 @@ def main():
     # merge back
     df_out = df.copy()
     # aynı kolonları varsa temizle
-    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d","nei_7d_sum"]:
+    for c in [
+        "neighbor_crime_1h",
+        "neighbor_crime_3h",
+        "neighbor_crime_6h",
+        "neighbor_crime_24h",
+        "neighbor_crime_3d",
+        "neighbor_crime_7d",
+        "nei_7d_sum",
+    ]:
         if c in df_out.columns:
             df_out = df_out.drop(columns=[c])
 
     df_out = df_out.merge(feats, on=["GEOID","date"], how="left")
-    for c in ["neighbor_crime_1d","neighbor_crime_3d","neighbor_crime_7d"]:
+    for c in [
+        "neighbor_crime_1h",
+        "neighbor_crime_3h",
+        "neighbor_crime_6h",
+        "neighbor_crime_24h",
+        "neighbor_crime_3d",
+        "neighbor_crime_7d",
+    ]:
         if c not in df_out.columns:
             raise RuntimeError(f"❌ HARD FAIL: {c} merge sonrası yok!")
         df_out[c] = pd.to_numeric(df_out[c], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
