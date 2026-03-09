@@ -786,6 +786,98 @@ safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
 
 # ============================================================
+# ✅ PAST CRIME FEATURES (event-time exact, leakage-safe)
+#   - crime_count_last_1h
+#   - crime_count_last_3h
+#   - crime_count_last_6h
+#   - crime_count_last_24h
+#   - crime_count_last_7d
+#   Hesap mantığı:
+#     Her panel satırı için slot başlangıç zamanından GERİYE bakılır.
+#     Current slot dahil edilmez.
+# ============================================================
+def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    out = panel_df.copy()
+
+    if out.empty:
+        for c in [
+            "crime_count_last_1h",
+            "crime_count_last_3h",
+            "crime_count_last_6h",
+            "crime_count_last_24h",
+            "crime_count_last_7d",
+        ]:
+            out[c] = 0
+        return out
+
+    # slot_start_dt zorunlu
+    if "slot_start_dt" not in out.columns:
+        raise ValueError("panel_df içinde 'slot_start_dt' kolonu yok.")
+
+    ev = event_df.copy()
+    if ev.empty or ("GEOID" not in ev.columns) or ("datetime" not in ev.columns):
+        for c in [
+            "crime_count_last_1h",
+            "crime_count_last_3h",
+            "crime_count_last_6h",
+            "crime_count_last_24h",
+            "crime_count_last_7d",
+        ]:
+            out[c] = 0
+        return out
+
+    ev["GEOID"] = ev["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    ev["datetime"] = pd.to_datetime(ev["datetime"], errors="coerce")
+    ev = ev.dropna(subset=["GEOID", "datetime"]).copy()
+
+    # tz garanti
+    try:
+        if getattr(ev["datetime"].dt, "tz", None) is None:
+            ev["datetime"] = ev["datetime"].dt.tz_localize(SF_TZ, nonexistent="shift_forward", ambiguous="NaT")
+        else:
+            ev["datetime"] = ev["datetime"].dt.tz_convert(SF_TZ)
+    except Exception:
+        pass
+
+    ev = ev.dropna(subset=["datetime"]).sort_values(["GEOID", "datetime"]).copy()
+
+    # int64 ns tabanlı hızlı pencere sayımı
+    windows = {
+        "crime_count_last_1h":  pd.Timedelta(hours=1).value,
+        "crime_count_last_3h":  pd.Timedelta(hours=3).value,
+        "crime_count_last_6h":  pd.Timedelta(hours=6).value,
+        "crime_count_last_24h": pd.Timedelta(hours=24).value,
+        "crime_count_last_7d":  pd.Timedelta(days=7).value,
+    }
+
+    for c in windows:
+        out[c] = 0
+
+    # panel tarafını GEOID + slot_start_dt'ye göre sırala
+    out["_row_id_tmp"] = np.arange(len(out))
+    out = out.sort_values(["GEOID", "slot_start_dt"]).copy()
+
+    ev_groups = {g: x["datetime"].view("int64").to_numpy() for g, x in ev.groupby("GEOID", sort=False)}
+
+    for geoid, idx in out.groupby("GEOID", sort=False).groups.items():
+        slot_vals = pd.to_datetime(out.loc[idx, "slot_start_dt"], errors="coerce")
+        slot_ns = slot_vals.view("int64").to_numpy()
+
+        ev_ns = ev_groups.get(str(geoid))
+        if ev_ns is None or len(ev_ns) == 0:
+            continue
+
+        # current slot hariç: [slot_start - window, slot_start)
+        right = np.searchsorted(ev_ns, slot_ns, side="left")
+
+        for col, win_ns in windows.items():
+            left = np.searchsorted(ev_ns, slot_ns - win_ns, side="left")
+            out.loc[idx, col] = (right - left).astype(np.int32)
+
+    out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
+    return out
+    
+# ============================================================
 # ✅ PANEL (GRID) ÜRET — sf_crime_y.csv
 #   - unit: GEOID × date × hour_range (3-hour)
 #   - Y_label: o slotta en az 1 event varsa 1, yoksa 0
@@ -799,6 +891,23 @@ eh = pd.to_numeric(panel_evt["event_hour"], errors="coerce").fillna(0).astype(in
 start = (eh // 3) * 3
 panel_evt["hour_range"] = start.map(lambda s: f"{int(s):02d}-{int(min(s+3,24)):02d}")
 
+# slot başlangıç saati ve datetime (event-level anchor için)
+panel_evt["slot_start_hour"] = start.astype(int)
+panel_evt["slot_start_dt"] = (
+    pd.to_datetime(panel_evt["date"], errors="coerce") +
+    pd.to_timedelta(panel_evt["slot_start_hour"], unit="h")
+)
+
+try:
+    if getattr(panel_evt["slot_start_dt"].dt, "tz", None) is None:
+        panel_evt["slot_start_dt"] = panel_evt["slot_start_dt"].dt.tz_localize(
+            SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
+        )
+    else:
+        panel_evt["slot_start_dt"] = panel_evt["slot_start_dt"].dt.tz_convert(SF_TZ)
+except Exception:
+    pass
+    
 # 2) Slot bazında y_count + y_event/Y_label
 slot_y = (
     panel_evt.dropna(subset=["GEOID","date","hour_range"])
@@ -824,14 +933,49 @@ all_geoids = (
 dmin = panel_evt["date"].min()
 dmax = panel_evt["date"].max()
 all_dates = pd.date_range(dmin, dmax, freq="D").date
-hour_ranges = [f"{h:02d}-{h+3:02d}" for h in range(0,24,3)]
+hour_starts = list(range(0, 24, 3))
+hour_ranges = [f"{h:02d}-{h+3:02d}" for h in hour_starts]
 
 grid = pd.MultiIndex.from_product(
-    [all_geoids, all_dates, hour_ranges],
-    names=["GEOID","date","hour_range"]
+    [all_geoids, all_dates, hour_starts],
+    names=["GEOID", "date", "slot_start_hour"]
 ).to_frame(index=False)
 
+grid["hour_range"] = grid["slot_start_hour"].map(lambda h: f"{int(h):02d}-{int(h+3):02d}")
+grid["slot_start_dt"] = (
+    pd.to_datetime(grid["date"], errors="coerce") +
+    pd.to_timedelta(grid["slot_start_hour"], unit="h")
+)
+
+try:
+    if getattr(grid["slot_start_dt"].dt, "tz", None) is None:
+        grid["slot_start_dt"] = grid["slot_start_dt"].dt.tz_localize(
+            SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
+        )
+    else:
+        grid["slot_start_dt"] = grid["slot_start_dt"].dt.tz_convert(SF_TZ)
+except Exception:
+    pass
+
+# ✅ Veri yayın gecikmesi nedeniyle grid'i son yayınlanan slot başlangıcına kadar kes
+latest_published_dt = pd.to_datetime(panel_evt["datetime"], errors="coerce").max()
+if pd.notna(latest_published_dt):
+    try:
+        if getattr(pd.Series([latest_published_dt]).dt, "tz", None) is None:
+            latest_published_dt = pd.Timestamp(latest_published_dt).tz_localize(
+                SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
+            )
+        else:
+            latest_published_dt = pd.Timestamp(latest_published_dt).tz_convert(SF_TZ)
+    except Exception:
+        latest_published_dt = pd.Timestamp(latest_published_dt)
+
+    latest_anchor_slot = latest_published_dt.floor("3h")
+    grid = grid[grid["slot_start_dt"] <= latest_anchor_slot].copy()
+    print(f"🕒 Grid son yayınlanan slot'a göre kesildi: {latest_anchor_slot}")
+
 panel = grid.merge(slot_y, on=["GEOID","date","hour_range"], how="left")
+panel = add_exact_past_crime_features(panel, panel_evt)
 
 panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
 panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
@@ -845,6 +989,7 @@ season_map = {12:"Winter",1:"Winter",2:"Winter",3:"Spring",4:"Spring",5:"Spring"
 panel["season"] = panel["month"].map(season_map).astype("category")
 
 # 4) Yaz
+panel = panel.drop(columns=["slot_start_hour"], errors="ignore")
 print(f"🧾 PANEL output hedefi: {panel_csv_path}")
 safe_save(panel, panel_csv_path)
 print(f"💾 Panel (sf_crime_y) yazıldı → {panel_csv_path} | rows={len(panel):,}")
