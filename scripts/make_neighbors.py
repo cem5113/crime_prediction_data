@@ -2,16 +2,17 @@
 # ✅ enrich_with_neighbors_fr.py (FULL REVIZE v2.0 — PANEL-SAFE / LEAK-FREE / PUBLISH-LAG AWARE)
 #
 # Amaç:
-#   sf_crime_08.csv (panel) -> neighbor_crime_1d/3d/7d ekleyip sf_crime_09.csv üretmek
+# sf_crime_08.csv (panel) -> neighbor_crime_1h/3h/6h/24h/3d/7d ekleyip sf_crime_09.csv üretmek
 #
 # Kritik düzeltmeler:
 #   ✅ PANEL-SAFE base_cnt: "tüm satırlar olay" YANLIŞTI -> artık y_count / crime_count / Y_label üzerinden
-#   ✅ Leak-free + publish lag: 1d/3d/7d = (d-1) ve ayrıca yayın gecikmesi (24–48h) -> shift_k = 1 + publish_lag_days
+#   ✅ Leak-free + publish lag: 1h/3h/6h/24h/3d/7d geçmiş pencereleri publish lag ile hesaplanır
+#   ✅ Kolon garanti: merge sonrası neighbor_crime_1h/3h/6h/24h/3d/7d yoksa HARD FAIL
 #   ✅ Sadece komşu GEOID’lerin günlük olaylarını toplar (neighbor_cnt_day)
 #   ✅ Günlük seri asfreq('D') ile tamamlanır (eksik gün=0)
 #   ✅ Merge geri: GEOID×date anahtarıyla panelin tüm hour_range satırlarına yayılır
 #   ✅ Opsiyonel legacy alias: nei_7d_sum istersen neighbor_crime_7d ile doldurulur
-#   ✅ Kolon garanti: merge sonrası neighbor_crime_1d/3d/7d yoksa HARD FAIL
+
 #
 # Not:
 #   Senin istediğin "son suç tarihine göre 1d/3d/7d" mantığı publish_lag_days ile karşılanır:
@@ -189,7 +190,10 @@ def neighbor_daily_features(
 
     Çıktı:
       GEOID×date:
-        neighbor_crime_1d
+        neighbor_crime_1h
+        neighbor_crime_3h
+        neighbor_crime_6h
+        neighbor_crime_24h
         neighbor_crime_3d
         neighbor_crime_7d
     """
@@ -234,14 +238,21 @@ def neighbor_daily_features(
     def _per_geoid(gdf: pd.DataFrame) -> pd.DataFrame:
         gdf = gdf.sort_values("date").set_index("date")
         gdf = gdf.asfreq("D", fill_value=0)  # eksik günler 0
-
+    
         s = gdf["neighbor_cnt_day"].astype("int64")
-
-        # D gününün feature'ı: en son "bilinen" gün = D-shift_k
-        gdf["neighbor_crime_1d"] = s.shift(shift_k).fillna(0).astype("int64")
-        gdf["neighbor_crime_3d"] = s.shift(shift_k).rolling(3, min_periods=1).sum().fillna(0).astype("int64")
-        gdf["neighbor_crime_7d"] = s.shift(shift_k).rolling(7, min_periods=1).sum().fillna(0).astype("int64")
-
+    
+        # Not:
+        # Bu seri günlük olduğu için 1h/3h/6h/24h kolonları gerçek saatlik değil,
+        # publish-lag-aware "en son bilinen gün" mantığıyla yaklaşık kısa dönem temsilidir.
+        s_shift = s.shift(shift_k)
+    
+        gdf["neighbor_crime_1h"]  = s_shift.fillna(0).astype("int64")
+        gdf["neighbor_crime_3h"]  = s_shift.fillna(0).astype("int64")
+        gdf["neighbor_crime_6h"]  = s_shift.fillna(0).astype("int64")
+        gdf["neighbor_crime_24h"] = s_shift.fillna(0).astype("int64")
+        gdf["neighbor_crime_3d"]  = s_shift.rolling(3, min_periods=1).sum().fillna(0).astype("int64")
+        gdf["neighbor_crime_7d"]  = s_shift.rolling(7, min_periods=1).sum().fillna(0).astype("int64")
+    
         return gdf.reset_index()
 
     out = (
@@ -251,13 +262,29 @@ def neighbor_daily_features(
     )
 
     out = out.rename(columns={"geoid": "GEOID"})[
-        ["GEOID", "date", "neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
+        [
+            "GEOID",
+            "date",
+            "neighbor_crime_1h",
+            "neighbor_crime_3h",
+            "neighbor_crime_6h",
+            "neighbor_crime_24h",
+            "neighbor_crime_3d",
+            "neighbor_crime_7d",
+        ]
     ]
 
     out["GEOID"] = _norm_geoid(out["GEOID"], GEOID_LEN)
     out["date"]  = _as_date64(out["date"])
 
-    for c in ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]:
+    for c in [
+        "neighbor_crime_1h",
+        "neighbor_crime_3h",
+        "neighbor_crime_6h",
+        "neighbor_crime_24h",
+        "neighbor_crime_3d",
+        "neighbor_crime_7d",
+    ]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).clip(lower=0).round().astype("int64")
 
     return out
@@ -299,14 +326,22 @@ def main() -> int:
     feats = neighbor_daily_features(base, neigh, publish_lag_days=PUBLISH_LAG_DAYS)
     log(
         f"✨ neighbor feats: {len(feats):,} satır (GEOID×date) — kolonlar: "
-        f"[neighbor_crime_1d, neighbor_crime_3d, neighbor_crime_7d]"
+        f"[neighbor_crime_1h, neighbor_crime_3h, neighbor_crime_6h, "
+        f"neighbor_crime_24h, neighbor_crime_3d, neighbor_crime_7d]"
     )
 
     # ---- merge back to panel (her hour_range satırına aynı günlük değerler yayılır) ----
     feats["GEOID"] = _norm_geoid(feats["GEOID"], GEOID_LEN)
     feats["date"]  = _as_date64(feats["date"])
 
-    nb_cols = ["neighbor_crime_1d", "neighbor_crime_3d", "neighbor_crime_7d"]
+    nb_cols = [
+        "neighbor_crime_1h",
+        "neighbor_crime_3h",
+        "neighbor_crime_6h",
+        "neighbor_crime_24h",
+        "neighbor_crime_3d",
+        "neighbor_crime_7d",
+    ]
     df = df.drop(columns=[c for c in nb_cols if c in df.columns], errors="ignore")
 
     df_out = df.merge(feats, on=["GEOID", "date"], how="left")
@@ -333,7 +368,10 @@ def main() -> int:
 
     # ---- kalite kontrol: beklenen aralıklar ----
     log("🔎 QC:")
-    log(f"  neighbor_crime_1d sum={int(df_out['neighbor_crime_1d'].sum()):,}")
+    log(f"  neighbor_crime_1h sum={int(df_out['neighbor_crime_1h'].sum()):,}")
+    log(f"  neighbor_crime_3h sum={int(df_out['neighbor_crime_3h'].sum()):,}")
+    log(f"  neighbor_crime_6h sum={int(df_out['neighbor_crime_6h'].sum()):,}")
+    log(f"  neighbor_crime_24h sum={int(df_out['neighbor_crime_24h'].sum()):,}")
     log(f"  neighbor_crime_3d sum={int(df_out['neighbor_crime_3d'].sum()):,}")
     log(f"  neighbor_crime_7d sum={int(df_out['neighbor_crime_7d'].sum()):,}")
 
