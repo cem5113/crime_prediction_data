@@ -69,13 +69,13 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 # 🔴 Adlandırma standardı
 # - Ham 5y kayıt:             sf_311_last_5_years_y.csv
 # - 3 saatlik özet (3h bin):  sf_311_last_5_years.csv  (alias: sf_311_last_5_years_3h.csv)
-RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")
-AGG_BASENAME   = os.getenv("AGG_311_NAME",   "sf_311_last_5_years.csv")
-AGG_ALIAS      = os.getenv("AGG_311_ALIAS",  "sf_311_last_5_years_3h.csv")
+RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_10_years_y.csv")
+AGG_BASENAME   = os.getenv("AGG_311_NAME",   "sf_311_last_10_years.csv")
+AGG_ALIAS      = os.getenv("AGG_311_ALIAS",  "sf_311_last_10_years_3h.csv")
 
 # Eski ad uyumluluğu (opsiyonel kopya)
-LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
-LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_5_year.csv")
+LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_10_year_y.csv")
+LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_10_year.csv")
 
 # Socrata dataset
 DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-z8j6.json")
@@ -102,9 +102,9 @@ MAX_PAGES_PER_CHUNK     = int(os.getenv("SF311_MAX_PAGES_PER_CHUNK", "40"))
 MAX_CONSEC_EMPTY_CHUNKS = int(os.getenv("SF311_MAX_EMPTY_CHUNKS", "8"))  # çok boş geliyorsa erken çık
 
 # Pencere: varsayılan 5 yıl veya BACKFILL_DAYS override
-FIVE_YEARS     = 5 * 365
+HISTORY_YEARS  = int(os.getenv("SF311_HISTORY_YEARS", "10"))
 TODAY          = datetime.utcnow().date()
-DEFAULT_START  = TODAY - timedelta(days=FIVE_YEARS)
+DEFAULT_START  = (pd.Timestamp(TODAY) - pd.DateOffset(years=HISTORY_YEARS)).date()
 BACKFILL_DAYS  = int(os.getenv("BACKFILL_DAYS", "0"))
 REINGEST_DAYS  = int(os.getenv("SF311_REINGEST_DAYS", "14"))
 
@@ -381,16 +381,16 @@ def decide_start_date(df_existing):
         print(f"📌 Mod: backfill | start={start}")
         return start, "backfill"
 
-    # 2) Hiç veri yoksa full 5y
+    # 2) Hiç veri yoksa full history
     if df_existing.empty or not df_existing["datetime"].notna().any():
-        print(f"📌 Mod: full-5y (dosya yok/boş) | window ≥ {DEFAULT_START}")
-        return DEFAULT_START, "full-5y"
+        print(f"📌 Mod: full-{HISTORY_YEARS}y (dosya yok/boş) | window ≥ {DEFAULT_START}")
+        return DEFAULT_START, f"full-{HISTORY_YEARS}y"
 
     # 3) Incremental: gecikmeli gelen kayıtlar için overlap/backfill penceresi uygula
     last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
     if pd.isna(last_dt):
-        print(f"📌 Mod: full-5y (datetime parse edilemedi) | window ≥ {DEFAULT_START}")
-        return DEFAULT_START, "full-5y"
+        print(f"📌 Mod: full-{HISTORY_YEARS}y (datetime parse edilemedi) | window ≥ {DEFAULT_START}")
+        return DEFAULT_START, f"full-{HISTORY_YEARS}y"
 
     last_date = last_dt.date()
 
@@ -557,7 +557,7 @@ def main():
         df_raw.sort_values("datetime", inplace=True)
 
         save_atomic(df_raw, raw_path)  # << artifact adı
-        print(f"✅ Ham (5y/chunk) kaydedildi: {os.path.abspath(raw_path)}")
+        print(f"✅ Ham ({HISTORY_YEARS}y/chunk) kaydedildi: {os.path.abspath(raw_path)}")
 
         # Uyumluluk kopyaları (workflow eski adları arıyor olabilir)
         try:
