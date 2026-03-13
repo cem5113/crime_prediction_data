@@ -24,13 +24,13 @@ pd.options.mode.copy_on_write = True
 # AYARLAR
 # =====================================================================================
 DATA_DIR      = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").rstrip("/")
-WEATHER_CSV   = os.getenv("WEATHER_CSV", os.path.join(DATA_DIR, "sf_weather_5years.csv"))
+WEATHER_CSV   = os.getenv("WEATHER_CSV", os.path.join(DATA_DIR, "sf_weather_10years.csv"))
 
 UPLOAD_WEATHER_TO_GH = os.getenv("UPLOAD_WEATHER_TO_GH", "0") in ("1", "true", "True")
 PROBE_GH_STATUS      = os.getenv("PROBE_GH_STATUS", "1") in ("1", "true", "True")
 GITHUB_TOKEN         = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 REPO_NAME            = os.getenv("REPO_NAME", "cem5113/crime_prediction_data")
-WEATHER_TARGET_PATH  = os.getenv("WEATHER_TARGET_PATH", f"{DATA_DIR}/sf_weather_5years.csv")
+WEATHER_TARGET_PATH  = os.getenv("WEATHER_TARGET_PATH", f"{DATA_DIR}/sf_weather_10years.csv")
 
 # Upload modu: force_update | skip_if_same
 GH_UPLOAD_MODE       = os.getenv("GH_UPLOAD_MODE", "skip_if_same").strip()
@@ -53,17 +53,18 @@ CRIME_DATE_COL_CANDIDATES = [c.strip() for c in os.getenv(
 # =====================================================================================
 # TARİH PENCERESİ
 # =====================================================================================
-def five_year_window(today: date):
+HISTORY_YEARS = int(os.getenv("WEATHER_HISTORY_YEARS", "10"))
+
+def history_window(today: date):
     try:
-        start = today.replace(year=today.year - 5)
+        start = today.replace(year=today.year - HISTORY_YEARS)
     except ValueError:
-        start = today - timedelta(days=365*5 + 2)
-    # ✅ +1 kaldırıldı → tam 5 yıl aralığı
+        start = today - timedelta(days=365*HISTORY_YEARS + 2)
     return (start, today)
 
 today = date.today()
-win_start, win_end = five_year_window(today)
-print(f"📅 5Y Pencere: {win_start} → {win_end}")
+win_start, win_end = history_window(today)
+print(f"📅 {HISTORY_YEARS}Y Pencere: {win_start} → {win_end}")
 
 # =====================================================================================
 # YARDIMCILAR
@@ -427,7 +428,7 @@ print(f"🧪 WX table coverage (tavg notna): {cov:.3%}")
 nan_counts = allw.isna().sum()
 nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
 
-print("🔎 NaN sayıları (sf_weather_5years yazılmadan önce):")
+print(f"🔎 NaN sayıları ({os.path.basename(WEATHER_CSV)} yazılmadan önce):")
 if nan_counts.empty:
     print("✅ NaN yok.")
 else:
