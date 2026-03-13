@@ -445,7 +445,8 @@ FORCE_FULL = os.getenv("CRIME_FORCE_FULL", "0").lower() in ("1","true","yes","on
 
 if missing_dates or FORCE_FULL:
     if FORCE_FULL:
-        start_missing, end_missing = (today - timedelta(days=5*365)), today
+        start_missing = (pd.Timestamp(today) - pd.DateOffset(years=10)).date()
+        end_missing = today
     else:
         start_missing, end_missing = missing_dates[0], missing_dates[-1]
     print(f"\U0001F4E5 CRIME indirme penceresi: {start_missing} → {end_missing} (BULK={BULK_RANGE}, CHUNK={CHUNK_LIMIT})")
@@ -647,9 +648,9 @@ if {"category", "subcategory"}.issubset(df_all.columns):
     df_all.loc[only_sub_nan, "subcategory"] = "Unknown"
 
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce").dt.date
-start_date_5y = (pd.Timestamp(today) - pd.DateOffset(years=5)).date()
-df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_5y)]
-print("🧾 5y cutoff (takvim yılı):", start_date_5y)
+start_date_10y = (pd.Timestamp(today) - pd.DateOffset(years=10)).date()
+df_all = df_all[df_all["date"].notna() & (df_all["date"] >= start_date_10y)]
+print("🧾 10y cutoff (takvim yılı):", start_date_10y)
 df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce")
 df_all["time"] = df_all["time"].astype(str).fillna("00:00:00")
 df_all["datetime"] = pd.to_datetime(df_all["date"].dt.strftime("%Y-%m-%d") + " " + df_all["time"], errors="coerce")
