@@ -93,9 +93,9 @@ OUT_DIR = Path(os.getenv("CRIME_DATA_DIR", str(Path(BASE_DIR)))).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 911 summary dosya adları (OUT_DIR altında)
-LOCAL_NAME = "sf_911_last_5_year.csv"
+LOCAL_NAME = "sf_911_last_10_year.csv"
 local_summary_path = OUT_DIR / LOCAL_NAME
-Y_NAME = "sf_911_last_5_year_y.csv"
+Y_NAME = "sf_911_last_10_year_y.csv"
 y_summary_path     = OUT_DIR / Y_NAME
 
 # sf_crime_01.csv (OUT_DIR altında)
@@ -130,8 +130,8 @@ SF911_REINGEST_DAYS = int(os.getenv("SF911_REINGEST_DAYS", "14"))
 RAW_911_URL_ENV = os.getenv("RAW_911_URL", "").strip()
 RAW_911_URL_CANDIDATES = [
     RAW_911_URL_ENV or "",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year_y.csv",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
+    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_10_year_y.csv",
+    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_10_year.csv",
 ]
 
 # Komşu ayarları
@@ -336,7 +336,7 @@ def ensure_local_911_base() -> Optional[Path]:
     - ARTIFACT_NAME ve sf-crime-pipeline-output* klasörlerini glob ile tarar
     """
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
+    prefer_names = ["sf_911_last_10_year_y.csv", "sf_911_last_10_year.csv"]
 
     # --- crime_grid_dir bul (varsa artifact içini yakalamak için iyi ipucu) ---
     crime_grid_candidates = [
@@ -585,21 +585,22 @@ def incremental_summary(start_day: datetime.date, end_day: datetime.date) -> pd.
     return make_standard_summary(raw)
 
 # MAIN — LOCAL/RELEASE → INCREMENT → ENRICH → MERGE
-five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5*365)
+HISTORY_YEARS = int(os.getenv("SF911_HISTORY_YEARS", "10"))
+ten_years_ago = (pd.Timestamp(datetime.now(timezone.utc).date()) - pd.DateOffset(years=HISTORY_YEARS)).date()
 
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
 # 1) Önce yerel tabanı dene (artifact -> OUT_DIR öncelikli)
 base_csv_path = ensure_local_911_base()
 if base_csv_path is not None:
-    final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
+    final_911 = summary_from_local(base_csv_path, min_date=ten_years_ago)
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Yerel 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
 else:
     # 2) Release fallback (Y URL'leri öncelikli)
     release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
-    final_911 = summary_from_release(release_url, min_date=five_years_ago)
+    final_911 = summary_from_release(release_url, min_date=ten_years_ago)
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Release özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
@@ -612,8 +613,8 @@ if base_max_date is None:
 else:
     fetch_start = base_max_date - timedelta(days=max(1, SF911_REINGEST_DAYS))
     fetch_end   = today_sf
-    if fetch_start < five_years_ago:
-        fetch_start = five_years_ago
+    if fetch_start < ten_years_ago:
+        fetch_start = ten_years_ago
     if fetch_start > fetch_end:
         fetch_start = fetch_end
 log(f"🗓️ İndirme aralığı: {fetch_start} → {fetch_end} ({(fetch_end - fetch_start).days + 1} gün)")
@@ -630,7 +631,7 @@ if inc is not None and not inc.empty:
     final_911 = (final_911.dropna(subset=["date"])
                              .sort_values(subset_cols if subset_cols else ["date"])
                              .drop_duplicates(subset=subset_cols if subset_cols else ["date"], keep="last"))
-    final_911 = final_911[final_911["date"] >= five_years_ago]
+    final_911 = final_911[final_911["date"] >= ten_years_ago]
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"💾 911 özet GÜNCELLENDİ (base+API) → {local_summary_path} & {y_summary_path} (+{len(final_911)-before:,} satır)")
