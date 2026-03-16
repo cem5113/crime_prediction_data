@@ -788,46 +788,48 @@ safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
 
 # ============================================================
-# ✅ PAST CRIME FEATURES (event-time exact, leakage-safe)
-#   - crime_count_last_1h
-#   - crime_count_last_3h
-#   - crime_count_last_6h
-#   - crime_count_last_24h
-#   - crime_count_last_7d
+# ✅ LAST-CRIME ANCHOR FEATURES
+#   - last_crime_dt
+#   - crime_count_last_1d_from_last_crime
+#   - crime_count_last_3d_from_last_crime
+#   - crime_count_last_7d_from_last_crime
 #   Hesap mantığı:
-#     Her panel satırı için slot başlangıç zamanından GERİYE bakılır.
-#     Current slot dahil edilmez.
+#     Her panel satırı için slot_start_dt anına kadar bilinen
+#     son suç zamanı (last_crime_dt) bulunur.
+#     Sayaçlar bu anchor'dan geriye doğru hesaplanır.
 # ============================================================
-def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Her panel satırı için:
+      1) slot_start_dt anına kadar aynı GEOID içindeki en son suç zamanını bulur.
+      2) Bu last_crime_dt anchor alınarak geriye dönük 1d / 3d / 7d olay sayılarını hesaplar.
+
+    Not:
+      - Gelecek olayları kullanmaz.
+      - Aynı slot içindeki olaylar, eğer slot_start_dt'den sonra ise dikkate alınmaz.
+      - Anchor bulunamazsa sayaçlar 0 kalır.
+    """
     out = panel_df.copy()
 
+    feature_cols = [
+        "crime_count_last_1d_from_last_crime",
+        "crime_count_last_3d_from_last_crime",
+        "crime_count_last_7d_from_last_crime",
+        "last_crime_dt",
+    ]
+
     if out.empty:
-        for c in [
-            "crime_count_last_1h",
-            "crime_count_last_3h",
-            "crime_count_last_6h",
-            "crime_count_last_24h",
-            "crime_count_last_3d",
-            "crime_count_last_7d",
-        ]:
-            out[c] = 0
+        for c in feature_cols:
+            out[c] = 0 if c != "last_crime_dt" else pd.NaT
         return out
 
-    # slot_start_dt zorunlu
     if "slot_start_dt" not in out.columns:
         raise ValueError("panel_df içinde 'slot_start_dt' kolonu yok.")
 
     ev = event_df.copy()
     if ev.empty or ("GEOID" not in ev.columns) or ("datetime" not in ev.columns):
-        for c in [
-            "crime_count_last_1h",
-            "crime_count_last_3h",
-            "crime_count_last_6h",
-            "crime_count_last_24h",
-            "crime_count_last_3d",
-            "crime_count_last_7d",
-        ]:
-            out[c] = 0
+        for c in feature_cols:
+            out[c] = 0 if c != "last_crime_dt" else pd.NaT
         return out
 
     ev["GEOID"] = ev["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
@@ -837,7 +839,9 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
     # tz garanti
     try:
         if getattr(ev["datetime"].dt, "tz", None) is None:
-            ev["datetime"] = ev["datetime"].dt.tz_localize(SF_TZ, nonexistent="shift_forward", ambiguous="NaT")
+            ev["datetime"] = ev["datetime"].dt.tz_localize(
+                SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
+            )
         else:
             ev["datetime"] = ev["datetime"].dt.tz_convert(SF_TZ)
     except Exception:
@@ -845,39 +849,74 @@ def add_exact_past_crime_features(panel_df: pd.DataFrame, event_df: pd.DataFrame
 
     ev = ev.dropna(subset=["datetime"]).sort_values(["GEOID", "datetime"]).copy()
 
-    # int64 ns tabanlı hızlı pencere sayımı
-    windows = {
-        "crime_count_last_1h":  pd.Timedelta(hours=1).value,
-        "crime_count_last_3h":  pd.Timedelta(hours=3).value,
-        "crime_count_last_6h":  pd.Timedelta(hours=6).value,
-        "crime_count_last_24h": pd.Timedelta(hours=24).value,
-        "crime_count_last_3d":  pd.Timedelta(days=3).value,
-        "crime_count_last_7d":  pd.Timedelta(days=7).value,
-    }
+    # çıktı kolonları
+    out["crime_count_last_1d_from_last_crime"] = 0
+    out["crime_count_last_3d_from_last_crime"] = 0
+    out["crime_count_last_7d_from_last_crime"] = 0
+    out["last_crime_dt"] = pd.NaT
 
-    for c in windows:
-        out[c] = 0
-
-    # panel tarafını GEOID + slot_start_dt'ye göre sırala
     out["_row_id_tmp"] = np.arange(len(out))
     out = out.sort_values(["GEOID", "slot_start_dt"]).copy()
 
-    ev_groups = {g: x["datetime"].astype("int64").to_numpy() for g, x in ev.groupby("GEOID", sort=False)}
+    # event ns map
+    ev_groups = {
+        g: x["datetime"].astype("int64").to_numpy()
+        for g, x in ev.groupby("GEOID", sort=False)
+    }
+
+    windows = {
+        "crime_count_last_1d_from_last_crime": pd.Timedelta(days=1).value,
+        "crime_count_last_3d_from_last_crime": pd.Timedelta(days=3).value,
+        "crime_count_last_7d_from_last_crime": pd.Timedelta(days=7).value,
+    }
 
     for geoid, idx in out.groupby("GEOID", sort=False).groups.items():
         slot_vals = pd.to_datetime(out.loc[idx, "slot_start_dt"], errors="coerce")
-        slot_ns = slot_vals.astype("int64").to_numpy()
 
+        # tz hizala
+        try:
+            if getattr(slot_vals.dt, "tz", None) is None:
+                slot_vals = slot_vals.dt.tz_localize(
+                    SF_TZ, nonexistent="shift_forward", ambiguous="NaT"
+                )
+            else:
+                slot_vals = slot_vals.dt.tz_convert(SF_TZ)
+        except Exception:
+            pass
+
+        slot_ns = slot_vals.astype("int64").to_numpy()
         ev_ns = ev_groups.get(str(geoid))
+
         if ev_ns is None or len(ev_ns) == 0:
             continue
 
-        # current slot hariç: [slot_start - window, slot_start)
-        right = np.searchsorted(ev_ns, slot_ns, side="left")
+        # her slot için slot_start_dt anına kadar olan son suç index'i
+        # last event <= slot_start_dt için side="right" - 1
+        pos = np.searchsorted(ev_ns, slot_ns, side="right") - 1
 
+        valid = pos >= 0
+        if not valid.any():
+            continue
+
+        last_ns = np.full(len(slot_ns), np.nan, dtype="float64")
+        last_ns[valid] = ev_ns[pos[valid]]
+
+        # datetime olarak yaz
+        last_dt = pd.to_datetime(last_ns, errors="coerce", utc=True).tz_convert(SF_TZ)
+        out.loc[idx, "last_crime_dt"] = pd.Series(last_dt, index=idx)
+
+        # pencere sayımları: [last_crime_dt - win, last_crime_dt]
         for col, win_ns in windows.items():
-            left = np.searchsorted(ev_ns, slot_ns - win_ns, side="left")
-            out.loc[idx, col] = (right - left).astype(np.int32)
+            counts = np.zeros(len(slot_ns), dtype=np.int32)
+
+            valid_pos = np.where(valid)[0]
+            if len(valid_pos) > 0:
+                anchors = ev_ns[pos[valid]]
+                left = np.searchsorted(ev_ns, anchors - win_ns, side="left")
+                right = np.searchsorted(ev_ns, anchors, side="right")
+                counts[valid] = (right - left).astype(np.int32)
+
+            out.loc[idx, col] = counts
 
     out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
     return out
@@ -983,7 +1022,7 @@ if pd.notna(latest_published_dt):
 slot_y = slot_y[["GEOID", "date", "hour_range", "y_count", "y_event", "Y_label"]].copy()
 
 panel = grid.merge(slot_y, on=["GEOID", "date", "hour_range"], how="left")
-panel = add_exact_past_crime_features(panel, df_all)
+panel = add_last_crime_anchor_features(panel, df_all)
 
 panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
 panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
