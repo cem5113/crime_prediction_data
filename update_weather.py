@@ -42,7 +42,7 @@ GH_UPLOAD_MODE = os.getenv("GH_UPLOAD_MODE", "skip_if_same").strip()
 # Meteostat ayarları
 LAT = float(os.getenv("WX_LAT", "37.7749"))
 LON = float(os.getenv("WX_LON", "-122.4194"))
-HOT_DAY_THRESHOLD_C = float(os.getenv("HOT_DAY_THRESHOLD_C", "25.0"))
+HOT_DAY_THRESHOLD_C = float(os.getenv("HOT_DAY_THRESHOLD_C", "30.0"))
 
 ENRICH_CRIME_WITH_WEATHER = os.getenv("ENRICH_CRIME_WITH_WEATHER", "1") in ("1", "true", "True")
 
@@ -174,16 +174,15 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
     d["tmax_lag1"] = d["tmax"].shift(1)
 
     # rolling
-    d["prcp_roll3"] = d["prcp"].rolling(3, min_periods=1).mean()
-    d["prcp_roll7"] = d["prcp"].rolling(7, min_periods=1).mean()
-
-    d["tavg_roll3"] = d["tavg"].rolling(3, min_periods=1).mean()
-    d["tavg_roll7"] = d["tavg"].rolling(7, min_periods=1).mean()
-
-    d["tmax_roll3"] = d["tmax"].rolling(3, min_periods=1).mean()
-    d["tmax_roll7"] = d["tmax"].rolling(7, min_periods=1).mean()
-
-    # anomaly
+    d["prcp_roll3"] = d["prcp"].shift(1).rolling(3, min_periods=1).mean()
+    d["prcp_roll7"] = d["prcp"].shift(1).rolling(7, min_periods=1).mean()
+    
+    d["tavg_roll3"] = d["tavg"].shift(1).rolling(3, min_periods=1).mean()
+    d["tavg_roll7"] = d["tavg"].shift(1).rolling(7, min_periods=1).mean()
+    
+    d["tmax_roll3"] = d["tmax"].shift(1).rolling(3, min_periods=1).mean()
+    d["tmax_roll7"] = d["tmax"].shift(1).rolling(7, min_periods=1).mean()
+    
     d["temp_anom_7d"] = d["tavg"] - d["tavg_roll7"]
     d["prcp_anom_7d"] = d["prcp"] - d["prcp_roll7"]
 
