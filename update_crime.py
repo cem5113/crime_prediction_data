@@ -1045,6 +1045,92 @@ def add_event_pressure_features(panel_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # ============================================================
+# ✅ CRIME MOMENTUM FEATURES (LEAK-FREE, PANEL-LEVEL)
+#   - 1d, 3d, 7d geçmiş suç yoğunluğu
+#   - momentum_1d = crime_1d - crime_3d
+#   - momentum_3d = crime_3d - crime_7d
+#   - acceleration = momentum_1d - momentum_3d
+#
+# Not:
+#   - 3 saatlik slot yapısına göre:
+#       1 gün = 8 slot
+#       3 gün = 24 slot
+#       7 gün = 56 slot
+#   - shift(1) kullanıldığı için current slot leakage yok
+# ============================================================
+def add_crime_momentum_features(panel_df: pd.DataFrame) -> pd.DataFrame:
+    out = panel_df.copy()
+
+    required = ["GEOID", "date", "hour_range", "slot_start_dt", "y_count"]
+    for c in required:
+        if c not in out.columns:
+            raise ValueError(f"panel_df içinde gerekli kolon yok: {c}")
+
+    out["GEOID"] = out["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["slot_start_dt"] = pd.to_datetime(out["slot_start_dt"], errors="coerce")
+    out["y_count"] = pd.to_numeric(out["y_count"], errors="coerce").fillna(0).astype(float)
+
+    out = out.sort_values(["GEOID", "slot_start_dt"]).reset_index(drop=True)
+
+    # 3 saatlik slot sayıları
+    WIN_1D = 8
+    WIN_3D = 24
+    WIN_7D = 56
+
+    by_geoid = out["GEOID"]
+
+    # geçmiş toplamlar (current slot HARİÇ)
+    out["crime_1d"] = (
+        out.groupby("GEOID")["y_count"]
+           .shift(1)
+           .rolling(WIN_1D, min_periods=1)
+           .sum()
+           .reset_index(level=0, drop=True)
+    )
+
+    out["crime_3d"] = (
+        out.groupby("GEOID")["y_count"]
+           .shift(1)
+           .rolling(WIN_3D, min_periods=1)
+           .sum()
+           .reset_index(level=0, drop=True)
+    )
+
+    out["crime_7d"] = (
+        out.groupby("GEOID")["y_count"]
+           .shift(1)
+           .rolling(WIN_7D, min_periods=1)
+           .sum()
+           .reset_index(level=0, drop=True)
+    )
+
+    # momentum
+    out["momentum_1d"] = out["crime_1d"] - out["crime_3d"]
+    out["momentum_3d"] = out["crime_3d"] - out["crime_7d"]
+    out["acceleration"] = out["momentum_1d"] - out["momentum_3d"]
+
+    # opsiyonel: normalize edilmiş versiyonlar (çok faydalı olabilir)
+    out["momentum_ratio_1d_3d"] = out["crime_1d"] / (out["crime_3d"] + 1e-6)
+    out["momentum_ratio_3d_7d"] = out["crime_3d"] / (out["crime_7d"] + 1e-6)
+
+    feat_cols = [
+        "crime_1d", "crime_3d", "crime_7d",
+        "momentum_1d", "momentum_3d", "acceleration",
+        "momentum_ratio_1d_3d", "momentum_ratio_3d_7d",
+    ]
+
+    for c in feat_cols:
+        out[c] = (
+            pd.to_numeric(out[c], errors="coerce")
+              .replace([np.inf, -np.inf], np.nan)
+              .fillna(0)
+              .astype("float32")
+        )
+
+    return out
+    
+# ============================================================
 # ✅ PANEL (GRID) ÜRET — sf_crime_y.csv
 #   - unit: GEOID × date × hour_range (3-hour)
 #   - Y_label: o slotta en az 1 event varsa 1, yoksa 0
@@ -1154,6 +1240,9 @@ panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
 # ✅ event-like pressure features
 panel = add_event_pressure_features(panel)
 print("✅ event-like pressure features eklendi")
+
+panel = add_crime_momentum_features(panel)
+print("✅ crime momentum features eklendi")
 
 panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
 panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
