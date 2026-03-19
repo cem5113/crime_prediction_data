@@ -221,8 +221,17 @@ def socrata_download_with_retry(base_url: str, headers: dict, where_clause: str 
 # =========================================================
 # GEOID eşleme
 # =========================================================
-BASE_DIR = "/content/drive/MyDrive/crime_data"
+if os.path.exists("/content"):
+    # Google Colab
+    BASE_DIR = "/content/drive/MyDrive/crime_data"
+else:
+    # GitHub Actions / local
+    BASE_DIR = "data"
+
+# klasörü oluştur
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
+
+print(f"[INFO] BASE_DIR: {BASE_DIR}")
 
 CENSUS_CANDIDATES = [
     os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
