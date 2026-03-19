@@ -921,6 +921,22 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
     out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
     return out
 
+EVENT_FEATURES = [
+    "event_recent_mean_7",
+    "event_recent_mean_28",
+    "event_recent_std_14",
+    "event_same_hour_last_week",
+    "event_same_hour_last_4week_mean",
+    "event_spike_recent_7",
+    "event_spike_recent_28",
+    "event_extreme_recent_14",
+    "event_call_pressure_7",
+    "event_call_pressure_28",
+    "event_311_pressure_7",
+    "event_311_pressure_28",
+    "event_pressure_score",
+]
+
 # ============================================================
 # ✅ EVENT-LIKE PRESSURE FEATURES (LEAK-FREE, PANEL-LEVEL)
 #   - Gerçek event datası olmadığı için
