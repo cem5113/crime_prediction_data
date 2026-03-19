@@ -930,10 +930,6 @@ EVENT_FEATURES = [
     "event_spike_recent_7",
     "event_spike_recent_28",
     "event_extreme_recent_14",
-    "event_call_pressure_7",
-    "event_call_pressure_28",
-    "event_311_pressure_7",
-    "event_311_pressure_28",
     "event_pressure_score",
 ]
 
@@ -956,63 +952,79 @@ def add_event_pressure_features(panel_df: pd.DataFrame) -> pd.DataFrame:
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out = out.sort_values(["GEOID", "date", "hour_range"]).reset_index(drop=True)
 
-    g = out.groupby("GEOID")["y_count"]
+    def grp_shift_roll_mean(s: pd.Series, by: pd.Series, win: int, minp: int):
+        return (
+            s.groupby(by).shift(1)
+             .groupby(by)
+             .rolling(win, min_periods=minp)
+             .mean()
+             .reset_index(level=0, drop=True)
+        )
 
-    # Yakın geçmiş yoğunluğu
-    out["event_recent_mean_7"] = g.shift(1).rolling(7, min_periods=3).mean()
-    out["event_recent_mean_28"] = g.shift(1).rolling(28, min_periods=7).mean()
-    out["event_recent_std_14"] = g.shift(1).rolling(14, min_periods=5).std()
+    def grp_shift_roll_std(s: pd.Series, by: pd.Series, win: int, minp: int):
+        return (
+            s.groupby(by).shift(1)
+             .groupby(by)
+             .rolling(win, min_periods=minp)
+             .std()
+             .reset_index(level=0, drop=True)
+        )
 
-    # Aynı GEOID + aynı saat slotu geçmiş paterni
-    gh = out.groupby(["GEOID", "hour_range"])["y_count"]
-    out["event_same_hour_last_week"] = gh.shift(7)
-    out["event_same_hour_last_4week_mean"] = gh.shift(1).rolling(4, min_periods=2).mean()
+    by_geoid = out["GEOID"]
+    y = out["y_count"].astype(float)
 
-    # Geçmişte spike olmuş muydu?
-    past_mean_7 = g.shift(1).rolling(7, min_periods=3).mean()
-    past_std_14 = g.shift(1).rolling(14, min_periods=5).std()
+    out["event_recent_mean_7"] = grp_shift_roll_mean(y, by_geoid, 7, 3)
+    out["event_recent_mean_28"] = grp_shift_roll_mean(y, by_geoid, 28, 7)
+    out["event_recent_std_14"] = grp_shift_roll_std(y, by_geoid, 14, 5)
 
-    raw_spike = (out["y_count"] > (past_mean_7 * 1.5)).astype(int)
-    raw_extreme = (((out["y_count"] - past_mean_7) / (past_std_14 + 1e-5)) > 2).astype(int)
+    by_geoid_hr = out["GEOID"].astype(str) + "|" + out["hour_range"].astype(str)
+    out["event_same_hour_last_week"] = y.groupby(by_geoid_hr).shift(7)
+    out["event_same_hour_last_4week_mean"] = (
+        y.groupby(by_geoid_hr).shift(1)
+         .groupby(by_geoid_hr)
+         .rolling(4, min_periods=2)
+         .mean()
+         .reset_index(level=0, drop=True)
+    )
+
+    past_mean_7 = grp_shift_roll_mean(y, by_geoid, 7, 3)
+    past_std_14 = grp_shift_roll_std(y, by_geoid, 14, 5)
+
+    raw_spike = (y > (past_mean_7 * 1.5)).astype(int)
+    raw_extreme = (((y - past_mean_7) / (past_std_14 + 1e-5)) > 2).astype(int)
 
     out["event_spike_recent_7"] = (
-        raw_spike.groupby(out["GEOID"]).shift(1).rolling(7, min_periods=3).mean()
+        raw_spike.groupby(by_geoid).shift(1)
+        .groupby(by_geoid)
+        .rolling(7, min_periods=3)
+        .mean()
+        .reset_index(level=0, drop=True)
     )
+
     out["event_spike_recent_28"] = (
-        raw_spike.groupby(out["GEOID"]).shift(1).rolling(28, min_periods=7).mean()
+        raw_spike.groupby(by_geoid).shift(1)
+        .groupby(by_geoid)
+        .rolling(28, min_periods=7)
+        .mean()
+        .reset_index(level=0, drop=True)
     )
+
     out["event_extreme_recent_14"] = (
-        raw_extreme.groupby(out["GEOID"]).shift(1).rolling(14, min_periods=5).mean()
+        raw_extreme.groupby(by_geoid).shift(1)
+        .groupby(by_geoid)
+        .rolling(14, min_periods=5)
+        .mean()
+        .reset_index(level=0, drop=True)
     )
 
-    # 911/311 çağrı baskısı varsa kullan
-    if "911_geo_last3d" in out.columns:
-        c911 = out.groupby("GEOID")["911_geo_last3d"]
-        out["event_call_pressure_7"] = c911.shift(1).rolling(7, min_periods=3).mean()
-        out["event_call_pressure_28"] = c911.shift(1).rolling(28, min_periods=7).mean()
-    else:
-        out["event_call_pressure_7"] = 0.0
-        out["event_call_pressure_28"] = 0.0
-
-    if "311_request_count" in out.columns:
-        c311 = out.groupby("GEOID")["311_request_count"]
-        out["event_311_pressure_7"] = c311.shift(1).rolling(7, min_periods=3).mean()
-        out["event_311_pressure_28"] = c311.shift(1).rolling(28, min_periods=7).mean()
-    else:
-        out["event_311_pressure_7"] = 0.0
-        out["event_311_pressure_28"] = 0.0
-
-    # Birleşik skor
     out["event_pressure_score"] = (
-        0.25 * np.log1p(out["event_recent_mean_7"].fillna(0)) +
-        0.15 * np.log1p(out["event_recent_mean_28"].fillna(0)) +
+        0.30 * np.log1p(out["event_recent_mean_7"].fillna(0)) +
+        0.20 * np.log1p(out["event_recent_mean_28"].fillna(0)) +
         0.15 * np.log1p(out["event_same_hour_last_week"].fillna(0)) +
         0.10 * np.log1p(out["event_same_hour_last_4week_mean"].fillna(0)) +
         0.15 * out["event_spike_recent_7"].fillna(0) +
-        0.10 * out["event_spike_recent_28"].fillna(0) +
-        0.10 * out["event_extreme_recent_14"].fillna(0) +
-        0.07 * np.log1p(out["event_call_pressure_7"].fillna(0)) +
-        0.03 * np.log1p(out["event_311_pressure_7"].fillna(0))
+        0.05 * out["event_spike_recent_28"].fillna(0) +
+        0.05 * out["event_extreme_recent_14"].fillna(0)
     )
 
     event_cols = [
@@ -1024,10 +1036,6 @@ def add_event_pressure_features(panel_df: pd.DataFrame) -> pd.DataFrame:
         "event_spike_recent_7",
         "event_spike_recent_28",
         "event_extreme_recent_14",
-        "event_call_pressure_7",
-        "event_call_pressure_28",
-        "event_311_pressure_7",
-        "event_311_pressure_28",
         "event_pressure_score",
     ]
 
