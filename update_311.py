@@ -1,29 +1,63 @@
 # scripts/update_311.py
-import os, re, time, requests
-import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Point
-from datetime import datetime, timedelta
-from urllib.parse import quote
-from pathlib import Path
+from __future__ import annotations
 
-# ---- TZ (opsiyonel) ---------------------------------------------------------
+import os
+import re
+import time
+from pathlib import Path
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import requests
+import geopandas as gpd
+
+# ---- TZ ---------------------------------------------------------
 try:
     import zoneinfo
     SF_TZ = zoneinfo.ZoneInfo("America/Los_Angeles")
 except Exception:
     SF_TZ = None
 
-def _to_date_series(x):
-    """UTC -> SF yerel tarihe dönüştür (varsa); olmazsa naive tarihe düş."""
-    try:
-        s = pd.to_datetime(x, utc=True, errors="coerce")
-        if SF_TZ is not None:
-            s = s.tz_convert(SF_TZ)
-        return s.dt.date.dropna()
-    except Exception:
-        return pd.to_datetime(x, errors="coerce").dt.date.dropna()
+# ================== AYARLAR ==================
+SAVE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
+os.makedirs(SAVE_DIR, exist_ok=True)
 
+DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
+GEOID_LEN = DEFAULT_GEOID_LEN  # backward compatibility
+
+RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")   # event-level
+AGG_BASENAME   = os.getenv("AGG_311_NAME", "sf_311_last_5_years.csv")        # 3h aggregate
+AGG_ALIAS      = os.getenv("AGG_311_ALIAS", "sf_311_last_5_years_3h.csv")
+
+LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
+LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_5_year.csv")
+
+DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-z8j6.json")
+SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
+
+PAGE_LIMIT   = int(os.getenv("SF_SODA_PAGE_LIMIT", "50000"))
+SLEEP_SEC    = float(os.getenv("SF_SODA_THROTTLE_SEC", "0.25"))
+SODA_TIMEOUT = int(os.getenv("SF_SODA_TIMEOUT", "90"))
+SODA_RETRIES = int(os.getenv("SF_SODA_RETRIES", "5"))
+
+CHUNK_DAYS              = int(os.getenv("SF311_CHUNK_DAYS", "31"))
+MAX_PAGES_PER_CHUNK     = int(os.getenv("SF311_MAX_PAGES_PER_CHUNK", "40"))
+MAX_CONSEC_EMPTY_CHUNKS = int(os.getenv("SF311_MAX_EMPTY_CHUNKS", "8"))
+
+TODAY         = datetime.utcnow().date()
+DEFAULT_START = TODAY - timedelta(days=5 * 365)
+BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "0"))
+REINGEST_DAYS = int(os.getenv("SF311_REINGEST_DAYS", "14"))
+
+GEOJSON_NAME = os.getenv("SF_BLOCKS_GEOJSON", "sf_census_blocks.geojson")
+GEOJSON_CANDIDATES = [
+    os.path.join(SAVE_DIR, GEOJSON_NAME),
+    os.path.join("crime_prediction_data", GEOJSON_NAME),
+    os.path.join(".", GEOJSON_NAME),
+]
+
+# ================== YARDIMCILAR ==================
 def log_shape(df, label):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
@@ -32,9 +66,6 @@ def log_merge_delta(before_shape, after_shape, label):
     br, bc = before_shape
     ar, ac = after_shape
     print(f"🔗 {label}: {br}×{bc} → {ar}×{ac} (Δr={ar-br}, Δc={ac-bc})")
-
-# ---- GEOID normalize ---------------------------------------------------------
-DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 
 def normalize_geoid(series, target_len: int | None = None):
     L = int(target_len or DEFAULT_GEOID_LEN)
@@ -47,7 +78,9 @@ def normalize_geoid_11(x):
     if pd.isna(x):
         return pd.NA
     digits = re.sub(r"\D", "", str(x))
-    return digits[:11] if len(digits) >= 11 else pd.NA
+    if digits == "":
+        return pd.NA
+    return digits[:11].zfill(11)
 
 def save_atomic(df, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
@@ -56,57 +89,55 @@ def save_atomic(df, path):
     os.replace(tmp, path)
 
 def is_lfs_pointer_file(p: Path) -> bool:
-    """Git LFS pointer dosyası mı? (gerçek CSV değilse eler)"""
     try:
         return "git-lfs.github.com/spec/v1" in p.read_text(errors="ignore")[:200]
     except Exception:
         return False
 
-# ================== AYARLAR ==================
-SAVE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
-os.makedirs(SAVE_DIR, exist_ok=True)
+def make_hour_range_from_datetime(dt_series: pd.Series) -> pd.Series:
+    h = pd.to_datetime(dt_series, errors="coerce").dt.hour.fillna(0).astype(int)
+    start_h = (h // 3) * 3
+    end_h = start_h + 3
+    end_h = end_h.where(end_h < 24, 24)
+    return (
+        start_h.astype(int).astype(str).str.zfill(2)
+        + "-"
+        + end_h.astype(int).astype(str).str.zfill(2)
+    )
 
-# 🔴 Adlandırma standardı
-# - Ham 5y kayıt:             sf_311_last_5_years_y.csv
-# - 3 saatlik özet (3h bin):  sf_311_last_5_years.csv  (alias: sf_311_last_5_years_3h.csv)
-RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")
-AGG_BASENAME   = os.getenv("AGG_311_NAME",   "sf_311_last_5_years.csv")
-AGG_ALIAS      = os.getenv("AGG_311_ALIAS",  "sf_311_last_5_years_3h.csv")
+# ================== 311 KATEGORİ HARİTASI ==================
+def classify_311_bucket(service_name: str, service_subtype: str, service_details: str) -> str:
+    txt = " ".join([
+        "" if pd.isna(service_name) else str(service_name),
+        "" if pd.isna(service_subtype) else str(service_subtype),
+        "" if pd.isna(service_details) else str(service_details),
+    ]).strip().lower()
 
-# Eski ad uyumluluğu (opsiyonel kopya)
-LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
-LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_5_year.csv")
+    if any(k in txt for k in ["encamp", "homeless", "tent"]):
+        return "encampment"
+    if any(k in txt for k in ["graffiti", "tagging", "vandal"]):
+        return "graffiti"
+    if any(k in txt for k in ["abandoned vehicle", "vehicle"]):
+        return "abandoned_vehicle"
+    if any(k in txt for k in ["noise", "loud", "music", "party"]):
+        return "noise"
+    if any(k in txt for k in ["street cleaning", "sidewalk cleaning", "debris", "trash", "garbage", "waste"]):
+        return "street_cleaning"
+    if any(k in txt for k in ["parking", "blocked driveway", "double park", "traffic"]):
+        return "parking_traffic"
+    return "other"
 
-# Socrata dataset
-DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-z8j6.json")
-SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
-
-# GeoJSON adayları
-GEOJSON_NAME = os.getenv("SF_BLOCKS_GEOJSON", "sf_census_blocks.geojson")
-GEOJSON_CANDIDATES = [
-    os.path.join(SAVE_DIR, GEOJSON_NAME),
-    os.path.join("crime_prediction_data", GEOJSON_NAME),
-    os.path.join(".", GEOJSON_NAME),
-]
-
-# İndirme/bölütleme ayarları
-PAGE_LIMIT      = int(os.getenv("SF_SODA_PAGE_LIMIT", "50000"))
-MAX_PAGES       = int(os.getenv("SF_SODA_MAX_PAGES", "100"))
-SLEEP_SEC       = float(os.getenv("SF_SODA_THROTTLE_SEC", "0.25"))
-SODA_TIMEOUT    = int(os.getenv("SF_SODA_TIMEOUT", "90"))
-SODA_RETRIES    = int(os.getenv("SF_SODA_RETRIES", "5"))
-
-# Chunk modu: tarih aralığına böl (timeout’lara karşı daha dayanıklı)
-CHUNK_DAYS              = int(os.getenv("SF311_CHUNK_DAYS", "31"))    # ~aylık
-MAX_PAGES_PER_CHUNK     = int(os.getenv("SF311_MAX_PAGES_PER_CHUNK", "40"))
-MAX_CONSEC_EMPTY_CHUNKS = int(os.getenv("SF311_MAX_EMPTY_CHUNKS", "8"))  # çok boş geliyorsa erken çık
-
-# Pencere: varsayılan 5 yıl veya BACKFILL_DAYS override
-FIVE_YEARS     = 5 * 365
-TODAY          = datetime.utcnow().date()
-DEFAULT_START  = TODAY - timedelta(days=FIVE_YEARS)
-BACKFILL_DAYS  = int(os.getenv("BACKFILL_DAYS", "0"))
-REINGEST_DAYS  = int(os.getenv("SF311_REINGEST_DAYS", "14"))
+def disorder_weight(bucket: str) -> float:
+    w = {
+        "encampment": 1.8,
+        "graffiti": 1.4,
+        "abandoned_vehicle": 1.3,
+        "noise": 1.2,
+        "street_cleaning": 0.8,
+        "parking_traffic": 0.9,
+        "other": 0.6,
+    }
+    return w.get(bucket, 0.6)
 
 # ================== SOCRATA ==================
 def socrata_get(session: requests.Session, url, params):
@@ -147,7 +178,7 @@ def ensure_blocks_gdf():
                 gdf = gdf.to_crs(epsg=4326)
             print(f"🧭 GEOJSON kullanılıyor: {os.path.abspath(cand)}")
             return gdf
-    print("⚠️ GEOJSON bulunamadı; GEOID eşleme yapılamayacak (stub).")
+    print("⚠️ GEOJSON bulunamadı; GEOID eşleme yapılamayacak.")
     return None
 
 def geotag_to_geoid11(df_new):
@@ -182,145 +213,38 @@ def geotag_to_geoid11(df_new):
             return pd.DataFrame(gdf_pts.drop(columns=["geometry"]))
     out = pd.DataFrame(gdf_join.drop(columns=["geometry"]))
     out.rename(columns={"TRACT11": "GEOID"}, inplace=True)
-    out["GEOID"] = out["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:11]
+    out["GEOID"] = out["GEOID"].apply(normalize_geoid_11)
     return out
-
-# ================== YARDIMCI: şema tespiti & tohum yükleme ==================
-def _looks_like_raw_311(cols: list[str]) -> bool:
-    lc = {c.lower() for c in cols}
-    # raw için karakteristik alanlar
-    return any(x in lc for x in ["id", "service_request_id"]) and \
-           any(x in lc for x in ["time", "requested_datetime"]) and \
-           any(x in lc for x in ["latitude", "lat"]) and \
-           "311_request_count" not in lc
-
-def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
-    """Repo'daki sf_311_last_5_years.csv ham ise seed olarak yükle."""
-    try:
-        df = pd.read_csv(base_csv_path, low_memory=False)
-    except Exception as e:
-        print(f"⚠️ Base CSV okunamadı ({base_csv_path}): {e}")
-        return pd.DataFrame()
-    if not _looks_like_raw_311(list(df.columns)):
-        print(f"ℹ️ {base_csv_path} özet (3h) gibi görünüyor; ham seed olarak kullanılamaz.")
-        return pd.DataFrame()
-
-    # alan adlarını normalize et
-    rename_map = {}
-    if "service_request_id" in df.columns:
-        rename_map["service_request_id"] = "id"
-    if "service_name" in df.columns:
-        rename_map["service_name"] = "category"
-    if "service_subtype" in df.columns:
-        rename_map["service_subtype"] = "subcategory"
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
-    # datetime / date / time kur
-    if "datetime" not in df.columns:
-        if "requested_datetime" in df.columns:
-            df["datetime"] = pd.to_datetime(df["requested_datetime"], errors="coerce", utc=True)
-        elif {"date","time"}.issubset(df.columns):
-            df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce", utc=True)
-        else:
-            df["datetime"] = pd.NaT
-    if "date" not in df.columns:
-        df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
-    if "time" not in df.columns:
-        df["time"] = pd.to_datetime(df["datetime"], errors="coerce").dt.time
-
-    # kolon setini tamamla
-    keep = ["id","datetime","date","time","lat","long","category","subcategory",
-            "agency_responsible","latitude","longitude"]
-    for c in keep:
-        if c not in df.columns:
-            df[c] = pd.NA
-
-    log_shape(df, "Base CSV (ham seed)")
-
-    if "requested_datetime" not in df.columns and "datetime" in df.columns:
-        # yine de devam eder ama uyarı ver
-        print("⚠️ Seed dosyasında 'requested_datetime' yok; ham/özet karışmış olabilir.")
-    
-    return df[keep + ["GEOID"] if "GEOID" in df.columns else keep].copy()
 
 # ================== DOSYA YOLLARI ==================
 def resolve_existing_raw_path():
-    """
-    Actions/artifact klasör adı değişse bile _y ham 311 dosyasını bulur.
-    Bulamazsa SAVE_DIR altında oluşturulacak yolu döndürür.
-    """
-    ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]  # önce yeni isim, sonra legacy
+    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]
+    roots = [Path(SAVE_DIR), Path.cwd(), Path(".")]
 
     def _ok(p: Path) -> bool:
-        if not p or not p.exists() or p.is_dir():
+        if not p.exists() or p.is_dir():
             return False
         if p.suffix.lower() != ".csv":
             return False
         if is_lfs_pointer_file(p):
             return False
         try:
-            if p.stat().st_size < 200:  # aşırı küçükse şüpheli
+            if p.stat().st_size < 200:
                 return False
         except Exception:
             return False
         return True
 
-    # Aranacak kök klasörler
-    roots = []
-    try:
-        roots.append(Path(SAVE_DIR).resolve())
-    except Exception:
-        roots.append(Path(SAVE_DIR))
-    roots += [Path.cwd(), Path(".")]
-
-    artifact_dir = Path(ARTIFACT_NAME)
-    if artifact_dir.exists() and artifact_dir.is_dir():
-        roots.append(artifact_dir)
-
-    # sf-crime-pipeline-output* gibi açılan klasörleri de tara
-    for r in [Path.cwd(), Path(".")]:
-        try:
-            for d in r.glob("sf-crime-pipeline-output*"):
-                if d.is_dir():
-                    roots.append(d)
-        except Exception:
-            pass
-
-    # 1) Deterministik: direkt bakılacak yerler
     for nm in target_names:
         for rt in roots:
-            for cand in [
-                rt / nm,
-                rt / "crime_prediction_data" / nm,
-                rt / "outputs" / nm,
-            ]:
+            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
                 if _ok(cand):
                     print(f"🔎 Mevcut 311 _y CSV bulundu: {cand.resolve()}")
                     return str(cand)
 
-    # 2) Son çare: recursive arama (artifact içinde farklı yere konmuşsa)
-    for nm in target_names:
-        for rt in roots:
-            try:
-                for found in rt.rglob(nm):
-                    if _ok(found):
-                        print(f"🔎 Mevcut 311 _y CSV bulundu (rglob): {found.resolve()}")
-                        return str(found)
-            except Exception:
-                continue
-
-    # 3) Bulunamadı → SAVE_DIR altında oluştur
     preferred = Path(SAVE_DIR) / RAW_311_NAME_Y
     print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
     return str(preferred)
-
-def _short(p: str) -> str:
-    try:
-        return os.path.relpath(p)
-    except Exception:
-        return p
 
 def load_existing_raw(path):
     if not os.path.exists(path):
@@ -331,90 +255,69 @@ def load_existing_raw(path):
     if "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
     elif "date" in df.columns and "time" in df.columns:
-        df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce", utc=True)
+        df["datetime"] = pd.to_datetime(
+            df["date"].astype(str) + " " + df["time"].astype(str),
+            errors="coerce",
+            utc=True
+        )
     else:
         df["datetime"] = pd.NaT
     if "date" not in df.columns:
-        df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
-    for c in ["id","lat","long","category","subcategory","agency_responsible","latitude","longitude","GEOID","time"]:
+        dt_local = df["datetime"].dt.tz_convert(SF_TZ) if SF_TZ is not None else df["datetime"]
+        df["date"] = pd.to_datetime(dt_local, errors="coerce").dt.date
+    for c in [
+        "id","lat","long","category","subcategory","service_details",
+        "agency_responsible","status_description","source",
+        "latitude","longitude","GEOID","time"
+    ]:
         if c not in df.columns:
             df[c] = pd.NA
     mx = pd.to_datetime(df["datetime"], errors="coerce").max()
     print(f"📁 Mevcut satır: {len(df):,} | max datetime={mx}")
     return df
 
-def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
-    # 1) artifact / mevcut ham dosya
-    if raw_path and os.path.exists(raw_path):
-        df = load_existing_raw(raw_path)
-        if df is not None and not df.empty:
-            return df
-
-    # 2) base seed: ham olabilecek adaylar (öncelik: repo'daki sf_311_last_5_years.csv)
-    seed_candidates = [
-        os.path.join(SAVE_DIR, "sf_311_last_5_years.csv"),     # ✅ SENİN DEDİĞİN
-        os.path.join(SAVE_DIR, "sf_311_last_5_years_3h.csv"),  # (varsa)
-        os.path.join(SAVE_DIR, AGG_BASENAME),
-        os.path.join(SAVE_DIR, AGG_ALIAS),
-        os.path.join(SAVE_DIR, RAW_311_NAME_Y),
-        os.path.join(SAVE_DIR, LEGACY_311_Y),
-        os.path.join(SAVE_DIR, LEGACY_311),
-    ]
-    # boş/None'ları temizle
-    seed_candidates = [p for p in seed_candidates if p and isinstance(p, str)]
-
-    for cand in seed_candidates:
-        if os.path.exists(cand):
-            df_seed = _load_raw_seed_from_base(cand)
-            if df_seed is not None and not df_seed.empty:
-                print(f"🌱 Seed (base ham) kullanıldı: {os.path.abspath(cand)}")
-                return df_seed
-
-    # 3) hiçbir şey yok
-    print("ℹ️ Ham 311 bulunamadı; boş seed ile başlanıyor.")
-    return pd.DataFrame()
-
 def decide_start_date(df_existing):
-    # 1) Backfill override
     if BACKFILL_DAYS > 0:
         start = TODAY - timedelta(days=BACKFILL_DAYS)
         print(f"📌 Mod: backfill | start={start}")
         return start, "backfill"
 
-    # 2) Hiç veri yoksa full 5y
     if df_existing.empty or not df_existing["datetime"].notna().any():
-        print(f"📌 Mod: full-5y (dosya yok/boş) | window ≥ {DEFAULT_START}")
+        print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
 
-    # 3) Incremental: gecikmeli gelen kayıtlar için overlap/backfill penceresi uygula
     last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
     if pd.isna(last_dt):
-        print(f"📌 Mod: full-5y (datetime parse edilemedi) | window ≥ {DEFAULT_START}")
+        print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
 
     last_date = last_dt.date()
-
-    # ✅ kritik revize: +1 gün yerine geriye sar
     start = last_date - timedelta(days=max(1, REINGEST_DAYS))
     if start < DEFAULT_START:
         start = DEFAULT_START
 
-    print(f"📌 Mod: incremental+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d | window ≥ {DEFAULT_START}")
+    print(f"📌 Mod: incremental+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
     return start, "incremental+overlap"
 
-# ================== İNDİRME (TARİH CHUNK) ==================
+# ================== İNDİRME ==================
 def download_by_date_chunks(start_date):
-    """
-    5 yıl gibi geniş aralıkları offset yerine tarih parçalara bölerek indir.
-    Her chunk’ta yine sayfalama var; chunk başarısızsa retry sonrası pas geçilir.
-    """
     print(f"🧩 İndirme modu: DATE-CHUNKS ({CHUNK_DAYS}gün) + paging")
     session = requests.Session()
-    police_filter = "(agency_responsible like '%Police%' OR agency_responsible like '%SFPD%')"
+
     cols = ",".join([
-        "service_request_id","requested_datetime",
-        "lat","long",
-        "service_name","service_subtype","agency_responsible"
+        "service_request_id",
+        "requested_datetime",
+        "closed_date",
+        "updated_datetime",
+        "status_description",
+        "agency_responsible",
+        "service_name",
+        "service_subtype",
+        "service_details",
+        "lat",
+        "long",
+        "point",
+        "source",
     ])
 
     all_chunks = []
@@ -426,7 +329,6 @@ def download_by_date_chunks(start_date):
         chunk_end = min(cur + timedelta(days=CHUNK_DAYS - 1), end)
         start_iso = f"{cur.isoformat()}T00:00:00.000"
         end_iso   = f"{chunk_end.isoformat()}T23:59:59.999"
-        where = f"$where=requested_datetime between '{start_iso}' and '{end_iso}' AND {police_filter}"
         print(f"⛏️  {cur} → {chunk_end} aralığı çekiliyor…")
 
         offset = 0
@@ -436,27 +338,28 @@ def download_by_date_chunks(start_date):
         while True:
             params = {
                 "$select": cols,
-                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}' AND {police_filter}",
+                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}'",
                 "$order": "requested_datetime ASC",
                 "$limit": PAGE_LIMIT,
-                "$offset": offset
+                "$offset": offset,
             }
-        
+
             try:
                 data = socrata_get(session, DATASET_BASE, params)
             except Exception as e:
-                print(f"❌ Chunk hata ( {cur}→{chunk_end} , offset={offset} ): {e} → chunk geçiliyor.")
+                print(f"❌ Chunk hata ({cur}→{chunk_end}, offset={offset}): {e} → chunk geçiliyor.")
                 break
-        
+
             df = pd.DataFrame(data)
             if df.empty:
                 break
 
             if pages == 0:
                 print("   • kolonlar:", list(df.columns))
+
             chunk_rows.append(df)
             offset += len(df)
-            pages  += 1
+            pages += 1
             print(f"   + {offset} kayıt (sayfa={pages})")
 
             if len(df) < PAGE_LIMIT or pages >= MAX_PAGES_PER_CHUNK:
@@ -482,304 +385,285 @@ def download_by_date_chunks(start_date):
 
     return pd.concat(all_chunks, ignore_index=True) if all_chunks else pd.DataFrame()
 
+# ================== FEATURE ENGINEERING ==================
+def build_311_aggregate(df_raw: pd.DataFrame) -> pd.DataFrame:
+    if df_raw.empty:
+        return pd.DataFrame(columns=[
+            "GEOID","date","hour_range",
+            "311_request_count",
+            "311_noise_count",
+            "311_encampment_count",
+            "311_graffiti_count",
+            "311_abandoned_vehicle_count",
+            "311_street_cleaning_count",
+            "311_parking_traffic_count",
+            "311_other_count",
+            "311_disorder_count",
+            "311_disorder_score",
+            "311_noise_ratio",
+            "311_disorder_ratio",
+        ])
+
+    df_ok = df_raw.dropna(subset=["date", "GEOID"]).copy()
+    if df_ok.empty:
+        return pd.DataFrame(columns=[
+            "GEOID","date","hour_range",
+            "311_request_count",
+            "311_noise_count",
+            "311_encampment_count",
+            "311_graffiti_count",
+            "311_abandoned_vehicle_count",
+            "311_street_cleaning_count",
+            "311_parking_traffic_count",
+            "311_other_count",
+            "311_disorder_count",
+            "311_disorder_score",
+            "311_noise_ratio",
+            "311_disorder_ratio",
+        ])
+
+    df_ok["hour_range"] = make_hour_range_from_datetime(df_ok["datetime"])
+
+    df_ok["bucket_311"] = df_ok.apply(
+        lambda r: classify_311_bucket(
+            r.get("category", pd.NA),
+            r.get("subcategory", pd.NA),
+            r.get("service_details", pd.NA)
+        ),
+        axis=1
+    )
+
+    df_ok["bucket_weight"] = df_ok["bucket_311"].apply(disorder_weight)
+
+    grp_keys = ["GEOID", "date", "hour_range"]
+
+    total = (
+        df_ok.groupby(grp_keys, as_index=False)
+             .size()
+             .rename(columns={"size": "311_request_count"})
+    )
+
+    pivot = (
+        df_ok.groupby(grp_keys + ["bucket_311"], as_index=False)
+             .size()
+             .pivot_table(
+                 index=grp_keys,
+                 columns="bucket_311",
+                 values="size",
+                 fill_value=0
+             )
+             .reset_index()
+    )
+    pivot.columns.name = None
+    pivot = pivot.rename(columns={
+        "noise": "311_noise_count",
+        "encampment": "311_encampment_count",
+        "graffiti": "311_graffiti_count",
+        "abandoned_vehicle": "311_abandoned_vehicle_count",
+        "street_cleaning": "311_street_cleaning_count",
+        "parking_traffic": "311_parking_traffic_count",
+        "other": "311_other_count",
+    })
+
+    score = (
+        df_ok.groupby(grp_keys, as_index=False)["bucket_weight"]
+             .sum()
+             .rename(columns={"bucket_weight": "311_disorder_score"})
+    )
+
+    out = total.merge(pivot, on=grp_keys, how="left")
+    out = out.merge(score, on=grp_keys, how="left")
+
+    count_cols = [
+        "311_noise_count",
+        "311_encampment_count",
+        "311_graffiti_count",
+        "311_abandoned_vehicle_count",
+        "311_street_cleaning_count",
+        "311_parking_traffic_count",
+        "311_other_count",
+    ]
+    for c in count_cols:
+        if c not in out.columns:
+            out[c] = 0
+
+    for c in ["311_request_count", "311_disorder_score"] + count_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+
+    out["311_disorder_count"] = (
+        out["311_encampment_count"]
+        + out["311_graffiti_count"]
+        + out["311_abandoned_vehicle_count"]
+        + out["311_noise_count"]
+    )
+
+    out["311_noise_ratio"] = out["311_noise_count"] / (out["311_request_count"] + 1e-6)
+    out["311_disorder_ratio"] = out["311_disorder_count"] / (out["311_request_count"] + 1e-6)
+
+    out["GEOID"] = normalize_geoid(out["GEOID"], DEFAULT_GEOID_LEN)
+    return out
+
 # ================== ANA ==================
 def main():
     print("🔎 CWD:", os.getcwd())
-    print("🔎 Tercih edilen SAVE_DIR:", os.path.abspath(SAVE_DIR))
+    print("🔎 SAVE_DIR:", os.path.abspath(SAVE_DIR))
 
-    # 1) Mevcut ham dosya (artifact’tan gelmiş olabilir) veya base’den seed
     raw_path = resolve_existing_raw_path()
     agg_path = os.path.join(os.path.dirname(raw_path) or ".", AGG_BASENAME)
-    df_raw = load_existing_raw_or_seed(raw_path)
 
-    # 2) Başlangıç tarihi
-    start_date, _mode = decide_start_date(
-        load_existing_raw(raw_path) if os.path.exists(raw_path) else df_raw
-    )
+    df_raw = load_existing_raw(raw_path)
+    start_date, _mode = decide_start_date(df_raw)
 
-    # 3) Yeni veriyi indir (tarih-chunk)
     df_new = download_by_date_chunks(start_date)
     if df_new.empty:
-        print("ℹ️ Yeni 311 kaydı bulunamadı (veya erişilemedi).")
+        print("ℹ️ Yeni 311 kaydı bulunamadı.")
     else:
         print(f"➕ Yeni indirilen: {len(df_new):,}")
+
         df_new = df_new.rename(columns={
             "service_request_id": "id",
             "requested_datetime": "datetime",
             "service_name": "category",
-            "service_subtype": "subcategory"
+            "service_subtype": "subcategory",
         })
-        
+
         df_new["datetime"] = pd.to_datetime(df_new["datetime"], errors="coerce", utc=True)
-        
-        # SF yerel date/time (DST-safe)
+
         if SF_TZ is not None:
             _dt_sf = df_new["datetime"].dt.tz_convert(SF_TZ)
         else:
             _dt_sf = df_new["datetime"]
-        
-        df_new["date"] = _dt_sf.dt.date
-        df_new["time"] = _dt_sf.dt.time
 
-        # GEOID (mümkünse)
+        df_new["date"] = _dt_sf.dt.date
+        df_new["time"] = _dt_sf.dt.strftime("%H:%M:%S")
+
+        if "lat" in df_new.columns:
+            df_new["latitude"] = pd.to_numeric(df_new["lat"], errors="coerce")
+        if "long" in df_new.columns:
+            df_new["longitude"] = pd.to_numeric(df_new["long"], errors="coerce")
+
         df_new_geo = geotag_to_geoid11(df_new)
 
-        # --- lat/long boşsa latitude/longitude'dan doldur (sessiz NaN fix) ---
-        if "lat" in df_new_geo.columns and "latitude" in df_new_geo.columns:
-            df_new_geo["lat"] = df_new_geo["lat"].where(df_new_geo["lat"].notna(), df_new_geo["latitude"])
-        if "long" in df_new_geo.columns and "longitude" in df_new_geo.columns:
-            df_new_geo["long"] = df_new_geo["long"].where(df_new_geo["long"].notna(), df_new_geo["longitude"])
-    
-        keep = ["id","datetime","date","time","lat","long","category","subcategory",
-                "agency_responsible","latitude","longitude","GEOID"]
+        keep = [
+            "id","datetime","date","time",
+            "lat","long","latitude","longitude",
+            "category","subcategory","service_details",
+            "agency_responsible","status_description","source",
+            "GEOID"
+        ]
         for c in keep:
             if c not in df_new_geo.columns:
                 df_new_geo[c] = pd.NA
-        df_new_geo = df_new_geo[keep]
+
+        df_new_geo = df_new_geo[keep].copy()
         df_new_geo["GEOID"] = normalize_geoid(df_new_geo["GEOID"], DEFAULT_GEOID_LEN)
 
-        if df_raw is None or df_raw.empty:
+        if df_raw.empty:
             df_raw = df_new_geo
         else:
             df_raw = pd.concat([df_raw, df_new_geo], ignore_index=True)
 
-    # 4) Tekilleştir + pencere + sırala + KAYDET (ham, *_y*)
+    # ---- Ham kaydet
     if not df_raw.empty:
         df_raw["GEOID"] = normalize_geoid(df_raw["GEOID"], DEFAULT_GEOID_LEN)
         df_raw["id"] = df_raw["id"].astype(str)
-        df_raw.drop_duplicates(subset=["id"], keep="last", inplace=True)
+        df_raw = df_raw.drop_duplicates(subset=["id"], keep="last")
 
         df_raw["date"] = pd.to_datetime(df_raw["date"], errors="coerce").dt.date
         min_date = start_date if BACKFILL_DAYS > 0 else DEFAULT_START
         df_raw = df_raw[df_raw["date"] >= min_date]
 
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
-        df_raw.sort_values("datetime", inplace=True)
+        df_raw = df_raw.sort_values("datetime")
 
-        save_atomic(df_raw, raw_path)  # << artifact adı
-        print(f"✅ Ham (5y/chunk) kaydedildi: {os.path.abspath(raw_path)}")
+        save_atomic(df_raw, raw_path)
+        save_atomic(df_raw, os.path.join(SAVE_DIR, RAW_311_NAME_Y))
+        save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
+        save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311))
 
-        # Uyumluluk kopyaları (workflow eski adları arıyor olabilir)
-        try:
-            save_atomic(df_raw, os.path.join(SAVE_DIR, RAW_311_NAME_Y))
-            save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
-            save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311))
-        except Exception as e:
-            print(f"⚠️ Legacy kopya yazım uyarısı: {e}")
-
-        mx = pd.to_datetime(df_raw["datetime"], errors="coerce").max()
-        print(f"🧪 Ham Satır: {len(df_raw):,} | Son tarih: {mx.date() if pd.notna(mx) else 'NA'}")
-        try:
-            print(df_raw.head(3).to_string(index=False))
-        except Exception:
-            pass
+        print(f"✅ Ham 311 kaydedildi: {os.path.abspath(raw_path)}")
+        log_shape(df_raw, "311 raw")
     else:
-        print("⚠️ Ham veri boş.")
-        # Şemalı boşlar (artifact uyumu)
-        empty_raw_cols = ["id","datetime","date","time","lat","long",
-                          "category","subcategory","agency_responsible","latitude","longitude","GEOID"]
+        print("⚠️ Ham 311 boş.")
+        empty_raw_cols = [
+            "id","datetime","date","time","lat","long","latitude","longitude",
+            "category","subcategory","service_details",
+            "agency_responsible","status_description","source","GEOID"
+        ]
         for p in [RAW_311_NAME_Y, LEGACY_311_Y, LEGACY_311]:
             save_atomic(pd.DataFrame(columns=empty_raw_cols), os.path.join(SAVE_DIR, p))
-        empty_agg_cols = ["GEOID","date","hour_range","311_request_count"]
-        for p in [AGG_BASENAME, AGG_ALIAS]:
-            if p:
-                save_atomic(pd.DataFrame(columns=empty_agg_cols), os.path.join(SAVE_DIR, p))
-        print("ℹ️ Şemalı boş 311 ham/özet dosyaları yazıldı.")
 
-    # 5) 3 SAATLİK ÖZET (sf_311_last_5_years.csv + alias)
-    if not df_raw.empty:
-        df_ok = df_raw.dropna(subset=["date"]).copy()
-    
-        # GEOID yoksa özet üretilemez; uyarı ver, boş şemalı özet yaz
-        if "GEOID" not in df_ok.columns or df_ok["GEOID"].isna().all():
-            print("⚠️ GEOID üretilemedi; özet boş yazılacak.")
-            grouped = pd.DataFrame(columns=["GEOID","date","hour_range","311_request_count"])
-        else:
-            h = pd.to_datetime(df_ok["datetime"], errors="coerce", utc=True).dt.hour.fillna(0).astype(int)
-            start_h = (h // 3) * 3
-            end_h = start_h + 3
-            end_h = end_h.where(end_h < 24, 24)  # 21-24 fix
-    
-            df_ok["hour_range"] = (
-                start_h.astype(int).astype(str).str.zfill(2) + "-" +
-                end_h.astype(int).astype(str).str.zfill(2)
-            )
-    
-            grouped = (
-                df_ok.dropna(subset=["GEOID"])
-                     .groupby(["GEOID","date","hour_range"])
-                     .size()
-                     .reset_index(name="311_request_count")
-            )
-            grouped["GEOID"] = normalize_geoid(grouped["GEOID"], DEFAULT_GEOID_LEN)
-    
-        # 1) artifact/prev klasörüne (raw_path ile aynı yere)
-        save_atomic(grouped, agg_path)
-    
-        # 2) repo root SAVE_DIR'e (merge burada arıyor)
-        save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
-    
-        # 3) alias (opsiyonel) — sadece SAVE_DIR'e yazmak yeter
-        if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
-            save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
-    
-        print(f"📁 Özet yazıldı (artifact): {os.path.abspath(agg_path)}")
-        print(f"📁 Özet yazıldı (SAVE_DIR): {os.path.join(SAVE_DIR, AGG_BASENAME)}")
-    
-        try:
-            print(grouped.head(5).to_string(index=False))
-        except Exception:
-            pass
-    else:
-        print("ℹ️ Özet adımı skip (ham veri yok).")
+    # ---- Aggregate kaydet
+    grouped = build_311_aggregate(df_raw)
 
-    # 6) 311 ÖZET + SUÇ (sf_crime_01.csv) → sf_crime_02.csv (fallback’lı)
+    save_atomic(grouped, agg_path)
+    save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
+    if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
+        save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
+
+    print(f"📁 311 özet yazıldı: {os.path.abspath(agg_path)}")
+    log_shape(grouped, "311 aggregate")
+
+    # ---- Crime merge: sf_crime_01 -> sf_crime_02
     try:
         crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.csv")
+        crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.csv")
+
         if not os.path.exists(crime_01_path):
-            print(f"ℹ️ {crime_01_path} yok. 911 adımı üretilmeden 311 merge atlandı.")
+            print(f"ℹ️ {crime_01_path} yok. 311 merge atlandı.")
             return
 
-        print("🔗 sf_crime_01 ile birleştiriliyor...")
+        print("🔗 sf_crime_01 ile full 311 aggregate birleştiriliyor...")
         crime = pd.read_csv(crime_01_path, dtype={"GEOID": str}, low_memory=False)
+        before = crime.shape
 
-        # Özet dosyası adayları
-        summary_path = None
-        for name in (AGG_BASENAME, AGG_ALIAS, "sf_311_last_5_years_3h.csv", "sf_311_last_5_years.csv"):
-            cand = os.path.join(SAVE_DIR, name)
-            if os.path.exists(cand):
-                summary_path = cand
-                break
-
-        if summary_path is None:
-            print("⚠️ 311 özet bulunamadı → PASSTHROUGH: 311_request_count=0")
-            crime["311_request_count"] = 0
-            save_atomic(crime, os.path.join(SAVE_DIR, "sf_crime_02.csv"))
-            print("✅ Passthrough yazıldı.")
-            return
-
-        summary = pd.read_csv(summary_path, dtype={"GEOID": str}, low_memory=False)
-        summary.columns = (summary.columns.astype(str)
-                           .str.replace("\ufeff", "", regex=False)
-                           .str.strip())
-
-        summary["hour_range"] = summary["hour_range"].astype(str).str.replace(r"^21-00$", "21-24", regex=True)
-        
-        need = ["GEOID","date","hour_range","311_request_count"]
-        missing = [c for c in need if c not in summary.columns]
-        if missing:
-            raise ValueError(f"❌ 311 summary kolon eksik: {missing} | cols={list(summary.columns)}")
-
-        # GEOID ortak uzunluk
-        def _mode_len(s: pd.Series) -> int:
-            s2 = s.dropna().astype(str).str.extract(r"(\d+)")[0]
-            return int(s2.str.len().mode().iat[0]) if len(s2) else DEFAULT_GEOID_LEN
-        tgt_len = min(_mode_len(crime["GEOID"]), _mode_len(summary["GEOID"]))
-        def _left(series, n):
-            s = series.astype(str).str.extract(r"(\d+)")[0]
-            return s.str[:n]
-        crime["GEOID"]   = _left(crime["GEOID"],   tgt_len)
-        summary["GEOID"] = _left(summary["GEOID"], tgt_len)
-
-        # summary tarafında yardımcı anahtarlar
-        if "hour_range" not in summary.columns:
-            if "hr_key" in summary.columns:
-                hr = pd.to_numeric(summary["hr_key"], errors="coerce").fillna(0).astype(int)
-                summary["hour_range"] = hr.astype(str).str.zfill(2) + "-" + (hr + 3).astype(str).str.zfill(2)
-            else:
-                summary["hour_range"] = "00-03"
-
-        summary["date"] = pd.to_datetime(summary["date"], errors="coerce").dt.date
-        hrp = summary["hour_range"].astype(str).str.extract(r"(\d{1,2})\s*-\s*(\d{1,2})")
-        summary["hr_key"] = pd.to_numeric(hrp[0], errors="coerce").fillna(0).astype(int)
-        _dt = pd.to_datetime(summary["date"], errors="coerce")
-        summary["day_of_week"] = _dt.dt.weekday
-        summary["month"] = _dt.dt.month
-        _smap = {12:"Winter",1:"Winter",2:"Winter",
-                 3:"Spring",4:"Spring",5:"Spring",
-                 6:"Summer",7:"Summer",8:"Summer",
-                 9:"Fall",10:"Fall",11:"Fall"}
-        summary["season"] = summary["month"].map(_smap)
-
-        # crime tarafında saat anahtarı
         if "hour_range" not in crime.columns:
-            if "event_hour" not in crime.columns:
-                raise ValueError("❌ sf_crime_01.csv için hour_range/event_hour bulunamadı.")
-            hr = (pd.to_numeric(crime["event_hour"], errors="coerce").fillna(0).astype(int) // 3) * 3
-            end = hr + 3
-            end = end.where(end < 24, 24)
-            crime["hour_range"] = hr.astype(str).str.zfill(2) + "-" + end.astype(str).str.zfill(2)
+            raise ValueError("❌ sf_crime_01.csv içinde hour_range yok. 311 merge panel anahtarıyla yapılmalı.")
 
-        hrp2 = crime["hour_range"].astype(str).str.extract(r"(\d{1,2})")
-        crime["hr_key"] = pd.to_numeric(hrp2[0], errors="coerce").fillna(0).astype(int)
+        crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
+        crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
 
-        # Join seçimi
-        has_date = ("date" in crime.columns) or ("datetime" in crime.columns)
-        if has_date:
-            if "date" not in crime.columns:
-                crime["date"] = pd.to_datetime(crime["datetime"], errors="coerce").dt.date
-            else:
-                crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
-            keys = ["GEOID", "date", "hour_range"]
-            _before = crime.shape
-            _sum = summary[["GEOID", "date", "hour_range", "311_request_count"]].copy()
-            
-            _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
-            if _overlap:
-                print(f"🧹 DATE-BASED merge overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
-                _sum = _sum.drop(columns=list(_overlap), errors="ignore")
-            
-            merged = crime.merge(_sum, on=keys, how="left")
-            log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
-            print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
-            
-            log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
-            print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
-        else:
-            cal_keys = ["GEOID", "hr_key", "day_of_week", "season"]
-            cal_agg = (summary.groupby(cal_keys, as_index=False)["311_request_count"].median())
-            
-            _overlap = (set(crime.columns) & set(cal_agg.columns)) - set(cal_keys)
-            if _overlap:
-                print(f"🧹 CALENDAR-BASED merge overlap bulundu, cal_agg'den düşürüldü: {sorted(_overlap)}")
-                cal_agg = cal_agg.drop(columns=list(_overlap), errors="ignore")
-            
-            merged = crime.merge(cal_agg, on=cal_keys, how="left")
-            log_merge_delta(_before, merged.shape, "crime ⨯ 311 (takvim)")
-            print("🔗 Join modu: CALENDAR-BASED (GEOID, hr_key, day_of_week, season)")
+        grouped["GEOID"] = normalize_geoid(grouped["GEOID"], DEFAULT_GEOID_LEN)
+        grouped["date"] = pd.to_datetime(grouped["date"], errors="coerce").dt.date
+        grouped["hour_range"] = grouped["hour_range"].astype(str)
 
-        # NAs → 0 ve tip
-        if "311_request_count" in merged.columns:
-            merged["311_request_count"] = pd.to_numeric(merged["311_request_count"], errors="coerce").fillna(0).astype(int)
-        else:
-            merged["311_request_count"] = 0
+        keys = ["GEOID", "date", "hour_range"]
+        merged = crime.merge(grouped, on=keys, how="left")
 
-        nan_counts = merged.isna().sum()
-        nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
-        
-        print("🔎 Final NaN kontrolü (sf_crime_02 yazılmadan önce):")
-        if len(nan_counts) == 0:
-            print("✅ NaN yok.")
-        else:
-            print(nan_counts.to_string())
+        feat_cols = [c for c in grouped.columns if c not in keys]
+        for c in feat_cols:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0)
 
-        log_shape(merged, "CRIME⨯311 (kayıt öncesi)")
-        save_atomic(merged, os.path.join(SAVE_DIR, "sf_crime_02.csv"))
-        print("✅ Suç + 311 birleştirmesi tamamlandı.")
-        try:
-            print(merged.head(5).to_string(index=False))
-        except Exception:
-            pass
+        log_merge_delta(before, merged.shape, "crime ⨯ full311")
+        log_shape(merged, "sf_crime_02")
 
+        save_atomic(merged, crime_02_path)
+        print("✅ Suç + full 311 birleştirmesi tamamlandı.")
     except Exception as e:
-        print(f"⚠️ 311 merge aşamasında hata: {e}\n↪️ PASSTHROUGH uygulanıyor…")
+        print(f"⚠️ 311 merge hatası: {e}\n↪️ PASSTHROUGH uygulanıyor…")
         try:
             crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.csv")
+            crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.csv")
             if os.path.exists(crime_01_path):
                 crime = pd.read_csv(crime_01_path, dtype={"GEOID": str}, low_memory=False)
-                crime["311_request_count"] = 0
-                save_atomic(crime, os.path.join(SAVE_DIR, "sf_crime_02.csv"))
-                print("✅ Passthrough yazıldı (exception fallback).")
+                fallback_cols = [
+                    "311_request_count",
+                    "311_noise_count",
+                    "311_encampment_count",
+                    "311_graffiti_count",
+                    "311_abandoned_vehicle_count",
+                    "311_street_cleaning_count",
+                    "311_parking_traffic_count",
+                    "311_other_count",
+                    "311_disorder_count",
+                    "311_disorder_score",
+                    "311_noise_ratio",
+                    "311_disorder_ratio",
+                ]
+                for c in fallback_cols:
+                    crime[c] = 0
+                save_atomic(crime, crime_02_path)
+                print("✅ Passthrough yazıldı.")
         except Exception as ee:
             print(f"❌ Passthrough da başarısız: {ee}")
 
