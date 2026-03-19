@@ -920,7 +920,106 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
 
     out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
     return out
-    
+
+# ============================================================
+# ✅ EVENT-LIKE PRESSURE FEATURES (LEAK-FREE, PANEL-LEVEL)
+#   - Gerçek event datası olmadığı için
+#     geçmiş suç anomalileri + çağrı baskısından
+#     event-benzeri sinyal üretir
+#   - Sadece geçmişe bakar
+# ============================================================
+def add_event_pressure_features(panel_df: pd.DataFrame) -> pd.DataFrame:
+    out = panel_df.copy()
+
+    required = ["GEOID", "date", "hour_range", "y_count"]
+    for c in required:
+        if c not in out.columns:
+            raise ValueError(f"panel_df içinde gerekli kolon yok: {c}")
+
+    out["GEOID"] = out["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = out.sort_values(["GEOID", "date", "hour_range"]).reset_index(drop=True)
+
+    g = out.groupby("GEOID")["y_count"]
+
+    # Yakın geçmiş yoğunluğu
+    out["event_recent_mean_7"] = g.shift(1).rolling(7, min_periods=3).mean()
+    out["event_recent_mean_28"] = g.shift(1).rolling(28, min_periods=7).mean()
+    out["event_recent_std_14"] = g.shift(1).rolling(14, min_periods=5).std()
+
+    # Aynı GEOID + aynı saat slotu geçmiş paterni
+    gh = out.groupby(["GEOID", "hour_range"])["y_count"]
+    out["event_same_hour_last_week"] = gh.shift(7)
+    out["event_same_hour_last_4week_mean"] = gh.shift(1).rolling(4, min_periods=2).mean()
+
+    # Geçmişte spike olmuş muydu?
+    past_mean_7 = g.shift(1).rolling(7, min_periods=3).mean()
+    past_std_14 = g.shift(1).rolling(14, min_periods=5).std()
+
+    raw_spike = (out["y_count"] > (past_mean_7 * 1.5)).astype(int)
+    raw_extreme = (((out["y_count"] - past_mean_7) / (past_std_14 + 1e-5)) > 2).astype(int)
+
+    out["event_spike_recent_7"] = (
+        raw_spike.groupby(out["GEOID"]).shift(1).rolling(7, min_periods=3).mean()
+    )
+    out["event_spike_recent_28"] = (
+        raw_spike.groupby(out["GEOID"]).shift(1).rolling(28, min_periods=7).mean()
+    )
+    out["event_extreme_recent_14"] = (
+        raw_extreme.groupby(out["GEOID"]).shift(1).rolling(14, min_periods=5).mean()
+    )
+
+    # 911/311 çağrı baskısı varsa kullan
+    if "911_geo_last3d" in out.columns:
+        c911 = out.groupby("GEOID")["911_geo_last3d"]
+        out["event_call_pressure_7"] = c911.shift(1).rolling(7, min_periods=3).mean()
+        out["event_call_pressure_28"] = c911.shift(1).rolling(28, min_periods=7).mean()
+    else:
+        out["event_call_pressure_7"] = 0.0
+        out["event_call_pressure_28"] = 0.0
+
+    if "311_request_count" in out.columns:
+        c311 = out.groupby("GEOID")["311_request_count"]
+        out["event_311_pressure_7"] = c311.shift(1).rolling(7, min_periods=3).mean()
+        out["event_311_pressure_28"] = c311.shift(1).rolling(28, min_periods=7).mean()
+    else:
+        out["event_311_pressure_7"] = 0.0
+        out["event_311_pressure_28"] = 0.0
+
+    # Birleşik skor
+    out["event_pressure_score"] = (
+        0.25 * np.log1p(out["event_recent_mean_7"].fillna(0)) +
+        0.15 * np.log1p(out["event_recent_mean_28"].fillna(0)) +
+        0.15 * np.log1p(out["event_same_hour_last_week"].fillna(0)) +
+        0.10 * np.log1p(out["event_same_hour_last_4week_mean"].fillna(0)) +
+        0.15 * out["event_spike_recent_7"].fillna(0) +
+        0.10 * out["event_spike_recent_28"].fillna(0) +
+        0.10 * out["event_extreme_recent_14"].fillna(0) +
+        0.07 * np.log1p(out["event_call_pressure_7"].fillna(0)) +
+        0.03 * np.log1p(out["event_311_pressure_7"].fillna(0))
+    )
+
+    event_cols = [
+        "event_recent_mean_7",
+        "event_recent_mean_28",
+        "event_recent_std_14",
+        "event_same_hour_last_week",
+        "event_same_hour_last_4week_mean",
+        "event_spike_recent_7",
+        "event_spike_recent_28",
+        "event_extreme_recent_14",
+        "event_call_pressure_7",
+        "event_call_pressure_28",
+        "event_311_pressure_7",
+        "event_311_pressure_28",
+        "event_pressure_score",
+    ]
+
+    for c in event_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    return out
+
 # ============================================================
 # ✅ PANEL (GRID) ÜRET — sf_crime_y.csv
 #   - unit: GEOID × date × hour_range (3-hour)
@@ -1027,6 +1126,10 @@ panel = add_last_crime_anchor_features(panel, df_all)
 panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
 panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
 panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
+
+# ✅ event-like pressure features
+panel = add_event_pressure_features(panel)
+print("✅ event-like pressure features eklendi")
 
 panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
 panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
