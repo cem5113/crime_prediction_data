@@ -301,14 +301,22 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import os, pandas as pd
+      
           D = os.environ["CRIME_DATA_DIR"]
+          GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
+      
           csvp = os.path.join(D, "sf_crime.csv")
           parp = os.path.join(D, "sf_crime.parquet")
-
+      
           if os.path.isfile(csvp):
               df = pd.read_csv(csvp, low_memory=False)
               if "GEOID" in df.columns:
-                  df["GEOID"] = df["GEOID"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(GEOID_LEN)
+                  df["GEOID"] = (
+                      df["GEOID"]
+                      .astype(str)
+                      .str.replace(r"\D", "", regex=True)
+                      .str.zfill(GEOID_LEN)
+                  )
               df.to_parquet(parp, index=False, engine="pyarrow")
               print("✅ wrote", parp, "shape=", df.shape)
           else:
