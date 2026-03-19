@@ -56,8 +56,8 @@ Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 POI_GEOJSON_1 = os.path.join(BASE_DIR, "sf_pois.geojson")
 POI_GEOJSON_2 = os.path.join(".", "sf_pois.geojson")
 
-BLOCK_PATH_1 = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
-BLOCK_PATH_2 = os.path.join(".", "sf_census_blocks_with_population.geojson")
+BLOCK_PATH_1 = os.path.join(BASE_DIR, "sf_census_blocks.geojson")
+BLOCK_PATH_2 = os.path.join(".", "sf_census_blocks.geojson")
 
 POI_CLEAN_CSV = os.path.join(BASE_DIR, "sf_pois_cleaned_with_geoid.csv")
 POI_RISK_JSON = os.path.join(BASE_DIR, "risky_pois_dynamic.json")
@@ -846,7 +846,7 @@ if __name__ == "__main__":
         df_poi["GEOID"] = _normalize_geoid(df_poi.get("GEOID"), 11)
     else:
         if blocks_path is None:
-            raise FileNotFoundError("❌ sf_census_blocks_with_population.geojson yok. GEOID atamak için gerekli.")
+            raise FileNotFoundError("❌ sf_census_blocks.geojson yok. GEOID atamak için gerekli.")
         df_poi = build_poi_clean_with_geoid(blocks_path, poi_geojson)
 
     log_shape(df_poi, "POI clean")
