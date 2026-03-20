@@ -537,26 +537,29 @@ def main():
     log_shape(crime_in, "CRIME INPUT")
 
     # -------------------------------------------------------------------------
-    # 2) Demographic raw oku
+    # 2) Önce append-only split yap
+    #    Böylece yeni satır yoksa demographic dosyasını boşuna okumayız
+    # -------------------------------------------------------------------------
+    old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
+
+    if new_rows.empty:
+        print("✅ Yeni crime satırı yok → demographic enrich atlandı.")
+        print("✅ Eski sf_crime_03 aynen korunuyor.")
+        if os.path.exists(CRIME_OUTPUT):
+            print(f"📁 Mevcut çıktı: {CRIME_OUTPUT}")
+        return
+
+    # -------------------------------------------------------------------------
+    # 3) Yalnızca gerçekten yeni satır varsa demographic oku
     # -------------------------------------------------------------------------
     demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
     log_shape(demo_raw, "DEMOGRAPHIC CSV")
 
     # -------------------------------------------------------------------------
-    # 3) Feature üret
+    # 4) Feature üret
+    #    Bu feature set, SADECE yeni gelen crime satırlarına uygulanacak
     # -------------------------------------------------------------------------
     demo_feat = build_demographic_features(demo_raw)
-
-    # -------------------------------------------------------------------------
-    # 4) Append-only split
-    # -------------------------------------------------------------------------
-    old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
-
-    if new_rows.empty:
-        print("✅ Yeni crime satırı yok. Eski sf_crime_03 korunuyor.")
-        if os.path.exists(CRIME_OUTPUT):
-            print(f"📁 Mevcut çıktı: {CRIME_OUTPUT}")
-        return
 
     # -------------------------------------------------------------------------
     # 5) Sadece yeni satırları enrich et
@@ -568,6 +571,8 @@ def main():
 
     # -------------------------------------------------------------------------
     # 6) Eski + yeni birleştir
+    #    Eski satırlar eski haliyle kalır
+    #    Yeni satırlar güncel demographic snapshot ile eklenir
     # -------------------------------------------------------------------------
     final_df = finalize_output(old_out, new_rows_enriched)
     log_shape(final_df, "FINAL sf_crime_03")
@@ -607,7 +612,7 @@ def main():
         safe_save_parquet(final_df, CRIME_OUTPUT_PARQUET)
     except Exception as e:
         print(f"⚠️ Parquet kayıt atlandı: {e}")
-    
+
     WRITE_CSV = os.getenv("WRITE_CSV", "1").strip().lower() in ("1", "true", "yes", "on")
     if WRITE_CSV:
         safe_save_csv(final_df, CRIME_OUTPUT)
@@ -631,7 +636,6 @@ def main():
             print(final_df[preview_cols].tail(10).to_string(index=False))
     except Exception as e:
         print(f"ℹ️ Önizleme atlandı: {e}")
-
 
 if __name__ == "__main__":
     main()
