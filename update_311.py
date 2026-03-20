@@ -65,6 +65,14 @@ def log_shape(df, label):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
 
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [
+        str(c).replace("\ufeff", "").strip()
+        for c in out.columns
+    ]
+    return out
+    
 def log_merge_delta(before_shape, after_shape, label):
     br, bc = before_shape
     ar, ac = after_shape
@@ -122,14 +130,15 @@ def make_hour_range_from_datetime(dt_series: pd.Series) -> pd.Series:
     )
 
 def is_valid_311_aggregate_df(df: pd.DataFrame) -> bool:
+    cols = {str(c).replace("\ufeff", "").strip() for c in df.columns}
     required = {"GEOID", "date", "hour_range", "311_request_count"}
-    return required.issubset(set(df.columns))
+    return required.issubset(cols)
 
 def is_valid_311_raw_df(df: pd.DataFrame) -> bool:
     raw_like_1 = {"id", "datetime", "date", "GEOID"}
     raw_like_2 = {"category", "subcategory", "service_details"}
-    cols = set(df.columns)
-    return raw_like_1.issubset(cols) or ({"datetime", "date"}.issubset(cols) and raw_like_2.intersection(cols))
+    cols = {str(c).replace("\ufeff", "").strip() for c in df.columns}
+    return raw_like_1.issubset(cols) or ({"datetime", "date"}.issubset(cols) and len(raw_like_2.intersection(cols)) > 0)
 
 def safe_read_csv(path: str, **kwargs) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False, **kwargs)
@@ -137,8 +146,10 @@ def safe_read_csv(path: str, **kwargs) -> pd.DataFrame:
 def safe_read_any_table(path: str) -> pd.DataFrame:
     p = Path(path)
     if p.suffix.lower() == ".parquet":
-        return pd.read_parquet(path)
-    return safe_read_csv(path, dtype={"GEOID": str})
+        df = pd.read_parquet(path)
+    else:
+        df = safe_read_csv(path, dtype={"GEOID": str})
+    return normalize_columns(df)
 
 # ================== 311 KATEGORİ HARİTASI ==================
 def classify_311_bucket(service_name: str, service_subtype: str, service_details: str) -> str:
