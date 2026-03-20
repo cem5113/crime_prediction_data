@@ -1213,14 +1213,19 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/week.csv"     "${DEST}/week.csv"     || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet" "${DEST}/week.parquet" || true
           
-          # sf_crime series 01..09
+          # sf_crime series sadece parquet
           for i in 01 02 03 04 05 06 07 08 09; do
-            rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.csv"     "${DEST}/sf_crime_${i}.csv"     || true
             rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.parquet" "${DEST}/sf_crime_${i}.parquet" || true
           done
-
-          # sf_crime_10
+          
+          # sf_crime core parquet
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime.parquet"    "${DEST}/sf_crime.parquet"    || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"  "${DEST}/sf_crime_x.parquet"  || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.parquet"  "${DEST}/sf_crime_y.parquet"  || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_10.parquet" "${DEST}/sf_crime_10.parquet" || true
+          
+          # other criticals
+          rclone copyto "${CRIME_DATA_DIR}/neighbors.csv" "${DEST}/neighbors.csv" || true
           
           # new feature sources
           rclone copyto "${CRIME_DATA_DIR}/sf_business_landuse.csv"             "${DEST}/sf_business_landuse.csv" || true
@@ -1232,16 +1237,6 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/sf_building_permits_vacancy.parquet" "${DEST}/sf_building_permits_vacancy.parquet" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_traffic_transport.parquet"        "${DEST}/sf_traffic_transport.parquet" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_street_environment.parquet"       "${DEST}/sf_street_environment.parquet" || true
-
-          # x/y
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"      "${DEST}/sf_crime_x.csv"      || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"  "${DEST}/sf_crime_x.parquet"  || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.csv"      "${DEST}/sf_crime_y.csv"      || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.parquet"  "${DEST}/sf_crime_y.parquet"  || true
-          
-          # other criticals
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime.csv"  "${DEST}/sf_crime.csv"  || true
-          rclone copyto "${CRIME_DATA_DIR}/neighbors.csv" "${DEST}/neighbors.csv" || true
           
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 30 || true
