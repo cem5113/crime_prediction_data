@@ -618,20 +618,70 @@ def ensure_local_911_base() -> Optional[Path]:
     prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
 
     crime_grid_candidates = [
-        OUT_DIR / "sf_crime_y.csv",
-        Path(BASE_DIR) / "sf_crime_y.csv",
-        Path("./sf_crime_y.csv"),
-        Path("crime_prediction_data/sf_crime_y.csv"),
-        OUT_DIR / "crime_prediction_data/sf_crime_y.csv",
-        Path(BASE_DIR) / "crime_prediction_data/sf_crime_y.csv",
-        Path(ARTIFACT_NAME) / "sf_crime_y.csv",
-        Path(ARTIFACT_NAME) / "crime_prediction_data/sf_crime_y.csv",
+        OUT_DIR / "sf_crime_y.parquet",
+        Path(BASE_DIR) / "sf_crime_y.parquet",
+        Path("./sf_crime_y.parquet"),
+        Path("crime_prediction_data/sf_crime_y.parquet"),
+        OUT_DIR / "crime_prediction_data/sf_crime_y.parquet",
+        Path(BASE_DIR) / "crime_prediction_data/sf_crime_y.parquet",
+        Path(ARTIFACT_NAME) / "sf_crime_y.parquet",
+        Path(ARTIFACT_NAME) / "crime_prediction_data/sf_crime_y.parquet",
     ]
+
     crime_grid_path = next(
-        (p for p in crime_grid_candidates if p.exists() and not is_lfs_pointer_file(p)),
+        (p for p in crime_grid_candidates if p.exists()),
         None
     )
     crime_grid_dir = crime_grid_path.parent if crime_grid_path else None
+
+    def _ok(p: Path) -> bool:
+        if not p or not p.exists() or p.is_dir():
+            return False
+        if p.suffix.lower() != ".csv":
+            return False
+        if is_lfs_pointer_file(p):
+            return False
+        try:
+            if p.stat().st_size < 200:
+                return False
+        except Exception:
+            return False
+        return True
+
+    roots = [OUT_DIR, Path(BASE_DIR), Path.cwd()]
+    if crime_grid_dir:
+        roots.insert(0, crime_grid_dir)
+
+    artifact_dir = Path(ARTIFACT_NAME)
+    if artifact_dir.exists() and artifact_dir.is_dir():
+        roots.insert(0, artifact_dir)
+
+    for r in [Path.cwd(), Path(BASE_DIR), OUT_DIR]:
+        try:
+            for d in r.glob("sf-crime-pipeline-output*"):
+                if d.is_dir():
+                    roots.append(d)
+        except Exception:
+            pass
+
+    for nm in prefer_names:
+        for rt in roots:
+            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
+                if _ok(cand):
+                    log(f"📦 911 base bulundu: {cand}")
+                    return cand
+
+    for nm in prefer_names:
+        for rt in roots:
+            try:
+                for found in rt.rglob(nm):
+                    if _ok(found):
+                        log(f"📦 911 base bulundu (rglob): {found}")
+                        return found
+            except Exception:
+                continue
+
+    return None
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
@@ -1412,15 +1462,19 @@ log(f"📌 KEEP_911_COLS kept: {len(KEEP_911_COLS)} kolon")
 # CRIME GRID MERGE
 # ============================================================
 CRIME_GRID_CANDIDATES = [
-    OUT_DIR / "sf_crime_y.csv",
-    Path(BASE_DIR) / "sf_crime_y.csv",
-    Path("./sf_crime_y.csv"),
+    OUT_DIR / "sf_crime_y.parquet",
+    Path(BASE_DIR) / "sf_crime_y.parquet",
+    Path("./sf_crime_y.parquet"),
 ]
+
 crime_grid_path = next((p for p in CRIME_GRID_CANDIDATES if p.exists()), None)
 if crime_grid_path is None:
-    raise FileNotFoundError("❌ Suç grid yok: OUT_DIR/BASE_DIR/kök'te sf_crime_y.csv.")
+    raise FileNotFoundError("❌ Suç grid yok: OUT_DIR/BASE_DIR/kök'te sf_crime_y.parquet.")
 
-crime = pd.read_csv(crime_grid_path, dtype={"GEOID": str}, low_memory=False)
+crime = pd.read_parquet(crime_grid_path)
+if "GEOID" in crime.columns:
+    crime["GEOID"] = crime["GEOID"].astype(str)
+    
 log(f"📥 Suç grid yüklendi: {len(crime)} satır ({crime_grid_path})")
 log_shape(crime, "CRIME grid — ham")
 
