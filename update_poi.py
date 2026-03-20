@@ -1010,46 +1010,43 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # K) KAYDET
     # -------------------------------------------------------------------------
-    final_to_save = final_df.copy()
+    print("💾 Kaydetme aşaması başlıyor...")
+
+    final_to_save = final_df
+    print(f"🧪 final_to_save hazır | shape={final_to_save.shape}")
+
     if "date" in final_to_save.columns:
-        final_to_save["date"] = pd.to_datetime(final_to_save["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    
-    # Önce parquet yaz
+        print("🧪 date kolonu string formata çevriliyor...")
+        final_to_save["date"] = pd.to_datetime(
+            final_to_save["date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+    print("🧪 parquet yazımı için parent hazırlanıyor...")
     _ensure_parent(CRIME_OUT_PARQUET)
+
     tmp_parquet = CRIME_OUT_PARQUET + ".tmp.parquet"
+    print(f"🧪 parquet tmp yolu: {tmp_parquet}")
+
+    t0 = time.time()
+    print("🧪 to_parquet başlıyor...")
     final_to_save.to_parquet(
         tmp_parquet,
         index=False,
         engine="pyarrow",
         compression="snappy"
     )
+    print(f"🧪 to_parquet tamamlandı. süre={time.time()-t0:.1f} sn")
+
+    print("🧪 tmp → final replace başlıyor...")
     os.replace(tmp_parquet, CRIME_OUT_PARQUET)
     print(f"✅ Parquet yazıldı: {CRIME_OUT_PARQUET} | Satır: {len(final_to_save):,}")
-    
-    # CSV opsiyonel
+
     WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
     if WRITE_CSV:
+        print("🧪 CSV yazımı başlıyor...")
         _safe_save_csv(final_to_save, CRIME_OUT)
         print(f"✅ CSV yazıldı: {CRIME_OUT} | Satır: {len(final_to_save):,}")
     else:
         print("ℹ️ Büyük CSV yazımı kapalı; yalnız parquet kaydedildi.")
-    
-    try:
-        cols = [c for c in ["GEOID", "date", "hour_range", "poi_total_count", "poi_risk_score", "poi_dominant_type"] if c in final_to_save.columns]
-        preview = final_to_save[cols].tail(10) if cols else final_to_save.tail(10)
-        print("📌 Son 10 satır önizleme:")
-        print(preview.to_string(index=False))
-    except Exception as e:
-        print(f"(info) Örnek yazdırılamadı: {e}")
-    
-    try:
-        if WRITE_CSV and os.path.exists(CRIME_OUT):
-            preview_file = pd.read_csv(CRIME_OUT, nrows=3, low_memory=False)
-            print(f"{CRIME_OUT} — ilk 3 satır")
-            print(preview_file.to_string(index=False))
-        elif os.path.exists(CRIME_OUT_PARQUET):
-            preview_file = pd.read_parquet(CRIME_OUT_PARQUET).head(3)
-            print(f"{CRIME_OUT_PARQUET} — ilk 3 satır")
-            print(preview_file.to_string(index=False))
-    except Exception as e:
-        print(f"(info) Kaydedilen dosya önizlemesi okunamadı: {e}")
+
+    print("ℹ️ Büyük veri nedeniyle tail preview ve dosyayı geri okuyup preview alma atlandı.")
