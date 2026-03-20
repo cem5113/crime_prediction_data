@@ -26,15 +26,24 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 GEOID_LEN = DEFAULT_GEOID_LEN  # backward compatibility
 
-RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")   # event-level csv
-AGG_BASENAME   = os.getenv("AGG_311_NAME", "sf_311_last_5_years.csv")        # 3h aggregate csv
-AGG_ALIAS      = os.getenv("AGG_311_ALIAS", "sf_311_last_5_years_3h.csv")
+# -----------------------------------------------------------------
+# DOSYA SÖZLEŞMESİ (REVIZE)
+# -----------------------------------------------------------------
+# 1) GitHub'da var olan ana raw kaynak:
+BASE_RAW_311_NAME = os.getenv("BASE_RAW_311_NAME", "sf_311_last_5_years.csv")
+
+# 2) Güncellenmiş/rolling raw çalışma dosyası:
+RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")
+
+# 3) 3 saatlik aggregate çıktı:
+AGG_BASENAME = os.getenv("AGG_311_NAME", "sf_311_last_5_years_3h.csv")
+AGG_ALIAS    = os.getenv("AGG_311_ALIAS", "sf_311_last_5_years_3h_alias.csv")
 
 LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
 LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_5_year.csv")
 
 RAW_311_PARQUET = os.getenv("RAW_311_PARQUET", "sf_311_last_5_years_y.parquet")
-AGG_311_PARQUET = os.getenv("AGG_311_PARQUET", "sf_311_last_5_years.parquet")
+AGG_311_PARQUET = os.getenv("AGG_311_PARQUET", "sf_311_last_5_years_3h.parquet")
 
 DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-z8j6.json")
 SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
@@ -72,7 +81,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         for c in out.columns
     ]
     return out
-    
+
 def log_merge_delta(before_shape, after_shape, label):
     br, bc = before_shape
     ar, ac = after_shape
@@ -135,10 +144,20 @@ def is_valid_311_aggregate_df(df: pd.DataFrame) -> bool:
     return required.issubset(cols)
 
 def is_valid_311_raw_df(df: pd.DataFrame) -> bool:
-    raw_like_1 = {"id", "datetime", "date", "GEOID"}
-    raw_like_2 = {"category", "subcategory", "service_details"}
     cols = {str(c).replace("\ufeff", "").strip() for c in df.columns}
-    return raw_like_1.issubset(cols) or ({"datetime", "date"}.issubset(cols) and len(raw_like_2.intersection(cols)) > 0)
+
+    raw_like_strict = {"id", "datetime", "date", "GEOID"}
+    raw_like_soft_1 = {"category", "subcategory", "service_details"}
+    raw_like_soft_2 = {"latitude", "longitude"}
+
+    # raw event-level için daha esnek doğrulama
+    if raw_like_strict.issubset(cols):
+        return True
+    if {"datetime", "date"}.issubset(cols) and len(raw_like_soft_1.intersection(cols)) > 0:
+        return True
+    if {"datetime", "date"}.issubset(cols) and len(raw_like_soft_2.intersection(cols)) > 0:
+        return True
+    return False
 
 def safe_read_csv(path: str, **kwargs) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False, **kwargs)
@@ -272,7 +291,6 @@ def candidate_paths(names: list[str], roots: list[Path]) -> list[Path]:
                 rt / "crime_prediction_data" / nm,
                 rt / "outputs" / nm,
             ])
-    # duplicate path temizle
     uniq = []
     seen = set()
     for p in out:
@@ -283,6 +301,12 @@ def candidate_paths(names: list[str], roots: list[Path]) -> list[Path]:
     return uniq
 
 def resolve_existing_raw_path():
+    """
+    Yeni mantık:
+    1) Önce repo'daki mevcut BASE raw dosyayı ara: sf_311_last_5_years.csv
+    2) Sonra working raw: sf_311_last_5_years_y.csv / parquet
+    3) En son gerçekten aggregate fallback bak
+    """
     roots = [Path(SAVE_DIR), Path.cwd(), Path(".")]
 
     def _ok(p: Path) -> bool:
@@ -299,23 +323,36 @@ def resolve_existing_raw_path():
             return False
         return True
 
-    raw_names = [RAW_311_PARQUET, RAW_311_NAME_Y, LEGACY_311_Y]
-    agg_names = [AGG_311_PARQUET, AGG_BASENAME, AGG_ALIAS, LEGACY_311]
+    # 1) Öncelik: GitHub'daki mevcut base raw kaynak
+    base_raw_names = [BASE_RAW_311_NAME]
+    for cand in candidate_paths(base_raw_names, roots):
+        if _ok(cand):
+            try:
+                df_probe = safe_read_any_table(str(cand))
+                if is_valid_311_raw_df(df_probe):
+                    print(f"🔎 Mevcut BASE 311 raw bulundu: {cand.resolve()}")
+                    return str(cand), "base_raw"
+                else:
+                    print(f"⚠️ BASE raw adayı bulundu ama raw yapıda değil, atlandı: {cand.resolve()}")
+            except Exception as e:
+                print(f"⚠️ BASE raw aday okunamadı, atlandı: {cand} | {e}")
 
-    # 1) Önce event-level raw ara
+    # 2) Working raw
+    raw_names = [RAW_311_PARQUET, RAW_311_NAME_Y, LEGACY_311_Y]
     for cand in candidate_paths(raw_names, roots):
         if _ok(cand):
             try:
                 df_probe = safe_read_any_table(str(cand))
                 if is_valid_311_raw_df(df_probe):
-                    print(f"🔎 Mevcut 311 raw bulundu: {cand.resolve()}")
+                    print(f"🔎 Mevcut WORKING 311 raw bulundu: {cand.resolve()}")
                     return str(cand), "raw_y"
                 else:
                     print(f"⚠️ Raw adayı bulundu ama raw yapıda değil, atlandı: {cand.resolve()}")
             except Exception as e:
                 print(f"⚠️ Raw aday okunamadı, atlandı: {cand} | {e}")
 
-    # 2) Raw yoksa aggregate fallback ara, ama mutlaka doğrula
+    # 3) Aggregate fallback (son çare)
+    agg_names = [AGG_311_PARQUET, AGG_BASENAME, AGG_ALIAS, LEGACY_311]
     for cand in candidate_paths(agg_names, roots):
         if _ok(cand):
             try:
@@ -358,15 +395,18 @@ def load_existing_raw(path, path_kind="raw_y"):
         print(f"📁 Doğrulanmış aggregate fallback satır: {len(df):,} | max date={mx_date}")
         return df
 
-    # raw_y
+    # base_raw / raw_y ortak işlenir
     if not is_valid_311_raw_df(df):
-        raise ValueError(f"❌ raw_y olarak seçilen dosya raw yapıda değil: {path}")
+        raise ValueError(f"❌ raw olarak seçilen dosya raw yapıda değil: {path}")
 
     if "index_right" in df.columns:
         df = df.drop(columns=["index_right"])
 
+    # datetime
     if "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
+    elif "requested_datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["requested_datetime"], errors="coerce", utc=True)
     elif "date" in df.columns and "time" in df.columns:
         df["datetime"] = pd.to_datetime(
             df["date"].astype(str) + " " + df["time"].astype(str),
@@ -376,11 +416,30 @@ def load_existing_raw(path, path_kind="raw_y"):
     else:
         df["datetime"] = pd.NaT
 
+    # category/subcategory isim düzelt
+    rename_map = {}
+    if "service_name" in df.columns and "category" not in df.columns:
+        rename_map["service_name"] = "category"
+    if "service_subtype" in df.columns and "subcategory" not in df.columns:
+        rename_map["service_subtype"] = "subcategory"
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # lat/long -> latitude/longitude
+    if "latitude" not in df.columns and "lat" in df.columns:
+        df["latitude"] = pd.to_numeric(df["lat"], errors="coerce")
+    if "longitude" not in df.columns and "long" in df.columns:
+        df["longitude"] = pd.to_numeric(df["long"], errors="coerce")
+
     if "date" not in df.columns:
         dt_local = df["datetime"].dt.tz_convert(SF_TZ) if SF_TZ is not None else df["datetime"]
         df["date"] = pd.to_datetime(dt_local, errors="coerce").dt.date
     else:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+
+    if "time" not in df.columns:
+        dt_local = df["datetime"].dt.tz_convert(SF_TZ) if SF_TZ is not None else df["datetime"]
+        df["time"] = dt_local.dt.strftime("%H:%M:%S")
 
     for c in [
         "id", "lat", "long", "category", "subcategory", "service_details",
@@ -389,6 +448,18 @@ def load_existing_raw(path, path_kind="raw_y"):
     ]:
         if c not in df.columns:
             df[c] = pd.NA
+
+    # id yoksa üret
+    if "id" not in df.columns or df["id"].isna().all():
+        df["id"] = (
+            df["datetime"].astype(str).fillna("")
+            + "_"
+            + df["latitude"].astype(str).fillna("")
+            + "_"
+            + df["longitude"].astype(str).fillna("")
+            + "_"
+            + df["category"].astype(str).fillna("")
+        )
 
     mx = pd.to_datetime(df["datetime"], errors="coerce", utc=True).max()
     print(f"📁 Mevcut raw satır: {len(df):,} | max datetime={mx}")
@@ -404,15 +475,15 @@ def decide_start_date(df_existing, source_kind="raw_y"):
         print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
 
-    if source_kind == "raw_y" and "datetime" in df_existing.columns and df_existing["datetime"].notna().any():
+    if source_kind in {"raw_y", "base_raw"} and "datetime" in df_existing.columns and df_existing["datetime"].notna().any():
         last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
         if pd.notna(last_dt):
             last_date = last_dt.date()
             start = last_date - timedelta(days=max(1, REINGEST_DAYS))
             if start < DEFAULT_START:
                 start = DEFAULT_START
-            print(f"📌 Mod: incremental(raw_y)+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
-            return start, "incremental-raw_y"
+            print(f"📌 Mod: incremental({source_kind})+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
+            return start, f"incremental-{source_kind}"
 
     if source_kind == "agg_fallback" and "date" in df_existing.columns and df_existing["date"].notna().any():
         last_date = pd.to_datetime(df_existing["date"], errors="coerce").dt.date.max()
@@ -619,6 +690,7 @@ def main():
 
     raw_path, source_kind = resolve_existing_raw_path()
 
+    base_raw_csv = os.path.join(SAVE_DIR, BASE_RAW_311_NAME)
     canonical_raw_csv = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
     canonical_raw_parquet = os.path.join(SAVE_DIR, RAW_311_PARQUET)
 
@@ -659,9 +731,10 @@ def main():
         df_new_geo = geotag_to_geoid11(df_new)
 
         keep = [
-            "id", "datetime", "date",
+            "id", "datetime", "date", "time",
             "latitude", "longitude",
             "category", "subcategory", "service_details",
+            "agency_responsible", "status_description", "source",
             "GEOID"
         ]
         for c in keep:
@@ -672,22 +745,36 @@ def main():
         df_new_geo["GEOID"] = normalize_geoid(df_new_geo["GEOID"], DEFAULT_GEOID_LEN)
 
         if source_kind == "agg_fallback":
-            # aggregate fallback varsa mevcut raw elimizde olmadığı için sadece yeni event-level raw ile devam et
             df_raw = df_new_geo.copy()
         elif df_existing.empty:
             df_raw = df_new_geo.copy()
         else:
             df_raw = pd.concat([df_existing, df_new_geo], ignore_index=True)
+
     if df_new.empty:
-        if source_kind == "raw_y":
+        if source_kind in {"raw_y", "base_raw"}:
             df_raw = df_existing.copy()
         else:
             df_raw = pd.DataFrame()
 
-    # ---- Ham kaydet
+    # ---- Ham kaydet (rolling 5y)
     if not df_raw.empty:
         df_raw["GEOID"] = normalize_geoid(df_raw["GEOID"], DEFAULT_GEOID_LEN)
         df_raw["id"] = df_raw["id"].astype(str)
+
+        # ID yoksa fallback üret
+        bad_id_mask = df_raw["id"].isin(["<NA>", "nan", "None", ""])
+        if bad_id_mask.any():
+            df_raw.loc[bad_id_mask, "id"] = (
+                df_raw.loc[bad_id_mask, "datetime"].astype(str).fillna("")
+                + "_"
+                + df_raw.loc[bad_id_mask, "latitude"].astype(str).fillna("")
+                + "_"
+                + df_raw.loc[bad_id_mask, "longitude"].astype(str).fillna("")
+                + "_"
+                + df_raw.loc[bad_id_mask, "category"].astype(str).fillna("")
+            )
+
         df_raw = df_raw.drop_duplicates(subset=["id"], keep="last")
 
         df_raw["date"] = pd.to_datetime(df_raw["date"], errors="coerce").dt.date
@@ -697,11 +784,16 @@ def main():
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
         df_raw = df_raw.sort_values("datetime")
 
+        # asıl rolling raw çalışma dosyası
         save_atomic(df_raw, canonical_raw_csv)
         save_parquet_atomic(df_raw, canonical_raw_parquet)
         save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
 
+        # istersen repo ana raw dosyasını da güncel tut
+        save_atomic(df_raw, base_raw_csv)
+
         print(f"✅ Ham 311 kaydedildi: {os.path.abspath(canonical_raw_csv)}")
+        print(f"✅ Base raw 311 güncellendi: {os.path.abspath(base_raw_csv)}")
         log_shape(df_raw, "311 raw")
     else:
         print("⚠️ Ham 311 boş.")
@@ -715,7 +807,6 @@ def main():
 
     # ---- Aggregate üret ve kaydet
     if source_kind == "agg_fallback" and df_raw.empty:
-        # Hiç yeni event yoksa ve sadece aggregate fallback varsa mevcut aggregate'i kullan
         grouped = safe_read_any_table(raw_path).copy()
         if not is_valid_311_aggregate_df(grouped):
             raise ValueError(f"❌ Aggregate fallback doğrulaması son aşamada başarısız: {raw_path}")
