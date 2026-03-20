@@ -144,7 +144,6 @@ def detect_panel_keys(df: pd.DataFrame) -> list[str]:
             keys.append(c)
     return keys
 
-
 def dedupe_by_panel_keys(df: pd.DataFrame, keys: list[str], keep: str = "first") -> pd.DataFrame:
     if not keys:
         return df.copy()
@@ -167,13 +166,19 @@ CRIME_OUTPUT_PARQUET = str(BASE_DIR / "sf_crime_03.parquet")
 
 DEMOGRAPHIC_PATH = (os.getenv("POPULATION_PATH", "") or "").strip()
 if not DEMOGRAPHIC_PATH:
-    cand = BASE_DIR / "sf_population.parquet"
-    if cand.exists():
-        DEMOGRAPHIC_PATH = str(cand)
-    elif Path("sf_population.parquet").exists():
-        DEMOGRAPHIC_PATH = "sf_population.parquet"
-    else:
-        raise FileNotFoundError("❌ sf_population.parquet bulunamadı. Lütfen crime_prediction_data altına ekleyin.")
+    candidates = [
+        BASE_DIR / "sf_population.parquet",
+        Path("sf_population.parquet"),
+        BASE_DIR / "sf_population.csv",
+        Path("sf_population.csv"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            DEMOGRAPHIC_PATH = str(cand)
+            break
+
+if not DEMOGRAPHIC_PATH:
+    raise FileNotFoundError("❌ sf_population.parquet / sf_population.csv bulunamadı.")
 
 DEMOGRAPHIC_FEATURES_PARQUET = str(BASE_DIR / "sf_demographic_features.parquet")
 
@@ -589,9 +594,9 @@ def main():
     # -------------------------------------------------------------------------
     # 3) Yalnızca gerçekten yeni satır varsa demographic oku
     # -------------------------------------------------------------------------
-    demo_raw = pd.read_parquet(DEMOGRAPHIC_PATH)
+    demo_raw = read_table_auto(DEMOGRAPHIC_PATH)
     demo_raw = demo_raw.astype(str)
-    log_shape(demo_raw, "DEMOGRAPHIC PARQUET")
+    log_shape(demo_raw, f"DEMOGRAPHIC INPUT ({Path(DEMOGRAPHIC_PATH).suffix})")
 
     # -------------------------------------------------------------------------
     # 4) Feature üret
