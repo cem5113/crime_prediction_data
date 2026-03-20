@@ -88,6 +88,32 @@ def save_atomic(df, path):
     df.to_csv(tmp, index=False, encoding="utf-8-sig")
     os.replace(tmp, path)
 
+def save_parquet_atomic(df: pd.DataFrame, path: str):
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    tmp = path + ".tmp.parquet"
+
+    df2 = df.copy()
+    for c in df2.select_dtypes(include=["float64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="float")
+    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
+    os.replace(tmp, path)
+    
+def save_parquet_atomic(df: pd.DataFrame, path: str):
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    tmp = path + ".tmp.parquet"
+
+    df2 = df.copy()
+    for c in df2.select_dtypes(include=["float64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="float")
+    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
+    os.replace(tmp, path)
+    
 def is_lfs_pointer_file(p: Path) -> bool:
     try:
         return "git-lfs.github.com/spec/v1" in p.read_text(errors="ignore")[:200]
@@ -629,6 +655,7 @@ def main():
         df_raw = df_raw.sort_values("datetime")
 
         save_atomic(df_raw, raw_path)
+        save_parquet_atomic(df_raw, os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet"))
         save_atomic(df_raw, os.path.join(SAVE_DIR, RAW_311_NAME_Y))
         save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
         save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311))
@@ -647,8 +674,9 @@ def main():
 
     # ---- Aggregate kaydet
     grouped = build_311_aggregate(df_raw)
-
+    
     save_atomic(grouped, agg_path)
+    save_parquet_atomic(grouped, os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet"))
     save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
     if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
         save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
@@ -658,15 +686,16 @@ def main():
 
     # ---- Crime merge: sf_crime_01 -> sf_crime_02
     try:
-        crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.csv")
-        crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.csv")
-
+        crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.parquet")
+        crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.parquet")
+        
         if not os.path.exists(crime_01_path):
             print(f"ℹ️ {crime_01_path} yok. 311 merge atlandı.")
             return
-
-        print("🔗 sf_crime_01 ile full 311 aggregate birleştiriliyor...")
-        crime = pd.read_csv(crime_01_path, dtype={"GEOID": str}, low_memory=False)
+        
+        crime = pd.read_parquet(crime_01_path)
+        if "GEOID" in crime.columns:
+            crime["GEOID"] = crime["GEOID"].astype(str)
         before = crime.shape
 
         if "hour_range" not in crime.columns:
@@ -689,15 +718,17 @@ def main():
         log_merge_delta(before, merged.shape, "crime ⨯ full311")
         log_shape(merged, "sf_crime_02")
 
-        save_atomic(merged, crime_02_path)
+        save_parquet_atomic(merged, crime_02_path)
         print("✅ Suç + full 311 birleştirmesi tamamlandı.")
     except Exception as e:
         print(f"⚠️ 311 merge hatası: {e}\n↪️ PASSTHROUGH uygulanıyor…")
         try:
-            crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.csv")
-            crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.csv")
+            crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.parquet")
+            crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.parquet")
             if os.path.exists(crime_01_path):
-                crime = pd.read_csv(crime_01_path, dtype={"GEOID": str}, low_memory=False)
+                crime = pd.read_parquet(crime_01_path)
+                if "GEOID" in crime.columns:
+                    crime["GEOID"] = crime["GEOID"].astype(str)
                 fallback_cols = [
                     "311_request_count",
                     "311_noise_count",
