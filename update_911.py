@@ -1275,17 +1275,21 @@ if _neighbor_roll is not None:
     _enriched = _enriched.merge(_neighbor_roll, on=["GEOID", "date"], how="left")
 
 KEEP_911_COLS = [c for c in [
+
+    # KEYS
     "GEOID", "date", "hour_range", "hr_key",
 
+    # BASE COUNTS
     "911_request_count_hour_range",
     "911_request_count_daily(before_24_hours)",
-    "hr_cnt", "daily_cnt",
 
+    # PRIORITY / FLAGS
     "911_priority_high_count_hour_range",
     "911_onview_count_hour_range",
     "911_sensitive_count_hour_range",
     "911_police_agency_count_hour_range",
 
+    # CALL TYPE COUNTS
     "911_violent_call_count_hour_range",
     "911_property_call_count_hour_range",
     "911_weapon_call_count_hour_range",
@@ -1294,6 +1298,7 @@ KEEP_911_COLS = [c for c in [
     "911_suspicious_call_count_hour_range",
     "911_medical_call_count_hour_range",
 
+    # SHARES
     "911_priority_high_share_hour_range",
     "911_onview_share_hour_range",
     "911_sensitive_share_hour_range",
@@ -1305,11 +1310,13 @@ KEEP_911_COLS = [c for c in [
     "911_suspicious_share_hour_range",
     "911_medical_share_hour_range",
 
+    # RESPONSE TIMES (HOUR)
     "911_mean_dispatch_delay_min_hour_range",
     "911_mean_travel_time_min_hour_range",
     "911_mean_total_response_min_hour_range",
     "911_mean_close_time_min_hour_range",
 
+    # DAILY COUNTS
     "911_priority_high_count_daily",
     "911_onview_count_daily",
     "911_sensitive_count_daily",
@@ -1321,74 +1328,81 @@ KEEP_911_COLS = [c for c in [
     "911_suspicious_call_count_daily",
     "911_medical_call_count_daily",
 
+    # DAILY RESPONSE TIMES
     "911_mean_dispatch_delay_min_daily",
     "911_mean_travel_time_min_daily",
     "911_mean_total_response_min_daily",
     "911_mean_close_time_min_daily",
 
-    "911_geo_last1h",
+    # GEO ROLLING (NO 1h!)
     "911_geo_last3h",
     "911_geo_last6h",
     "911_geo_last24h",
     "911_geo_last3d",
     "911_geo_last7d",
 
-    "911_geo_highprio_last1h",
     "911_geo_highprio_last3h",
     "911_geo_highprio_last6h",
     "911_geo_highprio_last24h",
     "911_geo_highprio_last3d",
     "911_geo_highprio_last7d",
 
-    "911_geo_violent_last1h",
     "911_geo_violent_last3h",
     "911_geo_violent_last6h",
     "911_geo_violent_last24h",
     "911_geo_violent_last3d",
     "911_geo_violent_last7d",
 
-    "911_geo_property_last1h",
     "911_geo_property_last3h",
     "911_geo_property_last6h",
     "911_geo_property_last24h",
     "911_geo_property_last3d",
     "911_geo_property_last7d",
 
-    "911_geo_weapon_last1h",
     "911_geo_weapon_last3h",
     "911_geo_weapon_last6h",
     "911_geo_weapon_last24h",
     "911_geo_weapon_last3d",
     "911_geo_weapon_last7d",
 
+    # DAY ROLLING
     "911_day_total_last1d",
     "911_day_total_last3d",
     "911_day_total_last7d",
+
     "911_day_highprio_last1d",
     "911_day_highprio_last3d",
     "911_day_highprio_last7d",
+
     "911_day_violent_last1d",
     "911_day_violent_last3d",
     "911_day_violent_last7d",
+
     "911_day_property_last1d",
     "911_day_property_last3d",
     "911_day_property_last7d",
+
     "911_day_weapon_last1d",
     "911_day_weapon_last3d",
     "911_day_weapon_last7d",
 
+    # NEIGHBORS
     "911_neighbors_last1d",
     "911_neighbors_last3d",
     "911_neighbors_last7d",
+
     "911_neighbors_violent_last1d",
     "911_neighbors_violent_last3d",
     "911_neighbors_violent_last7d",
+
     "911_neighbors_property_last1d",
     "911_neighbors_property_last3d",
     "911_neighbors_property_last7d",
+
     "911_neighbors_weapon_last1d",
     "911_neighbors_weapon_last3d",
     "911_neighbors_weapon_last7d",
+
 ] if c in _enriched.columns]
 
 _enriched = _enriched[KEEP_911_COLS].copy()
