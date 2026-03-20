@@ -12,6 +12,15 @@ from scipy.spatial import cKDTree
 # =========================
 # küçük yardımcılar
 # =========================
+def read_table(csv_path: str, parquet_path: str) -> tuple[pd.DataFrame, str]:
+    if os.path.exists(csv_path):
+        print(f"📥 Girdi CSV bulundu: {csv_path}")
+        return pd.read_csv(csv_path, low_memory=False), csv_path
+    if os.path.exists(parquet_path):
+        print(f"📥 Girdi Parquet bulundu: {parquet_path}")
+        return pd.read_parquet(parquet_path), parquet_path
+    raise FileNotFoundError(f"❌ Suç girdi dosyası yok: {csv_path} veya {parquet_path}")
+
 def log_shape(df: pd.DataFrame, label: str):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
@@ -222,8 +231,11 @@ def make_or_apply_bins_count(series: pd.Series, bins_json: dict | None):
 BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 
-CRIME_INPUT  = os.path.join(BASE_DIR, os.getenv("CRIME_INPUT_NAME", "sf_crime_03.csv"))
+CRIME_INPUT_CSV = os.path.join(BASE_DIR, os.getenv("CRIME_INPUT_NAME", "sf_crime_03.csv"))
+CRIME_INPUT_PARQUET = CRIME_INPUT_CSV.replace(".csv", ".parquet")
+
 CRIME_OUTPUT = os.path.join(BASE_DIR, os.getenv("CRIME_OUTPUT_NAME", "sf_crime_04.csv"))
+CRIME_OUTPUT_PARQUET = CRIME_OUTPUT.replace(".csv", ".parquet")
 
 BUS_CANON_RAW    = os.path.join(BASE_DIR, os.getenv("BUS_CANON_RAW", "sf_bus_stops_with_geoid.csv"))
 BUS_LEGACY_RAW_Y = os.path.join(BASE_DIR, os.getenv("BUS_LEGACY_RAW_Y", "bus_y.csv"))
@@ -253,10 +265,8 @@ BUS_CACHE_OK = (os.path.exists(BUS_CANON_RAW) and os.path.exists(BUS_SUMMARY_NAM
 # =========================
 # 1) crime oku
 # =========================
-if not os.path.exists(CRIME_INPUT):
-    raise FileNotFoundError(f"❌ Suç girdi dosyası yok: {CRIME_INPUT}")
-
-crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
+crime_in, crime_input_used = read_table(CRIME_INPUT_CSV, CRIME_INPUT_PARQUET)
+print(f"📄 BUS enrich girdi: {crime_input_used}")
 log_shape(crime_in, "CRIME_INPUT (okundu)")
 
 if "GEOID" not in crime_in.columns:
