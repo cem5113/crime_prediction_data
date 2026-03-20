@@ -65,10 +65,12 @@ POI_GEOID_SUMMARY_CSV = os.path.join(BASE_DIR, "poi_geoid_summary.csv")
 
 CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.csv"))
 CRIME_OUT = os.getenv("CRIME_OUT", os.path.join(BASE_DIR, "sf_crime_06.csv"))
+CRIME_OUT_PARQUET = CRIME_OUT.replace(".csv", ".parquet")
 
 FORCE_POI_REFRESH = os.getenv("FORCE_POI_REFRESH", "0").strip().lower() in ("1", "true", "yes")
 POI_RISK_LOOKBACK_YEARS = int(os.getenv("POI_RISK_LOOKBACK_YEARS", "5"))
 INCLUDE_OFFICE_CRAFT = os.getenv("INCLUDE_OFFICE_CRAFT", "1").strip().lower() not in ("0", "false", "no")
+ENABLE_DYNAMIC_POI_RISK = os.getenv("ENABLE_DYNAMIC_POI_RISK", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # Eğer çıktı varsa, append-only mantık gereği eski dosyayı referans alacağız.
 USE_EXISTING_OUTPUT_IF_ANY = True
@@ -86,7 +88,15 @@ def _first_exists(*paths):
             return p
     return None
 
-
+def _read_existing_output(csv_path: str, parquet_path: str) -> pd.DataFrame | None:
+    if os.path.exists(csv_path):
+        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
+        return pd.read_csv(csv_path, low_memory=False)
+    if os.path.exists(parquet_path):
+        print(f"📥 Mevcut çıktı Parquet bulundu: {parquet_path}")
+        return pd.read_parquet(parquet_path)
+    return None
+    
 def _ensure_parent(path: str):
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
@@ -646,28 +656,33 @@ def enrich_crime_by_geoid(df_crime: pd.DataFrame, geoid_poi: pd.DataFrame) -> pd
 # =============================================================================
 # 6) APPEND-ONLY / NEW ROW TESPİTİ
 # =============================================================================
-def split_existing_and_new_rows(df_in: pd.DataFrame, existing_out_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_existing_and_new_rows(
+    df_in: pd.DataFrame,
+    existing_out_csv: str,
+    existing_out_parquet: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Eğer sf_crime_06.csv mevcutsa:
+    Eğer sf_crime_06 çıktısı mevcutsa (csv veya parquet):
       - eski satırları korur
       - df_in içindeki yeni satırları bulur
     Yeni satır tespiti PANEL_KEYS üzerinden yapılır.
     """
 
-    if not os.path.exists(existing_out_path):
-        print("ℹ️ Eski sf_crime_06.csv yok → tüm giriş satırları yeni kabul edilecek.")
+    old = _read_existing_output(existing_out_csv, existing_out_parquet)
+    if old is None:
+        print("ℹ️ Eski sf_crime_06 çıktısı (csv/parquet) yok → tüm giriş satırları yeni kabul edilecek.")
         return pd.DataFrame(columns=df_in.columns), df_in.copy()
 
-    old = pd.read_csv(existing_out_path, low_memory=False)
     if not set(PANEL_KEYS).issubset(old.columns):
         print("⚠️ Eski çıktı dosyasında panel anahtarları eksik → güvenli tarafta kalıp tüm girişi yeni kabul ediyorum.")
         return old, df_in.copy()
 
     old = old.copy()
+    cur = df_in.copy()
+
     old["GEOID"] = _normalize_geoid(old["GEOID"], 11)
     old = _ensure_datetime_date_col(old, "date")
 
-    cur = df_in.copy()
     cur["GEOID"] = _normalize_geoid(cur["GEOID"], 11)
     cur = _ensure_datetime_date_col(cur, "date")
 
@@ -677,7 +692,7 @@ def split_existing_and_new_rows(df_in: pd.DataFrame, existing_out_path: str) -> 
     marked = cur.merge(old_keys, on=PANEL_KEYS, how="left")
     new_rows = marked[marked["__seen__"].isna()].drop(columns=["__seen__"]).copy()
 
-    print(f"🧠 Eski çıktı bulundu: {existing_out_path}")
+    print("🧠 Eski çıktı bulundu (csv/parquet destekli incremental).")
     log_shape(old, "MEVCUT sf_crime_06")
     log_shape(cur, "GÜNCEL sf_crime_05")
     log_shape(new_rows, "YENİ SATIRLAR (POI enrich edilecek)")
@@ -758,13 +773,21 @@ if __name__ == "__main__":
         candidates = [
             CRIME_IN,
             os.path.join(BASE_DIR, "sf_crime_05.csv"),
+            os.path.join(BASE_DIR, "sf_crime_05.parquet"),
             os.path.join(BASE_DIR, "sf_crime_03.csv"),
+            os.path.join(BASE_DIR, "sf_crime_03.parquet"),
             os.path.join(BASE_DIR, "sf_crime_02.csv"),
+            os.path.join(BASE_DIR, "sf_crime_02.parquet"),
             os.path.join(BASE_DIR, "sf_crime.csv"),
+            os.path.join(BASE_DIR, "sf_crime.parquet"),
             "sf_crime_05.csv",
+            "sf_crime_05.parquet",
             "sf_crime_03.csv",
+            "sf_crime_03.parquet",
             "sf_crime_02.csv",
+            "sf_crime_02.parquet",
             "sf_crime.csv",
+            "sf_crime.parquet",
         ]
         resolved = _first_exists(*candidates)
         if resolved:
@@ -773,7 +796,11 @@ if __name__ == "__main__":
         else:
             raise FileNotFoundError(f"❌ Suç girdisi bulunamadı. Denenenler: {candidates}")
 
-    df_crime_full = pd.read_csv(CRIME_IN, low_memory=False)
+    print(f"📥 Crime input kullanılıyor: {CRIME_IN}")
+    if str(CRIME_IN).lower().endswith(".parquet"):
+        df_crime_full = pd.read_parquet(CRIME_IN)
+    else:
+        df_crime_full = pd.read_csv(CRIME_IN, low_memory=False)
     if "GEOID" not in df_crime_full.columns:
         raise KeyError("❌ Suç verisinde GEOID yok.")
     if "date" not in df_crime_full.columns:
@@ -787,7 +814,11 @@ if __name__ == "__main__":
     # B) ESKİ ÇIKTI VARSA YENİ SATIRLARI AYIR
     # -------------------------------------------------------------------------
     if USE_EXISTING_OUTPUT_IF_ANY:
-        old_out, new_rows = split_existing_and_new_rows(df_crime_full, CRIME_OUT)
+        old_out, new_rows = split_existing_and_new_rows(
+            df_crime_full,
+            CRIME_OUT,
+            CRIME_OUT_PARQUET
+        )
     else:
         old_out = pd.DataFrame(columns=df_crime_full.columns)
         new_rows = df_crime_full.copy()
@@ -795,8 +826,10 @@ if __name__ == "__main__":
     if new_rows.empty:
         print("✅ Yeni satır yok. Eski sf_crime_06 olduğu gibi korunuyor.")
         if os.path.exists(CRIME_OUT):
-            print(f"📁 Mevcut çıktı korunuyor: {CRIME_OUT}")
-        else:
+            print(f"📁 Mevcut CSV çıktı korunuyor: {CRIME_OUT}")
+        if os.path.exists(CRIME_OUT_PARQUET):
+            print(f"📁 Mevcut Parquet çıktı korunuyor: {CRIME_OUT_PARQUET}")
+        if (not os.path.exists(CRIME_OUT)) and (not os.path.exists(CRIME_OUT_PARQUET)):
             print("⚠️ Eski çıktı da yok; yazılacak veri bulunamadı.")
         raise SystemExit(0)
 
@@ -854,19 +887,25 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # E) RİSK HESAP EVRENİ = SON 5 YIL (veya env)
     # -------------------------------------------------------------------------
+    risk_cols = [c for c in ["date", "latitude", "longitude", "lat", "lon", "x", "y"] if c in df_crime_full.columns]
+    if "date" not in risk_cols:
+        raise KeyError("❌ Risk hesabı için 'date' kolonu bulunamadı.")
+    risk_base = df_crime_full[risk_cols].copy()
+    
     risk_crime_universe = restrict_risk_history_window(
-        df_crime_full=df_crime_full,
-        reference_new_rows=new_rows,
+        df_crime_full=risk_base,
+        reference_new_rows=new_rows[["date"]].copy(),
         years=POI_RISK_LOOKBACK_YEARS,
     )
-
-    # -------------------------------------------------------------------------
-    # F) DİNAMİK RISK SÖZLÜĞÜ
-    # -------------------------------------------------------------------------
-    try:
-        risk_dict = compute_dynamic_poi_risk(risk_crime_universe, df_poi, radius_m=300)
-    except Exception as e:
-        print(f"⚠️ Risk sözlüğü üretilemedi: {e}; boş sözlük kullanılacak.")
+    
+    if ENABLE_DYNAMIC_POI_RISK:
+        try:
+            risk_dict = compute_dynamic_poi_risk(risk_crime_universe, df_poi, radius_m=300)
+        except Exception as e:
+            print(f"⚠️ Risk sözlüğü üretilemedi: {e}; boş sözlük kullanılacak.")
+            risk_dict = {}
+    else:
+        print("ℹ️ ENABLE_DYNAMIC_POI_RISK=0 → dinamik POI risk hesabı atlandı.")
         risk_dict = {}
 
     print(f"🧪 Risk sözlüğü boyutu: {len(risk_dict)} alt-kategori")
@@ -919,10 +958,22 @@ if __name__ == "__main__":
     final_to_save = final_df.copy()
     if "date" in final_to_save.columns:
         final_to_save["date"] = pd.to_datetime(final_to_save["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-    _safe_save_csv(final_to_save, CRIME_OUT)
-    print(f"✅ Yazıldı: {CRIME_OUT} | Satır: {len(final_to_save):,}")
-
+    
+    # Önce parquet yaz
+    _ensure_parent(CRIME_OUT_PARQUET)
+    tmp_parquet = CRIME_OUT_PARQUET + ".tmp"
+    final_to_save.to_parquet(tmp_parquet, index=False)
+    os.replace(tmp_parquet, CRIME_OUT_PARQUET)
+    print(f"✅ Parquet yazıldı: {CRIME_OUT_PARQUET} | Satır: {len(final_to_save):,}")
+    
+    # CSV opsiyonel
+    WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+    if WRITE_CSV:
+        _safe_save_csv(final_to_save, CRIME_OUT)
+        print(f"✅ CSV yazıldı: {CRIME_OUT} | Satır: {len(final_to_save):,}")
+    else:
+        print("ℹ️ Büyük CSV yazımı kapalı; yalnız parquet kaydedildi.")
+    
     try:
         cols = [c for c in ["GEOID", "date", "hour_range", "poi_total_count", "poi_risk_score", "poi_dominant_type"] if c in final_to_save.columns]
         preview = final_to_save[cols].tail(10) if cols else final_to_save.tail(10)
@@ -930,10 +981,15 @@ if __name__ == "__main__":
         print(preview.to_string(index=False))
     except Exception as e:
         print(f"(info) Örnek yazdırılamadı: {e}")
-
+    
     try:
-        preview_file = pd.read_csv(CRIME_OUT, nrows=3, low_memory=False)
-        print(f"{CRIME_OUT} — ilk 3 satır")
-        print(preview_file.to_string(index=False))
+        if WRITE_CSV and os.path.exists(CRIME_OUT):
+            preview_file = pd.read_csv(CRIME_OUT, nrows=3, low_memory=False)
+            print(f"{CRIME_OUT} — ilk 3 satır")
+            print(preview_file.to_string(index=False))
+        elif os.path.exists(CRIME_OUT_PARQUET):
+            preview_file = pd.read_parquet(CRIME_OUT_PARQUET).head(3)
+            print(f"{CRIME_OUT_PARQUET} — ilk 3 satır")
+            print(preview_file.to_string(index=False))
     except Exception as e:
         print(f"(info) Kaydedilen dosya önizlemesi okunamadı: {e}")
