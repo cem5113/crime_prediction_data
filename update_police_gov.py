@@ -95,14 +95,21 @@ BASE_CANDIDATES = [
     str(here()),                          # doğrudan CWD
 ]
 
-INPUT_FILE = "sf_crime_06.csv"
+INPUT_FILES = ["sf_crime_06.csv", "sf_crime_06.parquet"]
+
 CRIME_INPUT_CANDIDATES = []
 for base in BASE_CANDIDATES:
     if base:
-        CRIME_INPUT_CANDIDATES.append(str(Path(base) / INPUT_FILE))
-CRIME_INPUT_CANDIDATES.append(str(here(INPUT_FILE)))  # kökte olabilir
+        for fname in INPUT_FILES:
+            CRIME_INPUT_CANDIDATES.append(str(Path(base) / fname))
 
-print("🔎 sf_crime_06.csv aday yollar:")
+for fname in INPUT_FILES:
+    CRIME_INPUT_CANDIDATES.append(str(here(fname)))  # kökte olabilir
+
+# tekrarları temizle
+CRIME_INPUT_CANDIDATES = list(dict.fromkeys(CRIME_INPUT_CANDIDATES))
+
+print("🔎 sf_crime_06 giriş aday yolları:")
 for p in CRIME_INPUT_CANDIDATES:
     print("  -", p, "✅" if pexists(p) else "❌")
 
@@ -114,7 +121,8 @@ if CRIME_IN is None:
     )
 
 in_dir = Path(CRIME_IN).parent
-CRIME_OUT = str(in_dir / ("sf_crime_07.csv" if Path(CRIME_IN).name == "sf_crime_06.csv" else f"{Path(CRIME_IN).stem}_pg.csv"))
+CRIME_OUT_PARQUET = str(in_dir / "sf_crime_07.parquet")
+CRIME_OUT_CSV = str(in_dir / "sf_crime_07.csv")
 
 # Polis/Gov adayları: aynı kök + yaygın yerler
 POLICE_CANDIDATES = [
@@ -144,7 +152,10 @@ print(f"📂 Yazılacak çıkış: {CRIME_OUT}")
 # -----------------------------------------------------------------------------
 # VERİ OKU
 # -----------------------------------------------------------------------------
-df = pd.read_csv(CRIME_IN, low_memory=False)
+if CRIME_IN.lower().endswith(".parquet"):
+    df = pd.read_parquet(CRIME_IN)
+else:
+    df = pd.read_csv(CRIME_IN, low_memory=False)
 log_shape(df, "CRIME (yükleme)")
 
 if "GEOID" not in df.columns:
@@ -406,12 +417,28 @@ if pg_cols:
     print(df[pg_cols].isna().sum().to_string())
 # -----------------------------------------------
 
-safe_save_csv(df, CRIME_OUT)
-print(f"✅ Kaydedildi: {CRIME_OUT} | Satır: {len(df):,} | Sütun: {df.shape[1]}")
+print("💾 sf_crime_07 kaydetme aşaması başlıyor...")
+
+tmp_parquet = CRIME_OUT_PARQUET + ".tmp.parquet"
+df.to_parquet(
+    tmp_parquet,
+    index=False,
+    engine="pyarrow",
+    compression="snappy"
+)
+os.replace(tmp_parquet, CRIME_OUT_PARQUET)
+print(f"✅ Parquet kaydedildi: {CRIME_OUT_PARQUET} | Satır: {len(df):,} | Sütun: {df.shape[1]}")
+
+WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+if WRITE_CSV:
+    safe_save_csv(df, CRIME_OUT_CSV)
+    print(f"✅ CSV kaydedildi: {CRIME_OUT_CSV} | Satır: {len(df):,} | Sütun: {df.shape[1]}")
+else:
+    print("ℹ️ CSV yazımı kapalı; yalnız parquet kaydedildi.")
 
 try:
-    preview = pd.read_csv(CRIME_OUT, nrows=3)
-    print(f"📄 {CRIME_OUT} — ilk 3 satır:")
+    preview = pd.read_parquet(CRIME_OUT_PARQUET).head(3)
+    print(f"📄 {CRIME_OUT_PARQUET} — ilk 3 satır:")
     print(preview.to_string(index=False))
 except Exception as e:
-    print(f"⚠️ Önizleme okunamadı: {e}")
+    print(f"⚠️ Parquet önizleme okunamadı: {e}")
