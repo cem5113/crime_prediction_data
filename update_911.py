@@ -36,7 +36,22 @@ try:
 except Exception:
     SF_TZ = None
 
+def normalize_hour_range(hr):
+    import re
+    import numpy as np
 
+    m = re.match(r"^\s*(\d{1,2})\s*[-:]\s*(\d{1,2})\s*$", str(hr))
+    if not m:
+        return np.nan
+
+    a = int(m.group(1)) % 24
+    b = int(m.group(2))
+
+    if b <= a:
+        b = min(a + 3, 24)
+
+    return f"{a:02d}-{b:02d}"
+    
 def log(msg: str):
     print(msg, flush=True)
 
@@ -262,9 +277,11 @@ def ensure_geoid(df: pd.DataFrame) -> pd.DataFrame:
 
     if "latitude" in df.columns and "longitude" in df.columns:
         min_lon, min_lat, max_lon, max_lat = SF_BBOX
+        df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+        df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
         df = df[
-            (pd.to_numeric(df["latitude"], errors="coerce").between(min_lat, max_lat)) &
-            (pd.to_numeric(df["longitude"], errors="coerce").between(min_lon, max_lon))
+            df["latitude"].between(min_lat, max_lat) &
+            df["longitude"].between(min_lon, max_lon)
         ]
 
     df = df.dropna(subset=["latitude", "longitude"]).copy()
@@ -296,13 +313,13 @@ def _build_call_group_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         txt = df[desc_col].astype(str).str.lower().fillna("")
 
-    violent_pat = r"(assault|battery|fight|violence|domestic|abuse|rape|sexual|homicide|stab|shoot|shots fired)"
-    property_pat = r"(burglary|robbery|theft|larceny|shoplift|stolen|break[- ]?in|embezz|vandal|property)"
-    weapon_pat = r"(weapon|gun|firearm|knife|shot|shots fired|armed)"
-    disturbance_pat = r"(disturb|noise|party|dispute|trespass|harass|loiter|suspicious person)"
-    vehicle_pat = r"(vehicle|traffic|collision|accident|parking|tow|carjacking|auto|dui)"
-    suspicious_pat = r"(suspicious|welfare check|person down|unknown trouble|check well[- ]?being)"
-    medical_pat = r"(medical|overdose|ambulance|injured|unconscious|breathing|sick)"
+    violent_pat = r"(?:assault|battery|fight|violence|domestic|abuse|rape|sexual|homicide|stab|shoot|shots fired)"
+    property_pat = r"(?:burglary|robbery|theft|larceny|shoplift|stolen|break[- ]?in|embezz|vandal|property)"
+    weapon_pat = r"(?:weapon|gun|firearm|knife|shot|shots fired|armed)"
+    disturbance_pat = r"(?:disturb|noise|party|dispute|trespass|harass|loiter|suspicious person)"
+    vehicle_pat = r"(?:vehicle|traffic|collision|accident|parking|tow|carjacking|auto|dui)"
+    suspicious_pat = r"(?:suspicious|welfare check|person down|unknown trouble|check well[- ]?being)"
+    medical_pat = r"(?:medical|overdose|ambulance|injured|unconscious|breathing|sick)"
 
     df["is_violent_call"] = txt.str.contains(violent_pat, regex=True, na=False).astype("int8")
     df["is_property_call"] = txt.str.contains(property_pat, regex=True, na=False).astype("int8")
@@ -508,16 +525,11 @@ def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
         if "GEOID" in df.columns:
             df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
 
-        def _fmt_hr(hr):
-            m = re.match(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$", str(hr))
-            if not m:
-                return None
-            a = int(m.group(1)) % 24
-            b = int(m.group(2))
-            b = b if b > a else min(a + 3, 24)
-            return f"{a:02d}-{b:02d}"
-
-        df["hour_range"] = df["hour_range"].apply(_fmt_hr)
+        df["hour_range"] = df["hour_range"].apply(normalize_hour_range)
+        
+        bad_hr = df["hour_range"].isna().sum()
+        if bad_hr:
+            log(f"⚠️ LOCAL hour_range parse edilemeyen: {bad_hr:,}")
 
         if "hr_key" not in df.columns:
             df["hr_key"] = df["hour_range"].astype(str).str.extract(r"^(\d{2})").astype(float)
@@ -570,16 +582,11 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
         if "GEOID" in df.columns:
             df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
 
-        def _fmt_hr(hr):
-            m = re.match(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$", str(hr))
-            if not m:
-                return None
-            a = int(m.group(1)) % 24
-            b = int(m.group(2))
-            b = b if b > a else min(a + 3, 24)
-            return f"{a:02d}-{b:02d}"
-
-        df["hour_range"] = df["hour_range"].apply(_fmt_hr)
+        df["hour_range"] = df["hour_range"].apply(normalize_hour_range)
+        
+        bad_hr = df["hour_range"].isna().sum()
+        if bad_hr:
+            log(f"⚠️ RELEASE hour_range parse edilemeyen: {bad_hr:,}")
 
         if "hr_key" not in df.columns:
             df["hr_key"] = df["hour_range"].astype(str).str.extract(r"^(\d{2})").astype(float)
@@ -913,7 +920,7 @@ def incremental_summary(start_day: datetime.date, end_day: datetime.date) -> pd.
 # ============================================================
 # MAIN — LOCAL/RELEASE → INCREMENT → ENRICH → MERGE
 # ============================================================
-five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5 * 365)
+five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=1825)
 
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
@@ -936,12 +943,9 @@ today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
 if base_max_date is None:
     fetch_start, fetch_end = today_sf, today_sf
 else:
-    fetch_start = base_max_date - timedelta(days=max(1, SF911_REINGEST_DAYS))
     fetch_end = today_sf
-    if fetch_start < five_years_ago:
-        fetch_start = five_years_ago
-    if fetch_start > fetch_end:
-        fetch_start = fetch_end
+    fetch_start = max(five_years_ago, base_max_date - timedelta(days=max(1, SF911_REINGEST_DAYS)))
+    fetch_start = min(fetch_start, fetch_end)
 
 log(f"🗓️ İndirme aralığı: {fetch_start} → {fetch_end} ({(fetch_end - fetch_start).days + 1} gün)")
 
@@ -955,12 +959,21 @@ if inc is not None and not inc.empty:
     final_911 = pd.concat([final_911, inc], ignore_index=True)
 
     subset_cols = [c for c in ["GEOID", "date", "hour_range"] if c in final_911.columns]
-    final_911 = (
-        final_911.dropna(subset=["date"])
-        .sort_values(subset_cols if subset_cols else ["date"])
-        .drop_duplicates(subset=subset_cols if subset_cols else ["date"], keep="last")
-    )
-    final_911 = final_911[final_911["date"] >= five_years_ago]
+    if subset_cols:
+        final_911 = (
+            final_911.dropna(subset=["date"])
+            .sort_values(subset_cols)
+            .drop_duplicates(subset=subset_cols, keep="last")
+        )
+    else:
+        final_911 = (
+            final_911
+            .dropna(subset=["date"])
+            .sort_values(["date"])
+            .drop_duplicates(keep="last")
+        )
+    
+    final_911 = final_911[final_911["date"] >= five_years_ago].copy()
 
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
@@ -991,8 +1004,10 @@ if "hr_key" not in final_911.columns:
     final_911["hr_key"] = final_911["hour_range"].apply(_hr_key_from_range)
 
 final_911["hr_key"] = pd.to_numeric(final_911["hr_key"], errors="coerce").fillna(0).astype("int16")
-final_911["day_of_week"] = pd.to_datetime(final_911["date"]).dt.weekday.astype("int8")
-final_911["month"] = pd.to_datetime(final_911["date"]).dt.month.astype("int8")
+_date_ts = pd.to_datetime(final_911["date"], errors="coerce")
+final_911["day_of_week"] = _date_ts.dt.weekday.astype("int8")
+final_911["month"] = _date_ts.dt.month.astype("int8")
+
 _season_map = {
     12: "Winter", 1: "Winter", 2: "Winter",
     3: "Spring", 4: "Spring", 5: "Spring",
@@ -1377,6 +1392,7 @@ KEEP_911_COLS = [c for c in [
 ] if c in _enriched.columns]
 
 _enriched = _enriched[KEEP_911_COLS].copy()
+log(f"📌 KEEP_911_COLS kept: {len(KEEP_911_COLS)} kolon")
 
 # ============================================================
 # CRIME GRID MERGE
@@ -1426,8 +1442,15 @@ if has_date_col:
     if overlap:
         log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
         _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
-
     merged = crime.merge(_enriched, on=keys, how="left")
+    probe_cols = [c for c in [
+        "911_request_count_hour_range",
+        "911_request_count_daily(before_24_hours)",
+        "911_geo_last24h",
+        "911_day_total_last7d"
+    ] if c in merged.columns]
+    for c in probe_cols:
+        log(f"🔎 merge doluluk | {c}: nonzero={(pd.to_numeric(merged[c], errors='coerce').fillna(0) > 0).sum():,}")
     log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
 
 else:
