@@ -313,28 +313,39 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
     return None, None
 
 # =========================
-# 3) GTFS duraklarını edin / cache / stub
+# 3) TRAIN feature kaynağını hazırla (cache veya refresh)
 # =========================
-stops, gtfs_url_used = download_gtfs_stops(GTFS_URLS, max_retries=4, backoff_base=1.7)
+if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
+    print("✅ TRAIN cache bulundu ve FORCE_TRAIN_REFRESH=0 → train.csv kullanılacak.")
+    geo_metrics = pd.read_csv(TRAIN_SUMMARY_NAME, low_memory=False)
 
-if stops is None:
-    if os.path.exists(TRAIN_STOPS_WITH_GEOID):
-        print("⚠️ GTFS indirilemedi; mevcut cache kullanılacak:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
-        try:
-            stops = pd.read_csv(TRAIN_STOPS_WITH_GEOID, low_memory=False)
-        except Exception:
+    if "GEOID" not in geo_metrics.columns:
+        raise KeyError("❌ train.csv içinde GEOID yok (cache bozuk).")
+
+    geo_metrics["GEOID"] = normalize_geoid(geo_metrics["GEOID"], DEFAULT_GEOID_LEN)
+    gtfs_url_used = None
+
+else:
+    stops, gtfs_url_used = download_gtfs_stops(GTFS_URLS, max_retries=4, backoff_base=1.7)
+
+    if stops is None:
+        if os.path.exists(TRAIN_STOPS_WITH_GEOID):
+            print("⚠️ GTFS indirilemedi; mevcut cache kullanılacak:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
+            try:
+                stops = pd.read_csv(TRAIN_STOPS_WITH_GEOID, low_memory=False)
+            except Exception:
+                stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
+        elif os.path.exists(TRAIN_LEGACY_RAW_Y):
+            print("⚠️ GTFS indirilemedi; legacy cache kullanılacak:", os.path.abspath(TRAIN_LEGACY_RAW_Y))
+            try:
+                stops = pd.read_csv(TRAIN_LEGACY_RAW_Y, low_memory=False)
+            except Exception:
+                stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
+        elif ALLOW_STUB:
+            print("⚠️ GTFS ve yerel cache yok → STUB (0 durak, NaN metrik).")
             stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
-    elif os.path.exists(TRAIN_LEGACY_RAW_Y):
-        print("⚠️ GTFS indirilemedi; legacy cache kullanılacak:", os.path.abspath(TRAIN_LEGACY_RAW_Y))
-        try:
-            stops = pd.read_csv(TRAIN_LEGACY_RAW_Y, low_memory=False)
-        except Exception:
-            stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
-    elif ALLOW_STUB:
-        print("⚠️ GTFS ve yerel cache yok → STUB (0 durak, NaN metrik).")
-        stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
-    else:
-        raise SystemExit("❌ GTFS alınamadı ve cache yok; çıkılıyor.")
+        else:
+            raise SystemExit("❌ GTFS alınamadı ve cache yok; çıkılıyor.")
 
 # Kolon isimleri normalize
 low = {c.lower(): c for c in stops.columns}
