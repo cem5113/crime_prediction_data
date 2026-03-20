@@ -74,7 +74,15 @@ def safe_save_parquet(df: pd.DataFrame, path: str):
     os.replace(tmp, path)
     print(f"💾 Parquet kaydedildi: {path}")
 
-
+def read_existing_output(csv_path: str, parquet_path: str) -> pd.DataFrame | None:
+    if os.path.exists(csv_path):
+        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
+        return pd.read_csv(csv_path, low_memory=False)
+    if os.path.exists(parquet_path):
+        print(f"📥 Mevcut çıktı Parquet bulundu: {parquet_path}")
+        return pd.read_parquet(parquet_path)
+    return None
+    
 def digits_only(s: pd.Series) -> pd.Series:
     return s.astype(str).str.extract(r"(\d+)", expand=False).fillna("")
 
@@ -87,14 +95,21 @@ def normalize_geoid(series: pd.Series, target_len: int = 11) -> pd.Series:
 
 
 def parse_numeric_series(s: pd.Series) -> pd.Series:
-    x = (
-        s.astype(str)
-         .str.replace(".", "", regex=False)   # 757.193 gibi binlik ayracı varsa
-         .str.replace(",", ".", regex=False)  # 0,123 -> 0.123
-         .str.replace(" ", "", regex=False)
-    )
-    return pd.to_numeric(x, errors="coerce")
+    x = s.astype(str).str.strip().str.replace(" ", "", regex=False)
 
+    # yalnız virgül varsa: decimal virgül kabul et
+    only_comma = x.str.contains(",", regex=False) & ~x.str.contains(r"\.", regex=True)
+    x.loc[only_comma] = x.loc[only_comma].str.replace(",", ".", regex=False)
+
+    # hem nokta hem virgül varsa: noktayı binlik, virgülü decimal kabul et
+    both = x.str.contains(",", regex=False) & x.str.contains(r"\.", regex=True)
+    x.loc[both] = (
+        x.loc[both]
+         .str.replace(".", "", regex=False)
+         .str.replace(",", ".", regex=False)
+    )
+
+    return pd.to_numeric(x, errors="coerce")
 
 def find_crime_input(base_dir: Path) -> str:
     cands = [
@@ -416,28 +431,41 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # APPEND-ONLY LOGIC
 # =============================================================================
-def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_old_and_new_rows(
+    crime_in: pd.DataFrame,
+    crime_out_csv: str,
+    crime_out_parquet: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     sf_crime_03 mevcutsa:
       - eski satırları korur
       - sf_crime_02'de olup sf_crime_03'te olmayan satırları yeni kabul eder
+    CSV yoksa parquet de kabul edilir.
     """
-    if not APPEND_ONLY or not os.path.exists(crime_out_path):
-        print("ℹ️ Append-only çıktı yok → tüm satırlar yeni kabul edilecek.")
-        print("⚠️ İlk koşu: full enrich + büyük CSV yazımı uzun sürebilir.")
+    if not APPEND_ONLY:
+        print("ℹ️ APPEND_ONLY kapalı → tüm satırlar yeni kabul edilecek.")
         return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
 
-    old = pd.read_csv(crime_out_path, low_memory=False)
+    old = read_existing_output(crime_out_csv, crime_out_parquet)
+    if old is None:
+        print("ℹ️ Önceki çıktı (csv/parquet) yok → tüm satırlar yeni kabul edilecek.")
+        print("⚠️ İlk koşu: full enrich + büyük çıktı yazımı uzun sürebilir.")
+        return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
+
     if "GEOID" not in old.columns:
         print("⚠️ Eski sf_crime_03 içinde GEOID yok → tüm giriş yeni kabul edilecek.")
         return old, crime_in.copy()
 
-    old["GEOID"] = normalize_geoid(old["GEOID"], GEOID_LEN)
+    old = old.copy()
     crime_in = crime_in.copy()
+
+    old["GEOID"] = normalize_geoid(old["GEOID"], GEOID_LEN)
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
 
     keys = detect_panel_keys(crime_in)
-    if set(["GEOID", "date", "hour_range"]).issubset(keys) and set(["GEOID", "date", "hour_range"]).issubset(old.columns):
+    required = {"GEOID", "date", "hour_range"}
+
+    if required.issubset(keys) and required.issubset(old.columns):
         crime_in = ensure_date_col(crime_in, "date")
         old = ensure_date_col(old, "date")
 
@@ -452,6 +480,9 @@ def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple
         log_shape(crime_in, "GÜNCEL sf_crime_02")
         log_shape(new_rows, "YENİ CRIME SATIRLARI")
         return old, new_rows
+
+    print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
+    return old, crime_in.copy()
 
     # fallback
     print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
@@ -540,13 +571,19 @@ def main():
     # 2) Önce append-only split yap
     #    Böylece yeni satır yoksa demographic dosyasını boşuna okumayız
     # -------------------------------------------------------------------------
-    old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
+    old_out, new_rows = split_old_and_new_rows(
+        crime_in,
+        CRIME_OUTPUT,
+        CRIME_OUTPUT_PARQUET
+    )
 
     if new_rows.empty:
         print("✅ Yeni crime satırı yok → demographic enrich atlandı.")
         print("✅ Eski sf_crime_03 aynen korunuyor.")
         if os.path.exists(CRIME_OUTPUT):
-            print(f"📁 Mevcut çıktı: {CRIME_OUTPUT}")
+            print(f"📁 Mevcut CSV çıktı: {CRIME_OUTPUT}")
+        if os.path.exists(CRIME_OUTPUT_PARQUET):
+            print(f"📁 Mevcut Parquet çıktı: {CRIME_OUTPUT_PARQUET}")
         return
 
     # -------------------------------------------------------------------------
@@ -613,7 +650,7 @@ def main():
     except Exception as e:
         print(f"⚠️ Parquet kayıt atlandı: {e}")
 
-    WRITE_CSV = os.getenv("WRITE_CSV", "1").strip().lower() in ("1", "true", "yes", "on")
+    WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
     if WRITE_CSV:
         safe_save_csv(final_df, CRIME_OUTPUT)
     else:
