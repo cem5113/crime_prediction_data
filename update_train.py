@@ -117,12 +117,19 @@ BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 
 # Suç girdisi adayları
-CRIME_CANDIDATES = [
-    os.path.join(BASE_DIR, "sf_crime_04.csv"),
-]
-CRIME_INPUT = next((p for p in CRIME_CANDIDATES if os.path.exists(p)), None)
-if CRIME_INPUT is None:
-    raise FileNotFoundError("❌ Suç girdi dosyası bulunamadı (sf_crime_04.csv).")
+CRIME_INPUT_CSV = os.path.join(BASE_DIR, "sf_crime_04.csv")
+CRIME_INPUT_PARQUET = os.path.join(BASE_DIR, "sf_crime_04.parquet")
+
+def read_input_table(csv_path: str, parquet_path: str) -> tuple[pd.DataFrame, str]:
+    if os.path.exists(csv_path):
+        return pd.read_csv(csv_path, low_memory=False), csv_path
+    if os.path.exists(parquet_path):
+        return pd.read_parquet(parquet_path), parquet_path
+    raise FileNotFoundError(
+        f"❌ Suç girdi dosyası bulunamadı: {csv_path} veya {parquet_path}"
+    )
+
+crime_in, CRIME_INPUT = read_input_table(CRIME_INPUT_CSV, CRIME_INPUT_PARQUET)
 print(f"📄 Train enrich girdi: {os.path.abspath(CRIME_INPUT)}")
 
 CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_05.csv")
@@ -151,7 +158,6 @@ TRAIN_CACHE_OK = (
 # =========================
 # 0) Önce crime input'u oku ve incremental split yap
 # =========================
-crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
 log_shape(crime_in, "CRIME_INPUT (okundu)")
 
 if "GEOID" not in crime_in.columns:
