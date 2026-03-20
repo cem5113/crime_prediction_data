@@ -747,24 +747,33 @@ def restrict_risk_history_window(df_crime_full: pd.DataFrame, reference_new_rows
 
     return sliced
 
-
 def finalize_append_only_output(old_out: pd.DataFrame, new_enriched: pd.DataFrame) -> pd.DataFrame:
     """
     Eski çıktı + yeni enrich edilmiş satırlar birleştirilir.
     Eski satırlar değiştirilmez.
+    İlk kurulumda gereksiz concat/sort yükü azaltılır.
     """
 
     if old_out is None or len(old_out) == 0:
         final = new_enriched.copy()
-    else:
-        final = pd.concat([old_out, new_enriched], ignore_index=True)
 
-    final["GEOID"] = _normalize_geoid(final.get("GEOID"), 11)
+        if "GEOID" in final.columns:
+            final["GEOID"] = _normalize_geoid(final["GEOID"], 11)
+
+        if "date" in final.columns:
+            final["date"] = pd.to_datetime(final["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+        print("ℹ️ İlk kurulum modu: eski çıktı yok, concat/drop_duplicates/sort atlandı.")
+        return final
+
+    final = pd.concat([old_out, new_enriched], ignore_index=True)
+
+    if "GEOID" in final.columns:
+        final["GEOID"] = _normalize_geoid(final["GEOID"], 11)
 
     if "date" in final.columns:
         final["date"] = pd.to_datetime(final["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    # Duplikasyon güvenliği
     if set(PANEL_KEYS).issubset(final.columns):
         before = len(final)
         final = final.drop_duplicates(subset=PANEL_KEYS, keep="first").copy()
@@ -772,13 +781,11 @@ def finalize_append_only_output(old_out: pd.DataFrame, new_enriched: pd.DataFram
         if dropped > 0:
             print(f"⚠️ PANEL_KEYS bazında {dropped} duplikasyon temizlendi (keep='first').")
 
-    # Sıralama
     sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in final.columns]
     if sort_cols:
         final = final.sort_values(sort_cols).reset_index(drop=True)
 
-    return final
-
+    return final 
 
 # =============================================================================
 # MAIN
@@ -965,20 +972,22 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # I) ESKİ + YENİ BİRLEŞTİR (APPEND-ONLY)
     # -------------------------------------------------------------------------
-    final_df = finalize_append_only_output(old_out, new_rows_enriched)
+    if old_out is None or len(old_out) == 0:
+        final_df = new_rows_enriched.copy()
+        if "GEOID" in final_df.columns:
+            final_df["GEOID"] = _normalize_geoid(final_df["GEOID"], 11)
+        if "date" in final_df.columns:
+            final_df["date"] = pd.to_datetime(final_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        print("ℹ️ İlk kurulum: final_df doğrudan new_rows_enriched olarak alındı.")
+    else:
+        final_df = finalize_append_only_output(old_out, new_rows_enriched)
+    
     log_shape(final_df, "FINAL sf_crime_06")
 
     # -------------------------------------------------------------------------
     # J) NaN RAPORU
     # -------------------------------------------------------------------------
-    nan_counts = final_df.isna().sum()
-    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
-
-    print("🔎 NaN sayıları (sf_crime_06 yazılmadan önce):")
-    if nan_counts.empty:
-        print("✅ NaN yok.")
-    else:
-        print(nan_counts.to_string())
+    print("🔎 Genel NaN raporu atlandı (büyük veri koruması).")
 
     poi_cols = [
         "poi_total_count",
@@ -988,9 +997,15 @@ if __name__ == "__main__":
         "poi_risk_score_range",
     ]
     poi_cols = [c for c in poi_cols if c in final_df.columns]
+
     if poi_cols:
-        print("🔎 POI kolonları NaN sayıları:")
-        print(final_df[poi_cols].isna().sum().to_string())
+        try:
+            print("🔎 POI kolonları NaN sayıları:")
+            print(final_df[poi_cols].isna().sum().to_string())
+        except Exception as e:
+            print(f"⚠️ POI NaN raporu üretilemedi: {e}")
+    else:
+        print("ℹ️ POI kolonu bulunamadı; POI bazlı NaN raporu atlandı.")
 
     # -------------------------------------------------------------------------
     # K) KAYDET
@@ -1001,8 +1016,13 @@ if __name__ == "__main__":
     
     # Önce parquet yaz
     _ensure_parent(CRIME_OUT_PARQUET)
-    tmp_parquet = CRIME_OUT_PARQUET + ".tmp"
-    final_to_save.to_parquet(tmp_parquet, index=False)
+    tmp_parquet = CRIME_OUT_PARQUET + ".tmp.parquet"
+    final_to_save.to_parquet(
+        tmp_parquet,
+        index=False,
+        engine="pyarrow",
+        compression="snappy"
+    )
     os.replace(tmp_parquet, CRIME_OUT_PARQUET)
     print(f"✅ Parquet yazıldı: {CRIME_OUT_PARQUET} | Satır: {len(final_to_save):,}")
     
