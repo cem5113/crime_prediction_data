@@ -26,12 +26,15 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 GEOID_LEN = DEFAULT_GEOID_LEN  # backward compatibility
 
-RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")   # event-level
-AGG_BASENAME   = os.getenv("AGG_311_NAME", "sf_311_last_5_years.csv")        # 3h aggregate
+RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")   # event-level csv
+AGG_BASENAME   = os.getenv("AGG_311_NAME", "sf_311_last_5_years.csv")        # 3h aggregate csv
 AGG_ALIAS      = os.getenv("AGG_311_ALIAS", "sf_311_last_5_years_3h.csv")
 
 LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
 LEGACY_311   = os.getenv("LEGACY_311",   "sf_311_last_5_year.csv")
+
+RAW_311_PARQUET = os.getenv("RAW_311_PARQUET", "sf_311_last_5_years_y.parquet")
+AGG_311_PARQUET = os.getenv("AGG_311_PARQUET", "sf_311_last_5_years.parquet")
 
 DATASET_BASE = os.getenv("SF311_DATASET", "https://data.sfgov.org/resource/vw6y-z8j6.json")
 SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
@@ -100,7 +103,7 @@ def save_parquet_atomic(df: pd.DataFrame, path: str):
 
     df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
     os.replace(tmp, path)
-    
+
 def is_lfs_pointer_file(p: Path) -> bool:
     try:
         return "git-lfs.github.com/spec/v1" in p.read_text(errors="ignore")[:200]
@@ -117,6 +120,25 @@ def make_hour_range_from_datetime(dt_series: pd.Series) -> pd.Series:
         + "-"
         + end_h.astype(int).astype(str).str.zfill(2)
     )
+
+def is_valid_311_aggregate_df(df: pd.DataFrame) -> bool:
+    required = {"GEOID", "date", "hour_range", "311_request_count"}
+    return required.issubset(set(df.columns))
+
+def is_valid_311_raw_df(df: pd.DataFrame) -> bool:
+    raw_like_1 = {"id", "datetime", "date", "GEOID"}
+    raw_like_2 = {"category", "subcategory", "service_details"}
+    cols = set(df.columns)
+    return raw_like_1.issubset(cols) or ({"datetime", "date"}.issubset(cols) and raw_like_2.intersection(cols))
+
+def safe_read_csv(path: str, **kwargs) -> pd.DataFrame:
+    return pd.read_csv(path, low_memory=False, **kwargs)
+
+def safe_read_any_table(path: str) -> pd.DataFrame:
+    p = Path(path)
+    if p.suffix.lower() == ".parquet":
+        return pd.read_parquet(path)
+    return safe_read_csv(path, dtype={"GEOID": str})
 
 # ================== 311 KATEGORİ HARİTASI ==================
 def classify_311_bucket(service_name: str, service_subtype: str, service_details: str) -> str:
@@ -230,17 +252,34 @@ def geotag_to_geoid11(df_new):
     return out
 
 # ================== DOSYA YOLLARI ==================
+def candidate_paths(names: list[str], roots: list[Path]) -> list[Path]:
+    out = []
+    for nm in names:
+        for rt in roots:
+            out.extend([
+                rt / nm,
+                rt / "crime_prediction_data" / nm,
+                rt / "outputs" / nm,
+            ])
+    # duplicate path temizle
+    uniq = []
+    seen = set()
+    for p in out:
+        k = str(p.resolve()) if p.exists() else str(p)
+        if k not in seen:
+            uniq.append(p)
+            seen.add(k)
+    return uniq
+
 def resolve_existing_raw_path():
-    y_names = [RAW_311_NAME_Y, LEGACY_311_Y]
-    fallback_names = [AGG_BASENAME, AGG_ALIAS, LEGACY_311]
     roots = [Path(SAVE_DIR), Path.cwd(), Path(".")]
 
     def _ok(p: Path) -> bool:
         if not p.exists() or p.is_dir():
             return False
-        if p.suffix.lower() != ".csv":
+        if p.suffix.lower() not in (".csv", ".parquet"):
             return False
-        if is_lfs_pointer_file(p):
+        if p.suffix.lower() == ".csv" and is_lfs_pointer_file(p):
             return False
         try:
             if p.stat().st_size < 200:
@@ -249,51 +288,68 @@ def resolve_existing_raw_path():
             return False
         return True
 
-    # 1) Önce event-level _y ara
-    for nm in y_names:
-        for rt in roots:
-            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
-                if _ok(cand):
-                    print(f"🔎 Mevcut 311 _y CSV bulundu: {cand.resolve()}")
-                    return str(cand), "raw_y"
+    raw_names = [RAW_311_PARQUET, RAW_311_NAME_Y, LEGACY_311_Y]
+    agg_names = [AGG_311_PARQUET, AGG_BASENAME, AGG_ALIAS, LEGACY_311]
 
-    # 2) _y yoksa aggregate fallback kullan
-    for nm in fallback_names:
-        for rt in roots:
-            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
-                if _ok(cand):
-                    print(f"🔎 311 _y bulunamadı; fallback aggregate CSV kullanılacak: {cand.resolve()}")
+    # 1) Önce event-level raw ara
+    for cand in candidate_paths(raw_names, roots):
+        if _ok(cand):
+            try:
+                df_probe = safe_read_any_table(str(cand))
+                if is_valid_311_raw_df(df_probe):
+                    print(f"🔎 Mevcut 311 raw bulundu: {cand.resolve()}")
+                    return str(cand), "raw_y"
+                else:
+                    print(f"⚠️ Raw adayı bulundu ama raw yapıda değil, atlandı: {cand.resolve()}")
+            except Exception as e:
+                print(f"⚠️ Raw aday okunamadı, atlandı: {cand} | {e}")
+
+    # 2) Raw yoksa aggregate fallback ara, ama mutlaka doğrula
+    for cand in candidate_paths(agg_names, roots):
+        if _ok(cand):
+            try:
+                df_probe = safe_read_any_table(str(cand))
+                if is_valid_311_aggregate_df(df_probe):
+                    print(f"🔎 311 raw yok; doğrulanmış aggregate fallback kullanılacak: {cand.resolve()}")
                     return str(cand), "agg_fallback"
+                else:
+                    print(f"⚠️ Aggregate adayı bulundu ama aggregate yapıda değil, atlandı: {cand.resolve()}")
+            except Exception as e:
+                print(f"⚠️ Aggregate aday okunamadı, atlandı: {cand} | {e}")
 
     preferred = Path(SAVE_DIR) / RAW_311_NAME_Y
-    print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
+    print(f"ℹ️ Mevcut 311 ham dosyası yok; yeni oluşturulacak: {preferred.resolve()}")
     return str(preferred), "new_raw"
 
 def load_existing_raw(path, path_kind="raw_y"):
     if not os.path.exists(path):
         return pd.DataFrame()
 
-    df = pd.read_csv(path, dtype={"GEOID": str}, low_memory=False)
+    df = safe_read_any_table(path)
 
     if path_kind == "agg_fallback":
-        # aggregate dosyayı raw gibi değil, sadece date bilgisini taşıyan fallback kaynak gibi ele al
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        else:
-            df["date"] = pd.NaT
+        if not is_valid_311_aggregate_df(df):
+            raise ValueError(f"❌ agg_fallback olarak seçilen dosya aggregate değil: {path}")
+
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
         df["datetime"] = pd.NaT
 
         for c in [
-            "id","lat","long","category","subcategory","service_details",
-            "agency_responsible","status_description","source",
-            "latitude","longitude","GEOID","time"
+            "id", "lat", "long", "category", "subcategory", "service_details",
+            "agency_responsible", "status_description", "source",
+            "latitude", "longitude", "GEOID", "time"
         ]:
             if c not in df.columns:
                 df[c] = pd.NA
 
         mx_date = pd.to_datetime(df["date"], errors="coerce").max()
-        print(f"📁 Fallback aggregate satır: {len(df):,} | max date={mx_date}")
+        print(f"📁 Doğrulanmış aggregate fallback satır: {len(df):,} | max date={mx_date}")
         return df
+
+    # raw_y
+    if not is_valid_311_raw_df(df):
+        raise ValueError(f"❌ raw_y olarak seçilen dosya raw yapıda değil: {path}")
 
     if "index_right" in df.columns:
         df = df.drop(columns=["index_right"])
@@ -304,7 +360,7 @@ def load_existing_raw(path, path_kind="raw_y"):
         df["datetime"] = pd.to_datetime(
             df["date"].astype(str) + " " + df["time"].astype(str),
             errors="coerce",
-            utc=True
+            utc=True,
         )
     else:
         df["datetime"] = pd.NaT
@@ -312,16 +368,18 @@ def load_existing_raw(path, path_kind="raw_y"):
     if "date" not in df.columns:
         dt_local = df["datetime"].dt.tz_convert(SF_TZ) if SF_TZ is not None else df["datetime"]
         df["date"] = pd.to_datetime(dt_local, errors="coerce").dt.date
+    else:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
 
     for c in [
-        "id","lat","long","category","subcategory","service_details",
-        "agency_responsible","status_description","source",
-        "latitude","longitude","GEOID","time"
+        "id", "lat", "long", "category", "subcategory", "service_details",
+        "agency_responsible", "status_description", "source",
+        "latitude", "longitude", "GEOID", "time"
     ]:
         if c not in df.columns:
             df[c] = pd.NA
 
-    mx = pd.to_datetime(df["datetime"], errors="coerce").max()
+    mx = pd.to_datetime(df["datetime"], errors="coerce", utc=True).max()
     print(f"📁 Mevcut raw satır: {len(df):,} | max datetime={mx}")
     return df
 
@@ -335,7 +393,6 @@ def decide_start_date(df_existing, source_kind="raw_y"):
         print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
 
-    # 1) Normal raw_y dosyası varsa datetime bazlı ilerle
     if source_kind == "raw_y" and "datetime" in df_existing.columns and df_existing["datetime"].notna().any():
         last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
         if pd.notna(last_dt):
@@ -346,8 +403,7 @@ def decide_start_date(df_existing, source_kind="raw_y"):
             print(f"📌 Mod: incremental(raw_y)+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
             return start, "incremental-raw_y"
 
-    # 2) _y yoksa aggregate fallback date bazlı ilerle
-    if "date" in df_existing.columns and df_existing["date"].notna().any():
+    if source_kind == "agg_fallback" and "date" in df_existing.columns and df_existing["date"].notna().any():
         last_date = pd.to_datetime(df_existing["date"], errors="coerce").dt.date.max()
         if pd.notna(last_date):
             start = last_date - timedelta(days=max(1, REINGEST_DAYS))
@@ -447,40 +503,28 @@ def download_by_date_chunks(start_date):
 
 # ================== FEATURE ENGINEERING ==================
 def build_311_aggregate(df_raw: pd.DataFrame) -> pd.DataFrame:
+    empty_cols = [
+        "GEOID", "date", "hour_range",
+        "311_request_count",
+        "311_noise_count",
+        "311_encampment_count",
+        "311_graffiti_count",
+        "311_abandoned_vehicle_count",
+        "311_street_cleaning_count",
+        "311_parking_traffic_count",
+        "311_other_count",
+        "311_disorder_count",
+        "311_disorder_score",
+        "311_noise_ratio",
+        "311_disorder_ratio",
+    ]
+
     if df_raw.empty:
-        return pd.DataFrame(columns=[
-            "GEOID","date","hour_range",
-            "311_request_count",
-            "311_noise_count",
-            "311_encampment_count",
-            "311_graffiti_count",
-            "311_abandoned_vehicle_count",
-            "311_street_cleaning_count",
-            "311_parking_traffic_count",
-            "311_other_count",
-            "311_disorder_count",
-            "311_disorder_score",
-            "311_noise_ratio",
-            "311_disorder_ratio",
-        ])
+        return pd.DataFrame(columns=empty_cols)
 
     df_ok = df_raw.dropna(subset=["date", "GEOID"]).copy()
     if df_ok.empty:
-        return pd.DataFrame(columns=[
-            "GEOID","date","hour_range",
-            "311_request_count",
-            "311_noise_count",
-            "311_encampment_count",
-            "311_graffiti_count",
-            "311_abandoned_vehicle_count",
-            "311_street_cleaning_count",
-            "311_parking_traffic_count",
-            "311_other_count",
-            "311_disorder_count",
-            "311_disorder_score",
-            "311_noise_ratio",
-            "311_disorder_ratio",
-        ])
+        return pd.DataFrame(columns=empty_cols)
 
     df_ok["hour_range"] = make_hour_range_from_datetime(df_ok["datetime"])
 
@@ -492,27 +536,21 @@ def build_311_aggregate(df_raw: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1
     )
-
     df_ok["bucket_weight"] = df_ok["bucket_311"].apply(disorder_weight)
 
     grp_keys = ["GEOID", "date", "hour_range"]
 
     total = (
         df_ok.groupby(grp_keys, as_index=False)
-             .size()
-             .rename(columns={"size": "311_request_count"})
+        .size()
+        .rename(columns={"size": "311_request_count"})
     )
 
     pivot = (
         df_ok.groupby(grp_keys + ["bucket_311"], as_index=False)
-             .size()
-             .pivot_table(
-                 index=grp_keys,
-                 columns="bucket_311",
-                 values="size",
-                 fill_value=0
-             )
-             .reset_index()
+        .size()
+        .pivot_table(index=grp_keys, columns="bucket_311", values="size", fill_value=0)
+        .reset_index()
     )
     pivot.columns.name = None
     pivot = pivot.rename(columns={
@@ -527,8 +565,8 @@ def build_311_aggregate(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     score = (
         df_ok.groupby(grp_keys, as_index=False)["bucket_weight"]
-             .sum()
-             .rename(columns={"bucket_weight": "311_disorder_score"})
+        .sum()
+        .rename(columns={"bucket_weight": "311_disorder_score"})
     )
 
     out = total.merge(pivot, on=grp_keys, how="left")
@@ -569,17 +607,16 @@ def main():
     print("🔎 SAVE_DIR:", os.path.abspath(SAVE_DIR))
 
     raw_path, source_kind = resolve_existing_raw_path()
-    
-    # canonical output path’ler
+
     canonical_raw_csv = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
-    canonical_raw_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet")
-    
+    canonical_raw_parquet = os.path.join(SAVE_DIR, RAW_311_PARQUET)
+
     canonical_agg_csv = os.path.join(SAVE_DIR, AGG_BASENAME)
-    canonical_agg_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet")
-    
-    df_raw = load_existing_raw(raw_path, source_kind)
-    start_date, _mode = decide_start_date(df_raw, source_kind)
-    
+    canonical_agg_parquet = os.path.join(SAVE_DIR, AGG_311_PARQUET)
+
+    df_existing = load_existing_raw(raw_path, source_kind)
+    start_date, _mode = decide_start_date(df_existing, source_kind)
+
     df_new = download_by_date_chunks(start_date)
     if df_new.empty:
         print("ℹ️ Yeni 311 kaydı bulunamadı.")
@@ -616,67 +653,74 @@ def main():
             "category", "subcategory", "service_details",
             "GEOID"
         ]
-        
         for c in keep:
             if c not in df_new_geo.columns:
                 df_new_geo[c] = pd.NA
 
         df_new_geo = df_new_geo[keep].copy()
         df_new_geo["GEOID"] = normalize_geoid(df_new_geo["GEOID"], DEFAULT_GEOID_LEN)
-        
+
         if source_kind == "agg_fallback":
-            # fallback kaynak aggregate idi; raw event-level ile concat edilmez
+            # aggregate fallback varsa mevcut raw elimizde olmadığı için sadece yeni event-level raw ile devam et
             df_raw = df_new_geo.copy()
-        elif df_raw.empty:
-            df_raw = df_new_geo
+        elif df_existing.empty:
+            df_raw = df_new_geo.copy()
         else:
-            df_raw = pd.concat([df_raw, df_new_geo], ignore_index=True)
+            df_raw = pd.concat([df_existing, df_new_geo], ignore_index=True)
+    if df_new.empty:
+        if source_kind == "raw_y":
+            df_raw = df_existing.copy()
+        else:
+            df_raw = pd.DataFrame()
 
     # ---- Ham kaydet
     if not df_raw.empty:
         df_raw["GEOID"] = normalize_geoid(df_raw["GEOID"], DEFAULT_GEOID_LEN)
         df_raw["id"] = df_raw["id"].astype(str)
         df_raw = df_raw.drop_duplicates(subset=["id"], keep="last")
-    
+
         df_raw["date"] = pd.to_datetime(df_raw["date"], errors="coerce").dt.date
         min_date = start_date if BACKFILL_DAYS > 0 else DEFAULT_START
         df_raw = df_raw[df_raw["date"] >= min_date]
-    
+
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
         df_raw = df_raw.sort_values("datetime")
-    
-        canonical_raw_csv = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
-        canonical_raw_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet")
-    
-        # SADECE raw/event-level path’lere yaz
+
         save_atomic(df_raw, canonical_raw_csv)
         save_parquet_atomic(df_raw, canonical_raw_parquet)
         save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
-    
+
         print(f"✅ Ham 311 kaydedildi: {os.path.abspath(canonical_raw_csv)}")
         log_shape(df_raw, "311 raw")
     else:
         print("⚠️ Ham 311 boş.")
         empty_raw_cols = [
-            "id","datetime","date","time","lat","long","latitude","longitude",
-            "category","subcategory","service_details",
-            "agency_responsible","status_description","source","GEOID"
+            "id", "datetime", "date", "time", "lat", "long", "latitude", "longitude",
+            "category", "subcategory", "service_details",
+            "agency_responsible", "status_description", "source", "GEOID"
         ]
-        for p in [RAW_311_NAME_Y, LEGACY_311_Y]:
-            save_atomic(pd.DataFrame(columns=empty_raw_cols), os.path.join(SAVE_DIR, p))
+        save_atomic(pd.DataFrame(columns=empty_raw_cols), canonical_raw_csv)
+        save_atomic(pd.DataFrame(columns=empty_raw_cols), os.path.join(SAVE_DIR, LEGACY_311_Y))
 
-    # ---- Aggregate kaydet
-    grouped = build_311_aggregate(df_raw)
-    
-    canonical_agg_csv = os.path.join(SAVE_DIR, AGG_BASENAME)
-    canonical_agg_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet")
-    
+    # ---- Aggregate üret ve kaydet
+    if source_kind == "agg_fallback" and df_raw.empty:
+        # Hiç yeni event yoksa ve sadece aggregate fallback varsa mevcut aggregate'i kullan
+        grouped = safe_read_any_table(raw_path).copy()
+        if not is_valid_311_aggregate_df(grouped):
+            raise ValueError(f"❌ Aggregate fallback doğrulaması son aşamada başarısız: {raw_path}")
+        grouped["GEOID"] = normalize_geoid(grouped["GEOID"], DEFAULT_GEOID_LEN)
+        grouped["date"] = pd.to_datetime(grouped["date"], errors="coerce").dt.date
+        grouped["hour_range"] = grouped["hour_range"].astype(str)
+        print("ℹ️ Yeni raw event yok; mevcut doğrulanmış aggregate fallback korunuyor.")
+    else:
+        grouped = build_311_aggregate(df_raw)
+
     save_atomic(grouped, canonical_agg_csv)
     save_parquet_atomic(grouped, canonical_agg_parquet)
-    
+
     if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
         save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
-    
+
     print(f"📁 311 özet yazıldı: {os.path.abspath(canonical_agg_csv)}")
     log_shape(grouped, "311 aggregate")
 
@@ -684,18 +728,18 @@ def main():
     try:
         crime_01_path = os.path.join(SAVE_DIR, "sf_crime_01.parquet")
         crime_02_path = os.path.join(SAVE_DIR, "sf_crime_02.parquet")
-        
+
         if not os.path.exists(crime_01_path):
             print(f"ℹ️ {crime_01_path} yok. 311 merge atlandı.")
             return
-        
+
         crime = pd.read_parquet(crime_01_path)
         if "GEOID" in crime.columns:
             crime["GEOID"] = crime["GEOID"].astype(str)
         before = crime.shape
 
         if "hour_range" not in crime.columns:
-            raise ValueError("❌ sf_crime_01.csv içinde hour_range yok. 311 merge panel anahtarıyla yapılmalı.")
+            raise ValueError("❌ sf_crime_01.parquet içinde hour_range yok. 311 merge panel anahtarıyla yapılmalı.")
 
         crime["GEOID"] = normalize_geoid(crime["GEOID"], DEFAULT_GEOID_LEN)
         crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
