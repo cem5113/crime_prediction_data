@@ -78,6 +78,12 @@ def read_existing_output(parquet_path: str) -> pd.DataFrame | None:
     if os.path.exists(parquet_path):
         print(f"📥 Mevcut çıktı Parquet bulundu: {parquet_path}")
         return pd.read_parquet(parquet_path)
+
+    csv_path = parquet_path.replace(".parquet", ".csv")
+    if os.path.exists(csv_path):
+        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
+        return pd.read_csv(csv_path, low_memory=False)
+
     return None
     
 def digits_only(s: pd.Series) -> pd.Series:
@@ -112,11 +118,13 @@ def find_crime_input(base_dir: Path) -> str:
     cands = [
         base_dir / "sf_crime_02.parquet",
         Path("sf_crime_02.parquet"),
+        base_dir / "sf_crime_02.csv",
+        Path("sf_crime_02.csv"),
     ]
     for p in cands:
         if p.exists():
             return str(p)
-    raise FileNotFoundError("❌ sf_crime_02.parquet bulunamadı.")
+    raise FileNotFoundError("❌ sf_crime_02.parquet / sf_crime_02.csv bulunamadı.")
 
 def ensure_date_col(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
     out = df.copy()
@@ -431,16 +439,16 @@ def split_old_and_new_rows(
     sf_crime_03 mevcutsa:
       - eski satırları korur
       - sf_crime_02'de olup sf_crime_03'te olmayan satırları yeni kabul eder
-    CSV yoksa parquet de kabul edilir.
+    parquet öncelikli, csv fallback destekli.
     """
     if not APPEND_ONLY:
         print("ℹ️ APPEND_ONLY kapalı → tüm satırlar yeni kabul edilecek.")
         return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
 
-    old = read_existing_output(crime_out_csv, crime_out_parquet)
+    old = read_existing_output(crime_out_parquet)
     if old is None:
-        print("ℹ️ Önceki çıktı (csv/parquet) yok → tüm satırlar yeni kabul edilecek.")
-        print("⚠️ İlk koşu: full enrich + büyük çıktı yazımı uzun sürebilir.")
+        print("ℹ️ Önceki çıktı yok → tüm satırlar yeni kabul edilecek.")
+        print("⚠️ İlk koşu: full enrich yapılacak.")
         return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
 
     if "GEOID" not in old.columns:
@@ -472,10 +480,6 @@ def split_old_and_new_rows(
         log_shape(new_rows, "YENİ CRIME SATIRLARI")
         return old, new_rows
 
-    print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
-    return old, crime_in.copy()
-
-    # fallback
     print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
     return old, crime_in.copy()
 
@@ -551,7 +555,10 @@ def main():
     # -------------------------------------------------------------------------
     # 1) Crime input oku
     # -------------------------------------------------------------------------
-    crime_in = pd.read_parquet(CRIME_INPUT)
+    if CRIME_INPUT.lower().endswith(".parquet"):
+        crime_in = pd.read_parquet(CRIME_INPUT)
+    else:
+        crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
     if "GEOID" not in crime_in.columns:
         raise KeyError("❌ Suç verisinde GEOID kolonu yok.")
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
