@@ -218,7 +218,8 @@ def geotag_to_geoid11(df_new):
 
 # ================== DOSYA YOLLARI ==================
 def resolve_existing_raw_path():
-    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]
+    y_names = [RAW_311_NAME_Y, LEGACY_311_Y]
+    fallback_names = [AGG_BASENAME, AGG_ALIAS, LEGACY_311]
     roots = [Path(SAVE_DIR), Path.cwd(), Path(".")]
 
     def _ok(p: Path) -> bool:
@@ -235,23 +236,55 @@ def resolve_existing_raw_path():
             return False
         return True
 
-    for nm in target_names:
+    # 1) Önce event-level _y ara
+    for nm in y_names:
         for rt in roots:
             for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
                 if _ok(cand):
                     print(f"🔎 Mevcut 311 _y CSV bulundu: {cand.resolve()}")
-                    return str(cand)
+                    return str(cand), "raw_y"
+
+    # 2) _y yoksa aggregate fallback kullan
+    for nm in fallback_names:
+        for rt in roots:
+            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
+                if _ok(cand):
+                    print(f"🔎 311 _y bulunamadı; fallback aggregate CSV kullanılacak: {cand.resolve()}")
+                    return str(cand), "agg_fallback"
 
     preferred = Path(SAVE_DIR) / RAW_311_NAME_Y
     print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
-    return str(preferred)
+    return str(preferred), "new_raw"
 
-def load_existing_raw(path):
+def load_existing_raw(path, path_kind="raw_y"):
     if not os.path.exists(path):
         return pd.DataFrame()
+
     df = pd.read_csv(path, dtype={"GEOID": str}, low_memory=False)
+
+    if path_kind == "agg_fallback":
+        # aggregate dosyayı raw gibi değil, sadece date bilgisini taşıyan fallback kaynak gibi ele al
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        else:
+            df["date"] = pd.NaT
+        df["datetime"] = pd.NaT
+
+        for c in [
+            "id","lat","long","category","subcategory","service_details",
+            "agency_responsible","status_description","source",
+            "latitude","longitude","GEOID","time"
+        ]:
+            if c not in df.columns:
+                df[c] = pd.NA
+
+        mx_date = pd.to_datetime(df["date"], errors="coerce").max()
+        print(f"📁 Fallback aggregate satır: {len(df):,} | max date={mx_date}")
+        return df
+
     if "index_right" in df.columns:
         df = df.drop(columns=["index_right"])
+
     if "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
     elif "date" in df.columns and "time" in df.columns:
@@ -262,9 +295,11 @@ def load_existing_raw(path):
         )
     else:
         df["datetime"] = pd.NaT
+
     if "date" not in df.columns:
         dt_local = df["datetime"].dt.tz_convert(SF_TZ) if SF_TZ is not None else df["datetime"]
         df["date"] = pd.to_datetime(dt_local, errors="coerce").dt.date
+
     for c in [
         "id","lat","long","category","subcategory","service_details",
         "agency_responsible","status_description","source",
@@ -272,32 +307,44 @@ def load_existing_raw(path):
     ]:
         if c not in df.columns:
             df[c] = pd.NA
+
     mx = pd.to_datetime(df["datetime"], errors="coerce").max()
-    print(f"📁 Mevcut satır: {len(df):,} | max datetime={mx}")
+    print(f"📁 Mevcut raw satır: {len(df):,} | max datetime={mx}")
     return df
 
-def decide_start_date(df_existing):
+def decide_start_date(df_existing, source_kind="raw_y"):
     if BACKFILL_DAYS > 0:
         start = TODAY - timedelta(days=BACKFILL_DAYS)
         print(f"📌 Mod: backfill | start={start}")
         return start, "backfill"
 
-    if df_existing.empty or not df_existing["datetime"].notna().any():
+    if df_existing.empty:
         print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
         return DEFAULT_START, "full-5y"
 
-    last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
-    if pd.isna(last_dt):
-        print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
-        return DEFAULT_START, "full-5y"
+    # 1) Normal raw_y dosyası varsa datetime bazlı ilerle
+    if source_kind == "raw_y" and "datetime" in df_existing.columns and df_existing["datetime"].notna().any():
+        last_dt = pd.to_datetime(df_existing["datetime"], errors="coerce", utc=True).max()
+        if pd.notna(last_dt):
+            last_date = last_dt.date()
+            start = last_date - timedelta(days=max(1, REINGEST_DAYS))
+            if start < DEFAULT_START:
+                start = DEFAULT_START
+            print(f"📌 Mod: incremental(raw_y)+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
+            return start, "incremental-raw_y"
 
-    last_date = last_dt.date()
-    start = last_date - timedelta(days=max(1, REINGEST_DAYS))
-    if start < DEFAULT_START:
-        start = DEFAULT_START
+    # 2) _y yoksa aggregate fallback date bazlı ilerle
+    if "date" in df_existing.columns and df_existing["date"].notna().any():
+        last_date = pd.to_datetime(df_existing["date"], errors="coerce").dt.date.max()
+        if pd.notna(last_date):
+            start = last_date - timedelta(days=max(1, REINGEST_DAYS))
+            if start < DEFAULT_START:
+                start = DEFAULT_START
+            print(f"📌 Mod: incremental(agg_fallback)+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
+            return start, "incremental-agg_fallback"
 
-    print(f"📌 Mod: incremental+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d")
-    return start, "incremental+overlap"
+    print(f"📌 Mod: full-5y | window ≥ {DEFAULT_START}")
+    return DEFAULT_START, "full-5y"
 
 # ================== İNDİRME ==================
 def download_by_date_chunks(start_date):
@@ -508,12 +555,14 @@ def main():
     print("🔎 CWD:", os.getcwd())
     print("🔎 SAVE_DIR:", os.path.abspath(SAVE_DIR))
 
-    raw_path = resolve_existing_raw_path()
-    agg_path = os.path.join(os.path.dirname(raw_path) or ".", AGG_BASENAME)
-
-    df_raw = load_existing_raw(raw_path)
-    start_date, _mode = decide_start_date(df_raw)
-
+    raw_path, source_kind = resolve_existing_raw_path()
+    
+    # aggregate yolu her durumda SAVE_DIR altında dursun
+    agg_path = os.path.join(SAVE_DIR, AGG_BASENAME)
+    
+    df_raw = load_existing_raw(raw_path, source_kind)
+    start_date, _mode = decide_start_date(df_raw, source_kind)
+    
     df_new = download_by_date_chunks(start_date)
     if df_new.empty:
         print("ℹ️ Yeni 311 kaydı bulunamadı.")
@@ -557,8 +606,11 @@ def main():
 
         df_new_geo = df_new_geo[keep].copy()
         df_new_geo["GEOID"] = normalize_geoid(df_new_geo["GEOID"], DEFAULT_GEOID_LEN)
-
-        if df_raw.empty:
+        
+        if source_kind == "agg_fallback":
+            # fallback kaynak aggregate idi; raw event-level ile concat edilmez
+            df_raw = df_new_geo.copy()
+        elif df_raw.empty:
             df_raw = df_new_geo
         else:
             df_raw = pd.concat([df_raw, df_new_geo], ignore_index=True)
