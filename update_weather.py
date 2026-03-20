@@ -46,8 +46,10 @@ HOT_DAY_THRESHOLD_C = float(os.getenv("HOT_DAY_THRESHOLD_C", "30.0"))
 
 ENRICH_CRIME_WITH_WEATHER = os.getenv("ENRICH_CRIME_WITH_WEATHER", "1") in ("1", "true", "True")
 
-CRIME_IN_PATH = os.getenv("CRIME_IN_PATH", os.path.join(DATA_DIR, "sf_crime_07.csv"))
-CRIME_OUT_PATH = os.getenv("CRIME_OUT_PATH", os.path.join(DATA_DIR, "sf_crime_08.csv"))
+CRIME_IN_PATH = os.getenv("CRIME_IN_PATH", os.path.join(DATA_DIR, "sf_crime_07.parquet"))
+CRIME_OUT_PATH = os.getenv("CRIME_OUT_PATH", os.path.join(DATA_DIR, "sf_crime_08.parquet"))
+WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+CRIME_OUT_CSV = os.getenv("CRIME_OUT_CSV", os.path.join(DATA_DIR, "sf_crime_08.csv"))
 
 CRIME_DATE_COL_CANDIDATES = [
     c.strip() for c in os.getenv(
@@ -313,7 +315,10 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
         print(f"⚠️ Crime dosyası yok, merge atlandı: {crime_path}")
         return
 
-    crime = pd.read_csv(crime_path, low_memory=False)
+    if crime_path.lower().endswith(".parquet"):
+        crime = pd.read_parquet(crime_path)
+    else:
+        crime = pd.read_csv(crime_path, low_memory=False)
     print(f"📊 CRIME (weather merge girdi): {crime.shape[0]} satır × {crime.shape[1]} sütun")
 
     dcol = find_first_existing_col(crime, CRIME_DATE_COL_CANDIDATES)
@@ -364,8 +369,22 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
         nan_report(out, "Weather kolonları (sf_crime_08 yazılmadan önce)", only_cols=new_weather_cols)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    out.to_csv(out_path, index=False)
+    
+    tmp_parquet = out_path + ".tmp.parquet"
+    out.to_parquet(
+        tmp_parquet,
+        index=False,
+        engine="pyarrow",
+        compression="snappy"
+    )
+    os.replace(tmp_parquet, out_path)
     print(f"✅ Weather eklendi → {out_path} | Satır: {len(out):,} | Sütun: {out.shape[1]}")
+    
+    if WRITE_CSV:
+        out.to_csv(CRIME_OUT_CSV, index=False)
+        print(f"✅ CSV de yazıldı → {CRIME_OUT_CSV}")
+    else:
+        print("ℹ️ CSV yazımı kapalı; yalnız parquet kaydedildi.")
 
 # =====================================================================================
 # GITHUB YARDIMCILARI
@@ -541,10 +560,10 @@ if ENRICH_CRIME_WITH_WEATHER:
         enrich_crime_with_weather(CRIME_IN_PATH, CRIME_OUT_PATH, _WEATHER_LATEST)
 
         if os.path.exists(CRIME_OUT_PATH):
-            print("sf_crime_08.csv — ilk 5 satır:", flush=True)
+            print("sf_crime_08.parquet — ilk 5 satır:", flush=True)
             try:
-                _h = pd.read_csv(CRIME_OUT_PATH, nrows=5, low_memory=False)
-                print(_h.to_csv(index=False), flush=True)
+                _h = pd.read_parquet(CRIME_OUT_PATH).head(5)
+                print(_h.to_string(index=False), flush=True)
             except Exception as e:
                 print(f"⚠️ sf_crime_08 head okunamadı: {e}", flush=True)
 
