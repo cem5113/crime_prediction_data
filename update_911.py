@@ -63,12 +63,22 @@ def ensure_parent(path: str):
 def safe_save_csv(df: pd.DataFrame, path: str):
     try:
         ensure_parent(path)
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        df.to_csv(path, index=False, encoding="utf-8")
+        df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
     except Exception as e:
         log(f"❌ Kaydetme hatası: {path}\n{e}")
         df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
         log(f"📁 Yedek oluşturuldu: {path}.bak")
 
+def safe_save_parquet(df: pd.DataFrame, path: str):
+    try:
+        ensure_parent(path)
+        df.to_parquet(path, index=False)
+    except Exception as e:
+        log(f"❌ Parquet kaydetme hatası: {path}\n{e}")
+        bak = str(Path(path).with_suffix(".parquet.bak"))
+        df.to_parquet(bak, index=False)
+        log(f"📁 Yedek parquet oluşturuldu: {bak}")
 
 def _to_date_series(x):
     try:
@@ -135,6 +145,7 @@ def _safe_bool01(s: pd.Series) -> pd.Series:
 # CONFIG & PATHS
 # ============================================================
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
+EXPORT_CSV = os.getenv("EXPORT_CSV", "1").lower() in ("1", "true", "yes", "on")
 
 _raw_base = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").strip().strip("/\\")
 repo_leaf = Path.cwd().name
@@ -152,7 +163,7 @@ local_summary_path = OUT_DIR / LOCAL_NAME
 Y_NAME = "sf_911_last_5_year_y.csv"
 y_summary_path = OUT_DIR / Y_NAME
 
-merged_output_path = Path(os.getenv("DAILY_OUT", str(OUT_DIR / "sf_crime_01.csv")))
+merged_output_path = Path(os.getenv("DAILY_OUT", str(OUT_DIR / "sf_crime_01.parquet")))
 if not merged_output_path.is_absolute():
     merged_output_path = OUT_DIR / merged_output_path.name
 log(f"🧾 DAILY_OUT seen as: {os.getenv('DAILY_OUT', '(unset)')}")
@@ -1601,23 +1612,38 @@ except Exception as e:
 # ============================================================
 # SAVE
 # ============================================================
-safe_save_csv(merged, str(merged_output_path))
 log_shape(merged, "CRIME⨯911 (kayıt öncesi)")
+
+# Ana çıktı: parquet
+safe_save_parquet(merged, str(merged_output_path))
 log(f"✅ Suç + 911 birleştirmesi tamamlandı → {merged_output_path}")
 
+# Opsiyonel CSV export
+csv_export_path = merged_output_path.with_suffix(".csv")
+if EXPORT_CSV:
+    safe_save_csv(merged, str(csv_export_path))
+    log(f"📄 Opsiyonel CSV export yazıldı → {csv_export_path}")
+
+# Normalize kopyalar
 try:
-    for p in [
+    copy_targets = [
         local_summary_path,
         y_summary_path,
-        OUT_DIR / "sf_crime_01.csv",
         merged_output_path,
-    ]:
+    ]
+
+    if EXPORT_CSV and csv_export_path.exists():
+        copy_targets.append(csv_export_path)
+
+    for p in copy_targets:
         if p.exists():
             dst = OUT_DIR / p.name
             if p.resolve() != dst.resolve():
                 dst.write_bytes(p.read_bytes())
                 log(f"📦 Normalize kopya: {p} → {dst}")
+
     log("📦 911 çıktıları OUT_DIR altında hazır.")
+
 except Exception as e:
     log(f"⚠️ Normalize skip: {e}")
 
