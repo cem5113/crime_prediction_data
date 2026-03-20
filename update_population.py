@@ -67,6 +67,13 @@ def safe_save_csv(df: pd.DataFrame, path: str):
     os.replace(tmp, path)
     print(f"💾 Kaydedildi: {path}")
 
+def safe_save_parquet(df: pd.DataFrame, path: str):
+    ensure_parent(path)
+    tmp = str(path) + ".tmp.parquet"
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
+    print(f"💾 Parquet kaydedildi: {path}")
+
 
 def digits_only(s: pd.Series) -> pd.Series:
     return s.astype(str).str.extract(r"(\d+)", expand=False).fillna("")
@@ -137,6 +144,7 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 CRIME_INPUT = os.getenv("CRIME_INPUT", "").strip() or find_crime_input(BASE_DIR)
 CRIME_OUTPUT = str(BASE_DIR / "sf_crime_03.csv")
+CRIME_OUTPUT_PARQUET = str(BASE_DIR / "sf_crime_03.parquet")
 
 DEMOGRAPHIC_PATH = (os.getenv("POPULATION_PATH", "") or "").strip()
 if not DEMOGRAPHIC_PATH:
@@ -416,6 +424,7 @@ def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple
     """
     if not APPEND_ONLY or not os.path.exists(crime_out_path):
         print("ℹ️ Append-only çıktı yok → tüm satırlar yeni kabul edilecek.")
+        print("⚠️ İlk koşu: full enrich + büyük CSV yazımı uzun sürebilir.")
         return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
 
     old = pd.read_csv(crime_out_path, low_memory=False)
@@ -448,7 +457,6 @@ def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple
     print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
     return old, crime_in.copy()
 
-
 def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.DataFrame:
     out = df_crime.copy()
     out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
@@ -472,19 +480,24 @@ def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.Da
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
     if "population" in out.columns:
-        out["population"] = out["population"].round().astype(int)
+        out["population"] = pd.to_numeric(out["population"], errors="coerce").fillna(0).round().astype("int32")
     if "population_total" in out.columns:
-        out["population_total"] = out["population_total"].round().astype(int)
+        out["population_total"] = pd.to_numeric(out["population_total"], errors="coerce").fillna(0).round().astype("int32")
+    
+    for c in out.columns:
+        if c.startswith("pct_"):
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("float32")
+        elif c.startswith("pop_"):
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("float32")
 
     return out
 
 
 def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     if old_df is None or len(old_df) == 0:
-        out = new_df.copy()
+        out = new_df
     else:
-        out = pd.concat([old_df, new_df], ignore_index=True)
-
+        out = pd.concat([old_df, new_df], ignore_index=True, copy=False)
     if "GEOID" in out.columns:
         out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
 
@@ -495,8 +508,10 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     out = dedupe_by_panel_keys(out, keys, keep="first")
 
     sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in out.columns]
-    if sort_cols:
+    if sort_cols and len(out) <= 1_000_000:
         out = out.sort_values(sort_cols).reset_index(drop=True)
+    else:
+        out = out.reset_index(drop=True)
 
     return out
 
@@ -588,7 +603,16 @@ def main():
     # -------------------------------------------------------------------------
     # 8) Kaydet
     # -------------------------------------------------------------------------
-    safe_save_csv(final_df, CRIME_OUTPUT)
+    try:
+        safe_save_parquet(final_df, CRIME_OUTPUT_PARQUET)
+    except Exception as e:
+        print(f"⚠️ Parquet kayıt atlandı: {e}")
+    
+    WRITE_CSV = os.getenv("WRITE_CSV", "1").strip().lower() in ("1", "true", "yes", "on")
+    if WRITE_CSV:
+        safe_save_csv(final_df, CRIME_OUTPUT)
+    else:
+        print("ℹ️ CSV yazımı kapalı; yalnız parquet kaydedildi.")
 
     try:
         preview_cols = [c for c in [
