@@ -35,15 +35,20 @@ pd.options.mode.copy_on_write = True
 def log(m: str):
     print(m, flush=True)
 
-def _read_csv(p: Path) -> pd.DataFrame:
+def _read_table(p: Path) -> pd.DataFrame:
     if not p.exists():
         log(f"ℹ️ Yok: {p}")
         return pd.DataFrame()
-    df = pd.read_csv(p, low_memory=False)
+
+    if p.suffix.lower() == ".parquet":
+        df = pd.read_parquet(p)
+    else:
+        df = pd.read_csv(p, low_memory=False)
+
     log(f"📖 Okundu: {p} ({len(df):,}×{df.shape[1]})")
     return df
 
-def _safe_write_csv(df: pd.DataFrame, p: Path):
+def _safe_write_table(df: pd.DataFrame, p: Path, write_csv: bool = False, csv_path: Path | None = None):
     p.parent.mkdir(parents=True, exist_ok=True)
 
     # küçük downcast
@@ -52,10 +57,17 @@ def _safe_write_csv(df: pd.DataFrame, p: Path):
     for c in df.select_dtypes(include=["int64", "Int64"]).columns:
         df[c] = pd.to_numeric(df[c], downcast="integer")
 
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    df.to_csv(tmp, index=False)
+    tmp = p.with_suffix(p.suffix + ".tmp.parquet")
+    df.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
     tmp.replace(p)
-    log(f"💾 Yazıldı: {p} ({len(df):,}×{df.shape[1]})")
+    log(f"💾 Parquet yazıldı: {p} ({len(df):,}×{df.shape[1]})")
+
+    if write_csv and csv_path is not None:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_csv = csv_path.with_suffix(csv_path.suffix + ".tmp")
+        df.to_csv(tmp_csv, index=False)
+        tmp_csv.replace(csv_path)
+        log(f"💾 CSV yazıldı: {csv_path} ({len(df):,}×{df.shape[1]})")
 
 def _norm_geoid(s: pd.Series, L: int = 11) -> pd.Series:
     return (
@@ -122,8 +134,8 @@ def _normalize_keys(df: pd.DataFrame, geoid_len: int = 11) -> pd.DataFrame:
 # ---------- config ----------
 BASE_DIR = Path(os.environ.get("CRIME_DATA_DIR", "crime_prediction_data"))
 
-FR_IN_ENV  = os.environ.get("sf_CRIME_IN",  "sf_crime_08.csv")
-FR_OUT_ENV = os.environ.get("sf_CRIME_OUT", "sf_crime_09.csv")
+FR_IN_ENV  = os.environ.get("sf_CRIME_IN",  "sf_crime_08.parquet")
+FR_OUT_ENV = os.environ.get("sf_CRIME_OUT", "sf_crime_09.parquet")
 
 NEIGH_PATH = Path(os.environ.get("NEIGH_FILE", "neighbors.csv"))
 GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
@@ -295,15 +307,22 @@ def main() -> int:
 
     BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-    fr_in = BASE_DIR / FR_IN_ENV if not Path(FR_IN_ENV).is_absolute() else Path(FR_IN_ENV)
-    fr_out = BASE_DIR / FR_OUT_ENV if not Path(FR_OUT_ENV).is_absolute() else Path(FR_OUT_ENV)
+fr_in = BASE_DIR / FR_IN_ENV if not Path(FR_IN_ENV).is_absolute() else Path(FR_IN_ENV)
+fr_out = BASE_DIR / FR_OUT_ENV if not Path(FR_OUT_ENV).is_absolute() else Path(FR_OUT_ENV)
+fr_out_csv = BASE_DIR / FR_OUT_CSV_ENV if not Path(FR_OUT_CSV_ENV).is_absolute() else Path(FR_OUT_CSV_ENV)
 
+    # parquet yoksa csv fallback
+    if not fr_in.exists():
+        alt_csv = fr_in.with_suffix(".csv")
+        if alt_csv.exists():
+            fr_in = alt_csv
+    
     log(f"📥 FR input : {fr_in}")
     log(f"📤 FR output: {fr_out}")
     log(f"📂 NEIGH PATH: {NEIGH_PATH.resolve()}")
     log(f"⏳ PUBLISH_LAG_DAYS={PUBLISH_LAG_DAYS}  (shift_k={PUBLISH_LAG_DAYS+1})")
 
-    df_raw = _read_csv(fr_in)
+    df_raw = _read_table(fr_in)
     if df_raw.empty:
         raise RuntimeError("❌ Girdi CSV boş veya okunamadı.")
 
@@ -375,7 +394,7 @@ def main() -> int:
     log(f"  neighbor_crime_3d sum={int(df_out['neighbor_crime_3d'].sum()):,}")
     log(f"  neighbor_crime_7d sum={int(df_out['neighbor_crime_7d'].sum()):,}")
 
-    _safe_write_csv(df_out, fr_out)
+    _safe_write_table(df_out, fr_out, write_csv=WRITE_CSV, csv_path=fr_out_csv)
 
     # Preview
     try:
