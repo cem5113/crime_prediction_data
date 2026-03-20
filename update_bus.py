@@ -12,14 +12,11 @@ from scipy.spatial import cKDTree
 # =========================
 # küçük yardımcılar
 # =========================
-def read_table(csv_path: str, parquet_path: str) -> tuple[pd.DataFrame, str]:
-    if os.path.exists(csv_path):
-        print(f"📥 Girdi CSV bulundu: {csv_path}")
-        return pd.read_csv(csv_path, low_memory=False), csv_path
+def read_table(parquet_path: str) -> tuple[pd.DataFrame, str]:
     if os.path.exists(parquet_path):
         print(f"📥 Girdi Parquet bulundu: {parquet_path}")
         return pd.read_parquet(parquet_path), parquet_path
-    raise FileNotFoundError(f"❌ Suç girdi dosyası yok: {csv_path} veya {parquet_path}")
+    raise FileNotFoundError(f"❌ Suç girdi parquet dosyası yok: {parquet_path}")
 
 def log_shape(df: pd.DataFrame, label: str):
     r, c = df.shape
@@ -55,6 +52,21 @@ def safe_save_csv(df: pd.DataFrame, path: str):
     os.replace(tmp, path)
 
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
+
+def save_parquet_atomic(df: pd.DataFrame, path: str):
+    ensure_parent(path)
+    tmp = str(path) + ".tmp.parquet"
+
+    df2 = sanitize_text_columns(df.copy())
+
+    for c in df2.select_dtypes(include=["float64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="float")
+    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
+    os.replace(tmp, path)
+    
 def normalize_geoid(s: pd.Series, target_len: int = DEFAULT_GEOID_LEN) -> pd.Series:
     s = s.astype(str).str.extract(r"(\d+)", expand=False)
     L = int(target_len)
@@ -231,11 +243,8 @@ def make_or_apply_bins_count(series: pd.Series, bins_json: dict | None):
 BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 
-CRIME_INPUT_CSV = os.path.join(BASE_DIR, os.getenv("CRIME_INPUT_NAME", "sf_crime_03.csv"))
-CRIME_INPUT_PARQUET = CRIME_INPUT_CSV.replace(".csv", ".parquet")
-
-CRIME_OUTPUT = os.path.join(BASE_DIR, os.getenv("CRIME_OUTPUT_NAME", "sf_crime_04.csv"))
-CRIME_OUTPUT_PARQUET = CRIME_OUTPUT.replace(".csv", ".parquet")
+CRIME_INPUT_PARQUET = os.path.join(BASE_DIR, os.getenv("CRIME_INPUT_NAME", "sf_crime_03.parquet"))
+CRIME_OUTPUT_PARQUET = os.path.join(BASE_DIR, os.getenv("CRIME_OUTPUT_NAME", "sf_crime_04.parquet"))
 
 BUS_CANON_RAW    = os.path.join(BASE_DIR, os.getenv("BUS_CANON_RAW", "sf_bus_stops_with_geoid.csv"))
 BUS_LEGACY_RAW_Y = os.path.join(BASE_DIR, os.getenv("BUS_LEGACY_RAW_Y", "bus_y.csv"))
@@ -265,7 +274,7 @@ BUS_CACHE_OK = (os.path.exists(BUS_CANON_RAW) and os.path.exists(BUS_SUMMARY_NAM
 # =========================
 # 1) crime oku
 # =========================
-crime_in, crime_input_used = read_table(CRIME_INPUT_CSV, CRIME_INPUT_PARQUET)
+crime_in, crime_input_used = read_table(CRIME_INPUT_PARQUET)
 print(f"📄 BUS enrich girdi: {crime_input_used}")
 log_shape(crime_in, "CRIME_INPUT (okundu)")
 
@@ -284,7 +293,7 @@ print(f"🧩 CRIME_INPUT farklı GEOID sayısı: {crime_geoids.size}")
 # =========================
 # 2) Eğer çıktı varsa: incremental mod
 # =========================
-crime_out_exists = os.path.exists(CRIME_OUTPUT)
+crime_out_exists = os.path.exists(CRIME_OUTPUT_PARQUET)
 bus_cols_expected = ["distance_to_bus", "bus_stop_count", "distance_to_bus_range", "bus_stop_count_range"]
 
 crime_old = None
@@ -295,7 +304,7 @@ if INCREMENTAL and crime_out_exists:
     print("🧠 INCREMENTAL mod açık ve sf_crime_04.csv mevcut.")
     print("🧩 Kural: eski satırlar korunur, yalnızca yeni crime satırları güncel bus snapshot ile enrich edilir.")
 
-    crime_old = pd.read_csv(CRIME_OUTPUT, low_memory=False)
+    crime_old = pd.read_parquet(CRIME_OUTPUT_PARQUET)
     log_shape(crime_old, "CRIME_OUTPUT (mevcut)")
 
     if "GEOID" not in crime_old.columns:
@@ -513,8 +522,8 @@ if RUN_MODE == "INCREMENTAL":
     # aynı key tekrar ederse yeni geleni tut
     out = out.drop_duplicates(subset=KEYS, keep="last")
 
-    safe_save_csv(out, CRIME_OUTPUT)
-    print(f"✅ INCREMENTAL güncelleme tamam → {CRIME_OUTPUT}")
+    save_parquet_atomic(out, CRIME_OUTPUT_PARQUET)
+    print(f"✅ INCREMENTAL güncelleme tamam → {CRIME_OUTPUT_PARQUET}")
 
 else:
     before = crime_in.shape
@@ -522,19 +531,8 @@ else:
     log_delta(before, out.shape, "CRIME ⨯ BUS (FULL)")
     log_shape(out, "CRIME (bus enrich sonrası - FULL)")
 
-    WRITE_FULL_CSV = os.getenv("WRITE_FULL_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
-    FULL_PARQUET_OUTPUT = CRIME_OUTPUT.replace(".csv", ".parquet")
-
-    # İlk koşuda büyük CSV yerine önce parquet yaz
-    ensure_parent(FULL_PARQUET_OUTPUT)
-    out.to_parquet(FULL_PARQUET_OUTPUT, index=False)
-    print(f"✅ FULL parquet çıktı → {FULL_PARQUET_OUTPUT}")
-
-    if WRITE_FULL_CSV:
-        safe_save_csv(out, CRIME_OUTPUT)
-        print(f"✅ FULL csv çıktı → {CRIME_OUTPUT}")
-    else:
-        print("ℹ️ FULL CSV yazımı kapalı bırakıldı; büyük dosya yazımı atlandı.")
+    save_parquet_atomic(out, CRIME_OUTPUT_PARQUET)
+    print(f"✅ FULL parquet çıktı → {CRIME_OUTPUT_PARQUET}")
 
 # örnek
 try:
