@@ -117,12 +117,15 @@ def parse_numeric_series(s: pd.Series) -> pd.Series:
 def find_crime_input(base_dir: Path) -> str:
     cands = [
         base_dir / "sf_crime_02.parquet",
+        Path.cwd() / "sf_crime_02.parquet",
         Path("sf_crime_02.parquet"),
         base_dir / "sf_crime_02.csv",
+        Path.cwd() / "sf_crime_02.csv",
         Path("sf_crime_02.csv"),
     ]
     for p in cands:
         if p.exists():
+            print(f"📥 Crime input bulundu: {p}")
             return str(p)
     raise FileNotFoundError("❌ sf_crime_02.parquet / sf_crime_02.csv bulunamadı.")
 
@@ -546,7 +549,10 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 def main():
     print("🚀 Demographic update başlıyor...")
-
+    print("🔎 CWD:", os.getcwd())
+    print("🔎 BASE_DIR:", BASE_DIR.resolve())
+    print("🔎 CRIME_INPUT:", CRIME_INPUT)
+    
     if not Path(CRIME_INPUT).exists():
         raise FileNotFoundError(f"❌ CRIME_INPUT bulunamadı: {CRIME_INPUT}")
     if not Path(DEMOGRAPHIC_PATH).exists():
