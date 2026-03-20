@@ -73,9 +73,9 @@ POI_CLEAN_RAW_URL = os.getenv(
     "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois_cleaned_with_geoid.csv"
 )
 
-CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.csv"))
-CRIME_OUT = os.getenv("CRIME_OUT", os.path.join(BASE_DIR, "sf_crime_06.csv"))
-CRIME_OUT_PARQUET = CRIME_OUT.replace(".csv", ".parquet")
+CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.parquet"))
+CRIME_OUT = os.getenv("CRIME_OUT", os.path.join(BASE_DIR, "sf_crime_06.parquet"))
+CRIME_OUT_PARQUET = CRIME_OUT
 
 FORCE_POI_REFRESH = os.getenv("FORCE_POI_REFRESH", "0").strip().lower() in ("1", "true", "yes")
 POI_RISK_LOOKBACK_YEARS = int(os.getenv("POI_RISK_LOOKBACK_YEARS", "5"))
@@ -799,22 +799,8 @@ if __name__ == "__main__":
     if not os.path.exists(CRIME_IN):
         candidates = [
             CRIME_IN,
-            os.path.join(BASE_DIR, "sf_crime_05.csv"),
             os.path.join(BASE_DIR, "sf_crime_05.parquet"),
-            os.path.join(BASE_DIR, "sf_crime_03.csv"),
-            os.path.join(BASE_DIR, "sf_crime_03.parquet"),
-            os.path.join(BASE_DIR, "sf_crime_02.csv"),
-            os.path.join(BASE_DIR, "sf_crime_02.parquet"),
-            os.path.join(BASE_DIR, "sf_crime.csv"),
-            os.path.join(BASE_DIR, "sf_crime.parquet"),
-            "sf_crime_05.csv",
-            "sf_crime_05.parquet",
-            "sf_crime_03.csv",
-            "sf_crime_03.parquet",
-            "sf_crime_02.csv",
-            "sf_crime_02.parquet",
-            "sf_crime.csv",
-            "sf_crime.parquet",
+            os.path.join(BASE_DIR, "sf_crime_05.csv"),
         ]
         resolved = _first_exists(*candidates)
         if resolved:
