@@ -59,9 +59,13 @@ blocks_path = os.path.join(save_dir, "sf_census_blocks.geojson")
 
 # ---- OUTPUTS ----
 EVENT_CSV_NAME = os.getenv("EVENT_CSV_NAME", "sf_crime_x.csv")
+PANEL_PARQUET_NAME = os.getenv("PANEL_PARQUET_NAME", "sf_crime_y.parquet")
 PANEL_CSV_NAME = os.getenv("PANEL_CSV_NAME", "sf_crime_y.csv")
 
+WRITE_PANEL_CSV = os.getenv("WRITE_PANEL_CSV", "0").lower() in ("1", "true", "yes", "on")
+
 event_csv_path = os.path.join(save_dir, EVENT_CSV_NAME)
+panel_parquet_path = os.path.join(save_dir, PANEL_PARQUET_NAME)
 panel_csv_path = os.path.join(save_dir, PANEL_CSV_NAME)
 
 # ---- GitHub Actions artifact (sf_crime_y.csv) ayarları ----
@@ -101,6 +105,29 @@ def safe_save(df: pd.DataFrame, path: str) -> None:
         df.to_csv(backup_path, index=False, encoding="utf-8-sig")
         print(f"📁 Yedek dosya: {backup_path}")
 
+def safe_save_parquet(df: pd.DataFrame, path: str) -> None:
+    try:
+        Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
+
+        df2 = df.copy()
+
+        for c in df2.select_dtypes(include=["float64"]).columns:
+            df2[c] = pd.to_numeric(df2[c], downcast="float")
+        for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+            df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+        tmp = path + ".tmp.parquet"
+        df2.to_parquet(
+            tmp,
+            index=False,
+            engine="pyarrow",
+            compression="snappy"
+        )
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"❌ Parquet kaydedilemedi: {path}\n{e}")
+        raise
+        
 def is_lfs_pointer(p: Path) -> bool:
     try:
         head = p.read_text(errors="ignore")[:200]
@@ -1253,13 +1280,24 @@ panel["season"] = panel["month"].map(season_map).astype("category")
 
 # 4) Yaz
 panel = panel.drop(columns=["slot_start_hour"], errors="ignore")
-print(f"🧾 PANEL output hedefi: {panel_csv_path}")
-safe_save(panel, panel_csv_path)
-print(f"💾 Panel (sf_crime_y) yazıldı → {panel_csv_path} | rows={len(panel):,}")
+
+print(f"🧾 PANEL output hedefi (parquet): {panel_parquet_path}")
+safe_save_parquet(panel, panel_parquet_path)
+print(f"💾 Panel (sf_crime_y) parquet yazıldı → {panel_parquet_path} | rows={len(panel):,}")
+
+if WRITE_PANEL_CSV:
+    print(f"🧾 PANEL output hedefi (csv): {panel_csv_path}")
+    safe_save(panel, panel_csv_path)
+    print(f"💾 Panel (sf_crime_y) csv yazıldı → {panel_csv_path} | rows={len(panel):,}")
+else:
+    print("ℹ️ WRITE_PANEL_CSV=0 → sf_crime_y.csv yazılmadı.")
 
 try:
-    _tmp = pd.read_csv(panel_csv_path, dtype={"GEOID": str}, low_memory=False)
-    print("\n📄 [QC] Dosyadan okunan sf_crime_y.csv özeti")
+    _tmp = pd.read_parquet(panel_parquet_path)
+    if "GEOID" in _tmp.columns:
+        _tmp["GEOID"] = _tmp["GEOID"].astype(str)
+
+    print("\n📄 [QC] Dosyadan okunan sf_crime_y.parquet özeti")
     print(f"🧮 Shape(file): {_tmp.shape[0]} satır × {_tmp.shape[1]} sütun")
 
     nan_counts_file = _tmp.isna().sum().sort_values(ascending=False)
@@ -1271,25 +1309,28 @@ try:
     with pd.option_context("display.max_columns", 200, "display.width", 200):
         print(_tmp.sample(n=min(5, len(_tmp)), random_state=42))
 except Exception as e:
-    print("⚠️ [QC] Dosyadan okuma kontrolü başarısız:", e)
-    
+    print("⚠️ [QC] Dosyadan parquet okuma kontrolü başarısız:", e)
+
 try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
 
-    # Artifact çıktıları (ikisi de)
+    # Artifact çıktıları
     shutil.copy2(event_out, f"crime_prediction_data/{Path(event_csv_path).name}")
-    shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
-    print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.csv")
+    shutil.copy2(panel_parquet_path, f"crime_prediction_data/{Path(panel_parquet_path).name}")
 
-    # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI) — DİKKAT:
-    # Eğer bunu açarsan, HANGİSİNİ base sayacağını seçmelisin.
-    # Ben güvenli tarafta kalıp paneli/base olarak ezmeyi önermiyorum.
-    if WRITE_BASE_TO_REPO:
-        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime.csv")
-        shutil.copy2(panel_csv_path, "sf_crime.csv")
-        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv panel ile güncellendi (repo workspace).")
+    if WRITE_PANEL_CSV and os.path.exists(panel_csv_path):
+        shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
+        print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.parquet + sf_crime_y.csv")
     else:
-        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece artifact yazıldı).")
+        print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.parquet")
+
+    # Repo içine base ezme kapalı; isterse yalnız parquet kopyalansın
+    if WRITE_BASE_TO_REPO:
+        shutil.copy2(panel_parquet_path, "crime_prediction_data/sf_crime_y.parquet")
+        shutil.copy2(panel_parquet_path, "sf_crime_y.parquet")
+        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime_y.parquet repo workspace içine de kopyalandı.")
+    else:
+        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo base dosyaları EZİLMEDİ (sadece artifact yazıldı).")
 
 except Exception as e:
     print("Kopya uyarısı:", e)
