@@ -62,6 +62,24 @@ def safe_save_csv(df: pd.DataFrame, path: str) -> None:
         except Exception:
             pass
 
+def save_parquet_atomic(df: pd.DataFrame, path: str) -> None:
+    ensure_parent(path)
+    tmp = path + ".tmp.parquet"
+    try:
+        df2 = sanitize_text_columns(df.copy())
+
+        for c in df2.select_dtypes(include=["float64"]).columns:
+            df2[c] = pd.to_numeric(df2[c], downcast="float")
+        for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+            df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+        df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
+        os.replace(tmp, path)
+        print(f"💾 Parquet kaydedildi: {path}")
+    except Exception as e:
+        print(f"❌ Parquet kaydetme hatası: {path}\n{e}")
+        raise
+        
 def log_shape(df: pd.DataFrame, label: str) -> None:
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
@@ -117,29 +135,26 @@ BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 
 # Suç girdisi adayları
-CRIME_INPUT_CSV = os.path.join(BASE_DIR, "sf_crime_04.csv")
 CRIME_INPUT_PARQUET = os.path.join(BASE_DIR, "sf_crime_04.parquet")
 
-def read_input_table(csv_path: str, parquet_path: str) -> tuple[pd.DataFrame, str]:
-    if os.path.exists(csv_path):
-        return pd.read_csv(csv_path, low_memory=False), csv_path
+def read_input_table(parquet_path: str) -> tuple[pd.DataFrame, str]:
     if os.path.exists(parquet_path):
         return pd.read_parquet(parquet_path), parquet_path
     raise FileNotFoundError(
-        f"❌ Suç girdi dosyası bulunamadı: {csv_path} veya {parquet_path}"
+        f"❌ Suç girdi parquet dosyası bulunamadı: {parquet_path}"
     )
 
-crime_in, CRIME_INPUT = read_input_table(CRIME_INPUT_CSV, CRIME_INPUT_PARQUET)
+crime_in, CRIME_INPUT = read_input_table(CRIME_INPUT_PARQUET)
 print(f"📄 Train enrich girdi: {os.path.abspath(CRIME_INPUT)}")
 
-CRIME_OUTPUT = os.path.join(BASE_DIR, "sf_crime_05.csv")
+CRIME_OUTPUT_PARQUET = os.path.join(BASE_DIR, "sf_crime_05.parquet")
 
 INCREMENTAL = os.getenv("TRAIN_INCREMENTAL", "1").strip().lower() not in ("0", "false", "no")
 
 # Ara veri / çıktı adları (kanonik + uyumluluk)
-TRAIN_STOPS_WITH_GEOID = os.path.join(BASE_DIR, os.getenv("TRAIN_STOPS_NAME", "sf_train_stops_with_geoid.csv"))
-TRAIN_LEGACY_RAW_Y     = os.path.join(BASE_DIR, os.getenv("TRAIN_LEGACY_RAW_Y", "train_y.csv"))  # legacy ham
-TRAIN_SUMMARY_NAME     = os.path.join(BASE_DIR, os.getenv("TRAIN_SUMMARY_NAME", "train.csv"))     # legacy özet/feature
+TRAIN_STOPS_WITH_GEOID = os.path.join(BASE_DIR, os.getenv("TRAIN_STOPS_NAME", "sf_train_stops_with_geoid.parquet"))
+TRAIN_LEGACY_RAW_Y     = os.path.join(BASE_DIR, os.getenv("TRAIN_LEGACY_RAW_Y", "train_y.parquet"))
+TRAIN_SUMMARY_NAME     = os.path.join(BASE_DIR, os.getenv("TRAIN_SUMMARY_NAME", "train.parquet"))
 TRAIN_BINS_PATH        = os.path.join(BASE_DIR, os.getenv("TRAIN_BINS_PATH", "train_bins.json"))
 
 # =========================
@@ -182,15 +197,15 @@ crime_old = None
 crime_new = None
 RUN_MODE = "FULL"
 
-if INCREMENTAL and os.path.exists(CRIME_OUTPUT):
-    print("🧠 INCREMENTAL mod açık ve sf_crime_05.csv mevcut.")
+if INCREMENTAL and os.path.exists(CRIME_OUTPUT_PARQUET):
+    print("🧠 INCREMENTAL mod açık ve sf_crime_05.parquet mevcut.")
     print("🧩 Kural: eski satırlar korunur, yalnızca yeni crime satırları güncel train snapshot ile enrich edilir.")
 
-    crime_old = pd.read_csv(CRIME_OUTPUT, low_memory=False)
+    crime_old = pd.read_parquet(CRIME_OUTPUT_PARQUET)
     log_shape(crime_old, "CRIME_OUTPUT (mevcut)")
 
     if "GEOID" not in crime_old.columns:
-        raise KeyError("❌ Mevcut sf_crime_05.csv içinde GEOID yok.")
+        raise KeyError("❌ Mevcut sf_crime_05.parquet içinde GEOID yok.")
     crime_old["GEOID"] = normalize_geoid(crime_old["GEOID"], DEFAULT_GEOID_LEN)
 
     if not all(c in crime_old.columns for c in train_cols_expected):
@@ -323,7 +338,7 @@ def download_gtfs_stops(urls: list[str], max_retries: int = 4, backoff_base: flo
 # =========================
 if TRAIN_CACHE_OK and (not FORCE_TRAIN_REFRESH):
     print("✅ TRAIN cache bulundu ve FORCE_TRAIN_REFRESH=0 → train.csv kullanılacak.")
-    geo_metrics = pd.read_csv(TRAIN_SUMMARY_NAME, low_memory=False)
+    geo_metrics = pd.read_parquet(TRAIN_SUMMARY_NAME)
 
     if "GEOID" not in geo_metrics.columns:
         raise KeyError("❌ train.csv içinde GEOID yok (cache bozuk).")
@@ -338,7 +353,7 @@ else:
         if os.path.exists(TRAIN_STOPS_WITH_GEOID):
             print("⚠️ GTFS indirilemedi; mevcut cache kullanılacak:", os.path.abspath(TRAIN_STOPS_WITH_GEOID))
             try:
-                stops = pd.read_csv(TRAIN_STOPS_WITH_GEOID, low_memory=False)
+                stops = pd.read_parquet(TRAIN_LEGACY_RAW_Y)
             except Exception:
                 stops = pd.DataFrame(columns=["stop_lat", "stop_lon"])
         elif os.path.exists(TRAIN_LEGACY_RAW_Y):
@@ -434,13 +449,13 @@ else:
 # =========================
 # 5) Ham dosyaları yaz (kanonik + legacy)
 # =========================
-safe_save_csv(train_stops_geo, TRAIN_STOPS_WITH_GEOID)   # kanonik
+save_parquet_atomic(train_stops_geo, TRAIN_STOPS_WITH_GEOID)
 try:
-    safe_save_csv(train_stops_geo, TRAIN_LEGACY_RAW_Y)   # legacy uyumluluk
+    save_parquet_atomic(train_stops_geo, TRAIN_LEGACY_RAW_Y)
     print(f"✅ TRAIN ham (kanonik): {TRAIN_STOPS_WITH_GEOID}")
-    print(f"↪️ Legacy kopya (train_y.csv): {TRAIN_LEGACY_RAW_Y}")
+    print(f"↪️ Legacy kopya (train_y.parquet): {TRAIN_LEGACY_RAW_Y}")
 except Exception as e:
-    print(f"⚠️ Legacy train_y.csv yazılamadı: {e}")
+    print(f"⚠️ Legacy train_y.parquet yazılamadı: {e}")
 
 # =========================
 # 6) GEOID-level metrikler (distance & count) + STABİL binleme
@@ -562,7 +577,7 @@ print(f"✅ TRAIN bin kenarları kaydedildi → {TRAIN_BINS_PATH}")
 # =========================
 # 7) GEOID-level özeti de yaz (legacy: train.csv)
 # =========================
-safe_save_csv(geo_metrics, TRAIN_SUMMARY_NAME)
+save_parquet_atomic(geo_metrics, TRAIN_SUMMARY_NAME)
 print(f"✅ TRAIN özet (GEOID-level) yazıldı → {TRAIN_SUMMARY_NAME}")
 
 # =========================
@@ -626,7 +641,7 @@ if nan_counts.empty:
 else:
     print(nan_counts.to_string())
 
-safe_save_csv(crime_enriched, CRIME_OUTPUT)
+save_parquet_atomic(crime_enriched, CRIME_OUTPUT_PARQUET)
 
 if RUN_MODE == "INCREMENTAL":
     print("📦 Yalnızca yeni satırlara train sütunları eklendi.")
@@ -634,10 +649,10 @@ else:
     print("📦 FULL backfill ile train sütunları eklendi.")
 
 print("📦 Yeni sütunlar:", ["distance_to_train", "distance_to_train_range", "train_stop_count", "train_stop_count_range"])
-print(f"✅ Güncellenmiş veri kaydedildi → {CRIME_OUTPUT}")
+print(f"✅ Güncellenmiş veri kaydedildi → {CRIME_OUTPUT_PARQUET}")
 
 try:
-    print("sf_crime_05.csv — ilk 5 satır")
+    print("sf_crime_05.parquet — ilk 5 satır")
     print(crime_enriched.head(5).to_string(index=False))
 except Exception:
     pass
