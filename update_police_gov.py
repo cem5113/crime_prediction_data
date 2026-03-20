@@ -104,7 +104,7 @@ BASE_CANDIDATES = [
     str(here()),                          # doğrudan CWD
 ]
 
-INPUT_FILES = ["sf_crime_06.csv", "sf_crime_06.parquet"]
+INPUT_FILES = ["sf_crime_06.parquet"]
 
 CRIME_INPUT_CANDIDATES = []
 for base in BASE_CANDIDATES:
