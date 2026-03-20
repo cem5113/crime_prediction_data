@@ -471,7 +471,17 @@ jobs:
           echo "CWD=$(pwd)"
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" || true
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_04.csv" || { echo "❌ sf_crime_04.csv yok"; exit 2; }
+
+          if [ -f "${CRIME_DATA_DIR}/sf_crime_04.csv" ]; then
+            echo "✅ sf_crime_04.csv bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_04.csv"
+          elif [ -f "${CRIME_DATA_DIR}/sf_crime_04.parquet" ]; then
+            echo "✅ sf_crime_04.parquet bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_04.parquet"
+          else
+            echo "❌ sf_crime_04.csv / sf_crime_04.parquet yok"
+            exit 2
+          fi
       
           # Perşembe: refresh=1, diğer günler: cache=0
           DOW=$(TZ=America/Los_Angeles date +%u)  # 1=Mon ... 4=Thu ... 7=Sun
