@@ -52,6 +52,15 @@ def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].replace(repl, regex=False)
     return df
 
+def read_table(parquet_path: str, csv_path: str) -> pd.DataFrame:
+    if os.path.exists(parquet_path):
+        log(f"📥 Parquet bulundu: {parquet_path}")
+        return pd.read_parquet(parquet_path)
+    if os.path.exists(csv_path):
+        log(f"📥 CSV bulundu: {csv_path}")
+        return pd.read_csv(csv_path, low_memory=False)
+    return pd.DataFrame()
+    
 def safe_save_csv(df: pd.DataFrame, path: str):
     ensure_parent(path)
     tmp = str(path) + ".tmp"
@@ -62,6 +71,20 @@ def safe_save_csv(df: pd.DataFrame, path: str):
 
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 
+def safe_save_parquet(df: pd.DataFrame, path: str):
+    ensure_parent(path)
+    tmp = str(path) + ".tmp.parquet"
+
+    df2 = sanitize_text_columns(df)
+
+    for c in df2.select_dtypes(include=["float64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="float")
+    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
+        df2[c] = pd.to_numeric(df2[c], downcast="integer")
+
+    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
+    os.replace(tmp, path)
+    
 def normalize_geoid(s: pd.Series, target_len: int = DEFAULT_GEOID_LEN) -> pd.Series:
     s = s.astype(str).str.extract(r"(\d+)", expand=False)
     return s.str[:target_len].str.zfill(target_len)
@@ -221,16 +244,8 @@ def socrata_download_with_retry(base_url: str, headers: dict, where_clause: str 
 # =========================================================
 # GEOID eşleme
 # =========================================================
-if os.path.exists("/content"):
-    # Google Colab
-    BASE_DIR = "/content/drive/MyDrive/crime_data"
-else:
-    # GitHub Actions / local
-    BASE_DIR = "data"
-
-# klasörü oluştur
+BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
-
 print(f"[INFO] BASE_DIR: {BASE_DIR}")
 
 CENSUS_CANDIDATES = [
@@ -292,10 +307,17 @@ if SOCS_APP_TOKEN:
 FORCE_ALL = os.getenv("FORCE_ALL_REFRESH", "0").strip().lower() in ("1", "true", "yes")
 
 # yollar
-BUSINESS_OUT = os.path.join(BASE_DIR, "sf_business_landuse.csv")
-BUILDING_OUT = os.path.join(BASE_DIR, "sf_building_permits_vacancy.csv")
-TRAFFIC_OUT  = os.path.join(BASE_DIR, "sf_traffic_transport.csv")
-STREET_OUT   = os.path.join(BASE_DIR, "sf_street_environment.csv")
+BUSINESS_OUT = os.path.join(BASE_DIR, "sf_business_landuse.parquet")
+BUILDING_OUT = os.path.join(BASE_DIR, "sf_building_permits_vacancy.parquet")
+TRAFFIC_OUT  = os.path.join(BASE_DIR, "sf_traffic_transport.parquet")
+STREET_OUT   = os.path.join(BASE_DIR, "sf_street_environment.parquet")
+
+WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+
+BUSINESS_OUT_CSV = BUSINESS_OUT.replace(".parquet", ".csv")
+BUILDING_OUT_CSV = BUILDING_OUT.replace(".parquet", ".csv")
+TRAFFIC_OUT_CSV  = TRAFFIC_OUT.replace(".parquet", ".csv")
+STREET_OUT_CSV   = STREET_OUT.replace(".parquet", ".csv")
 
 BUSINESS_META = os.path.join(BASE_DIR, "sf_business_landuse_meta.json")
 BUILDING_META = os.path.join(BASE_DIR, "sf_building_permits_vacancy_meta.json")
@@ -563,8 +585,9 @@ def run_dataset(name: str):
 
         if not refresh:
             log(f"✅ {name}: cache geçerli, refresh gerekmiyor.")
-            if os.path.exists(out_path):
-                df = pd.read_csv(out_path, low_memory=False)
+            csv_fallback = out_path.replace(".parquet", ".csv")
+            df = read_table(out_path, csv_fallback)
+            if not df.empty:
                 log_shape(df, f"{name} (cache)")
             return
 
@@ -578,7 +601,9 @@ def run_dataset(name: str):
         out_df = PREP_FN[name](raw)
         log_shape(out_df, f"{name} prepared")
 
-        safe_save_csv(out_df, out_path)
+        safe_save_parquet(out_df, out_path)
+        if WRITE_CSV:
+            safe_save_csv(out_df, out_path.replace(".parquet", ".csv"))
         save_json({
             "dataset": name,
             "rid": rid,
@@ -607,7 +632,9 @@ def run_dataset(name: str):
             out_df = PREP_FN[name](raw)
             log_shape(out_df, f"{name} prepared")
 
-            safe_save_csv(out_df, out_path)
+            safe_save_parquet(out_df, out_path)
+            if WRITE_CSV:
+                safe_save_csv(out_df, out_path.replace(".parquet", ".csv"))
             save_json({
                 "dataset": name,
                 "rid": rid,
@@ -622,7 +649,7 @@ def run_dataset(name: str):
             return
 
         # incremental path
-        existing = pd.read_csv(out_path, low_memory=False)
+        existing = read_table(out_path, out_path.replace(".parquet", ".csv"))
         log_shape(existing, f"{name} existing")
 
         where_clause = build_incremental_where(date_col, meta_path)
@@ -663,7 +690,9 @@ def run_dataset(name: str):
         merged = append_incremental(existing, new_df, key_cols)
         log_shape(merged, f"{name} merged")
 
-        safe_save_csv(merged, out_path)
+        safe_save_parquet(merged, out_path)
+        if WRITE_CSV:
+            safe_save_csv(merged, out_path.replace(".parquet", ".csv"))
         save_json({
             "dataset": name,
             "rid": rid,
