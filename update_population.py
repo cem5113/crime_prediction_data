@@ -74,10 +74,7 @@ def safe_save_parquet(df: pd.DataFrame, path: str):
     os.replace(tmp, path)
     print(f"💾 Parquet kaydedildi: {path}")
 
-def read_existing_output(csv_path: str, parquet_path: str) -> pd.DataFrame | None:
-    if os.path.exists(csv_path):
-        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
-        return pd.read_csv(csv_path, low_memory=False)
+def read_existing_output(parquet_path: str) -> pd.DataFrame | None:
     if os.path.exists(parquet_path):
         print(f"📥 Mevcut çıktı Parquet bulundu: {parquet_path}")
         return pd.read_parquet(parquet_path)
@@ -113,16 +110,13 @@ def parse_numeric_series(s: pd.Series) -> pd.Series:
 
 def find_crime_input(base_dir: Path) -> str:
     cands = [
-        base_dir / "sf_crime_02.csv",
-        Path("sf_crime_02.csv"),
-        base_dir / "sf_crime.csv",
-        Path("sf_crime.csv"),
+        base_dir / "sf_crime_02.parquet",
+        Path("sf_crime_02.parquet"),
     ]
     for p in cands:
         if p.exists():
             return str(p)
-    raise FileNotFoundError("❌ sf_crime_02.csv veya sf_crime.csv bulunamadı.")
-
+    raise FileNotFoundError("❌ sf_crime_02.parquet bulunamadı.")
 
 def ensure_date_col(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
     out = df.copy()
@@ -158,20 +152,19 @@ BASE_DIR = Path(os.getenv("CRIME_DATA_DIR", "crime_prediction_data"))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 CRIME_INPUT = os.getenv("CRIME_INPUT", "").strip() or find_crime_input(BASE_DIR)
-CRIME_OUTPUT = str(BASE_DIR / "sf_crime_03.csv")
 CRIME_OUTPUT_PARQUET = str(BASE_DIR / "sf_crime_03.parquet")
 
 DEMOGRAPHIC_PATH = (os.getenv("POPULATION_PATH", "") or "").strip()
 if not DEMOGRAPHIC_PATH:
-    cand = BASE_DIR / "sf_population.csv"
+    cand = BASE_DIR / "sf_population.parquet"
     if cand.exists():
         DEMOGRAPHIC_PATH = str(cand)
-    elif Path("sf_population.csv").exists():
-        DEMOGRAPHIC_PATH = "sf_population.csv"
+    elif Path("sf_population.parquet").exists():
+        DEMOGRAPHIC_PATH = "sf_population.parquet"
     else:
-        raise FileNotFoundError("❌ sf_population.csv bulunamadı. Lütfen crime_prediction_data altına ekleyin.")
+        raise FileNotFoundError("❌ sf_population.parquet bulunamadı. Lütfen crime_prediction_data altına ekleyin.")
 
-DEMOGRAPHIC_FEATURES_CSV = str(BASE_DIR / "sf_demographic_features.csv")
+DEMOGRAPHIC_FEATURES_PARQUET = str(BASE_DIR / "sf_demographic_features.parquet")
 
 GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 APPEND_ONLY = os.getenv("APPEND_ONLY", "1").strip().lower() not in ("0", "false", "no")
@@ -423,17 +416,15 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
     log_shape(feat, "DEMOGRAPHIC FEATURES (GEOID-level)")
 
     # Kaydet
-    safe_save_csv(feat, DEMOGRAPHIC_FEATURES_CSV)
+    safe_save_parquet(feat, DEMOGRAPHIC_FEATURES_PARQUET)
 
     return feat
-
 
 # =============================================================================
 # APPEND-ONLY LOGIC
 # =============================================================================
 def split_old_and_new_rows(
     crime_in: pd.DataFrame,
-    crime_out_csv: str,
     crime_out_parquet: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -546,7 +537,6 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -561,7 +551,7 @@ def main():
     # -------------------------------------------------------------------------
     # 1) Crime input oku
     # -------------------------------------------------------------------------
-    crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
+    crime_in = pd.read_parquet(CRIME_INPUT)
     if "GEOID" not in crime_in.columns:
         raise KeyError("❌ Suç verisinde GEOID kolonu yok.")
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
@@ -573,15 +563,12 @@ def main():
     # -------------------------------------------------------------------------
     old_out, new_rows = split_old_and_new_rows(
         crime_in,
-        CRIME_OUTPUT,
         CRIME_OUTPUT_PARQUET
     )
 
     if new_rows.empty:
         print("✅ Yeni crime satırı yok → demographic enrich atlandı.")
         print("✅ Eski sf_crime_03 aynen korunuyor.")
-        if os.path.exists(CRIME_OUTPUT):
-            print(f"📁 Mevcut CSV çıktı: {CRIME_OUTPUT}")
         if os.path.exists(CRIME_OUTPUT_PARQUET):
             print(f"📁 Mevcut Parquet çıktı: {CRIME_OUTPUT_PARQUET}")
         return
@@ -589,8 +576,9 @@ def main():
     # -------------------------------------------------------------------------
     # 3) Yalnızca gerçekten yeni satır varsa demographic oku
     # -------------------------------------------------------------------------
-    demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
-    log_shape(demo_raw, "DEMOGRAPHIC CSV")
+    demo_raw = pd.read_parquet(DEMOGRAPHIC_PATH)
+    demo_raw = demo_raw.astype(str)
+    log_shape(demo_raw, "DEMOGRAPHIC PARQUET")
 
     # -------------------------------------------------------------------------
     # 4) Feature üret
@@ -645,16 +633,8 @@ def main():
     # -------------------------------------------------------------------------
     # 8) Kaydet
     # -------------------------------------------------------------------------
-    try:
-        safe_save_parquet(final_df, CRIME_OUTPUT_PARQUET)
-    except Exception as e:
-        print(f"⚠️ Parquet kayıt atlandı: {e}")
-
-    WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
-    if WRITE_CSV:
-        safe_save_csv(final_df, CRIME_OUTPUT)
-    else:
-        print("ℹ️ CSV yazımı kapalı; yalnız parquet kaydedildi.")
+    safe_save_parquet(final_df, CRIME_OUTPUT_PARQUET)
+    print("ℹ️ CSV tamamen kapatıldı; yalnız parquet kaydedildi.")
 
     try:
         preview_cols = [c for c in [
