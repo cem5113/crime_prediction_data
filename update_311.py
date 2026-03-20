@@ -594,12 +594,12 @@ def main():
         df_new_geo = geotag_to_geoid11(df_new)
 
         keep = [
-            "id","datetime","date","time",
-            "lat","long","latitude","longitude",
-            "category","subcategory","service_details",
-            "agency_responsible","status_description","source",
+            "id", "datetime", "date",
+            "latitude", "longitude",
+            "category", "subcategory", "service_details",
             "GEOID"
         ]
+        
         for c in keep:
             if c not in df_new_geo.columns:
                 df_new_geo[c] = pd.NA
