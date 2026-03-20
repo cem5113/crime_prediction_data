@@ -13,11 +13,11 @@
 # 4) Merge mantığı GEOID bazlıdır; satır granülerliği GEOID × date × hour_range'dir.
 # 5) POI geojson / clean CSV cache mantığı korunur.
 # -----------------------------------------------------------------------------
-
 import os
 import ast
 import json
 import time
+import shutil
 from pathlib import Path
 from collections import defaultdict, Counter
 
@@ -63,6 +63,16 @@ POI_CLEAN_CSV = os.path.join(BASE_DIR, "sf_pois_cleaned_with_geoid.csv")
 POI_RISK_JSON = os.path.join(BASE_DIR, "risky_pois_dynamic.json")
 POI_GEOID_SUMMARY_CSV = os.path.join(BASE_DIR, "poi_geoid_summary.csv")
 
+POI_GEOJSON_RAW_URL = os.getenv(
+    "POI_GEOJSON_RAW_URL",
+    "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois.geojson"
+)
+
+POI_CLEAN_RAW_URL = os.getenv(
+    "POI_CLEAN_RAW_URL",
+    "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois_cleaned_with_geoid.csv"
+)
+
 CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.csv"))
 CRIME_OUT = os.getenv("CRIME_OUT", os.path.join(BASE_DIR, "sf_crime_06.csv"))
 CRIME_OUT_PARQUET = CRIME_OUT.replace(".csv", ".parquet")
@@ -100,6 +110,15 @@ def _read_existing_output(csv_path: str, parquet_path: str) -> pd.DataFrame | No
 def _ensure_parent(path: str):
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
+def _download_file(url: str, out_path: str, timeout: int = 120):
+    _ensure_parent(out_path)
+    print(f"🌐 İndiriliyor: {url}")
+    with requests.get(url, stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            shutil.copyfileobj(r.raw, f)
+    print(f"✅ İndirildi: {out_path}")
+    return out_path
 
 def _safe_save_csv(df: pd.DataFrame, path: str):
     _ensure_parent(path)
@@ -627,31 +646,32 @@ def enrich_crime_by_geoid(df_crime: pd.DataFrame, geoid_poi: pd.DataFrame) -> pd
     out["GEOID"] = _normalize_geoid(out.get("GEOID"), 11)
 
     out = _drop_existing_poi_columns(out)
-
     before = out.shape
 
-    _overlap = (set(out.columns) & set(geoid_poi.columns)) - {"GEOID"}
-    if _overlap:
-        print(f"🧹 POI merge overlap bulundu, geoid_poi'den düşürüldü: {sorted(_overlap)}")
-        geoid_poi = geoid_poi.drop(columns=list(_overlap), errors="ignore")
+    geoid_poi = geoid_poi.copy()
+    geoid_poi["GEOID"] = _normalize_geoid(geoid_poi["GEOID"], 11)
+    geoid_poi = geoid_poi.drop_duplicates(subset=["GEOID"], keep="first")
 
-    out = out.merge(geoid_poi, on="GEOID", how="left")
+    poi_total_map = geoid_poi.set_index("GEOID")["poi_total_count"].to_dict()
+    poi_risk_map = geoid_poi.set_index("GEOID")["poi_risk_score"].to_dict()
+    poi_dom_map = geoid_poi.set_index("GEOID")["poi_dominant_type"].to_dict()
+    poi_total_rng_map = geoid_poi.set_index("GEOID")["poi_total_count_range"].to_dict()
+    poi_risk_rng_map = geoid_poi.set_index("GEOID")["poi_risk_score_range"].to_dict()
 
-    out = out.fillna({
-        "poi_total_count": 0,
-        "poi_risk_score": 0.0,
-        "poi_dominant_type": "No_POI",
-        "poi_total_count_range": "Q1 (0-0)",
-        "poi_risk_score_range": "Q1 (0-0)",
-    })
+    out["poi_total_count"] = out["GEOID"].map(poi_total_map)
+    out["poi_risk_score"] = out["GEOID"].map(poi_risk_map)
+    out["poi_dominant_type"] = out["GEOID"].map(poi_dom_map)
+    out["poi_total_count_range"] = out["GEOID"].map(poi_total_rng_map)
+    out["poi_risk_score_range"] = out["GEOID"].map(poi_risk_rng_map)
 
-    out["poi_total_count"] = pd.to_numeric(out["poi_total_count"], errors="coerce").fillna(0).astype(int)
-    out["poi_risk_score"] = pd.to_numeric(out["poi_risk_score"], errors="coerce").fillna(0.0).astype(float)
-    out["poi_dominant_type"] = out["poi_dominant_type"].astype(str)
+    out["poi_total_count"] = pd.to_numeric(out["poi_total_count"], errors="coerce").fillna(0).astype("int32")
+    out["poi_risk_score"] = pd.to_numeric(out["poi_risk_score"], errors="coerce").fillna(0.0).astype("float32")
+    out["poi_dominant_type"] = out["poi_dominant_type"].fillna("No_POI").astype("string")
+    out["poi_total_count_range"] = out["poi_total_count_range"].fillna("Q1 (0-0)").astype("string")
+    out["poi_risk_score_range"] = out["poi_risk_score_range"].fillna("Q1 (0-0)").astype("string")
 
-    log_delta(before, out.shape, "CRIME ⨯ POI (GEOID-merge)")
+    log_delta(before, out.shape, "CRIME ⨯ POI (GEOID-map)")
     return out
-
 
 # =============================================================================
 # 6) APPEND-ONLY / NEW ROW TESPİTİ
@@ -838,9 +858,14 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     blocks_path = _pick_existing(BLOCK_PATH_1, BLOCK_PATH_2)
     poi_geojson = _pick_existing(POI_GEOJSON_1, POI_GEOJSON_2)
+    
     if poi_geojson is None:
         poi_geojson = os.path.join(BASE_DIR, "sf_pois.geojson")
-
+        try:
+            _download_file(POI_GEOJSON_RAW_URL, poi_geojson)
+        except Exception as e:
+            print(f"⚠️ GitHub raw sf_pois.geojson indirilemedi: {e}")
+    
     poi_geojson = ensure_sf_pois_geojson(
         poi_geojson,
         include_office_craft=INCLUDE_OFFICE_CRAFT,
@@ -852,7 +877,15 @@ if __name__ == "__main__":
     # D) POI CLEAN DOSYASI
     # -------------------------------------------------------------------------
     use_clean = os.path.exists(POI_CLEAN_CSV) and (not FORCE_POI_REFRESH)
-
+    
+    if not use_clean:
+        try:
+            _download_file(POI_CLEAN_RAW_URL, POI_CLEAN_CSV)
+            use_clean = os.path.exists(POI_CLEAN_CSV)
+        except Exception as e:
+            print(f"⚠️ GitHub raw sf_pois_cleaned_with_geoid.csv indirilemedi: {e}")
+            use_clean = False
+    
     if use_clean:
         try:
             gj = json.loads(Path(poi_geojson).read_text(encoding="utf-8", errors="ignore"))
@@ -897,6 +930,13 @@ if __name__ == "__main__":
         reference_new_rows=new_rows[["date"]].copy(),
         years=POI_RISK_LOOKBACK_YEARS,
     )
+    
+    has_lat = any(c in df_crime_full.columns for c in ["latitude", "lat", "y"])
+    has_lon = any(c in df_crime_full.columns for c in ["longitude", "lon", "long", "x"])
+    
+    if ENABLE_DYNAMIC_POI_RISK and not (has_lat and has_lon):
+        print("⚠️ Dinamik POI risk kapatıldı: suç verisinde koordinat kolonları yok.")
+        ENABLE_DYNAMIC_POI_RISK = False
     
     if ENABLE_DYNAMIC_POI_RISK:
         try:
