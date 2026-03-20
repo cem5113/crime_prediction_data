@@ -333,16 +333,6 @@ jobs:
             python -u scripts/update_911.py
           fi
 
-      - name: 02) 911 → sf_crime_01.csv
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        run: |
-          set -e
-          if [ -f update_911.py ]; then
-            python -u update_911.py
-          else
-            python -u scripts/update_911.py
-          fi
-
       - name: 02.fix) Move & normalize 911 CSVs into CRIME_DATA_DIR
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
