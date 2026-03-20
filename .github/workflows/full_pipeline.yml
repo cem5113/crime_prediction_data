@@ -24,7 +24,8 @@ permissions:
 
 concurrency:
   group: full-pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+
 env:
   CRIME_DATA_DIR: ${{ github.workspace }}
   GEOID_LEN: "11"
