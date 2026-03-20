@@ -512,8 +512,19 @@ else:
     log_delta(before, out.shape, "CRIME ⨯ BUS (FULL)")
     log_shape(out, "CRIME (bus enrich sonrası - FULL)")
 
-    safe_save_csv(out, CRIME_OUTPUT)
-    print(f"✅ FULL çıktı → {CRIME_OUTPUT}")
+    WRITE_FULL_CSV = os.getenv("WRITE_FULL_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+    FULL_PARQUET_OUTPUT = CRIME_OUTPUT.replace(".csv", ".parquet")
+
+    # İlk koşuda büyük CSV yerine önce parquet yaz
+    ensure_parent(FULL_PARQUET_OUTPUT)
+    out.to_parquet(FULL_PARQUET_OUTPUT, index=False)
+    print(f"✅ FULL parquet çıktı → {FULL_PARQUET_OUTPUT}")
+
+    if WRITE_FULL_CSV:
+        safe_save_csv(out, CRIME_OUTPUT)
+        print(f"✅ FULL csv çıktı → {CRIME_OUTPUT}")
+    else:
+        print("ℹ️ FULL CSV yazımı kapalı bırakıldı; büyük dosya yazımı atlandı.")
 
 # örnek
 try:
