@@ -84,8 +84,17 @@ def prep_points(df_points: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 # GİRİŞ/ÇIKIŞ YOLLARI (sağlam)
 # -----------------------------------------------------------------------------
-def here(*p): return Path.cwd().joinpath(*p)
-def pexists(p): return Path(p).expanduser().resolve().exists()
+def here(*p): 
+    return Path.cwd().joinpath(*p)
+
+def pexists(p): 
+    return Path(p).expanduser().resolve().exists()
+
+def pick_existing(paths):
+    for p in paths:
+        if p and pexists(p):
+            return str(Path(p).expanduser().resolve())
+    return None
 
 CRIME_DATA_DIR = os.getenv("CRIME_DATA_DIR", "").strip()
 
@@ -138,16 +147,11 @@ GOV_CANDIDATES = [
     str(here("sf_government_buildings.csv")),
 ]
 POLICE_CANDIDATES = [p for p in POLICE_CANDIDATES if p]
-GOV_CANDIDATES    = [p for p in GOV_CANDIDATES if p]
-
-def pick_existing(paths):
-    for p in paths:
-        if pexists(p):
-            return p
-    return None
+GOV_CANDIDATES = [p for p in GOV_CANDIDATES if p]
 
 print(f"📂 Seçilen giriş: {CRIME_IN}")
-print(f"📂 Yazılacak çıkış: {CRIME_OUT}")
+print(f"📂 Yazılacak parquet çıkış: {CRIME_OUT_PARQUET}")
+print(f"📂 Yazılacak csv çıkış: {CRIME_OUT_CSV}")
 
 # -----------------------------------------------------------------------------
 # VERİ OKU
@@ -172,12 +176,6 @@ CENTROID_CANDIDATES = [
     str(here("crime_prediction_data", "tract_centroids_sf.csv")),
 ]
 CENTROID_CANDIDATES = [p for p in CENTROID_CANDIDATES if p]
-
-def pick_existing(paths):
-    for p in paths:
-        if p and Path(p).expanduser().resolve().exists():
-            return str(Path(p).expanduser().resolve())
-    return None
 
 cent_path = pick_existing(CENTROID_CANDIDATES)
 if cent_path:
