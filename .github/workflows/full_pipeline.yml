@@ -501,6 +501,8 @@ jobs:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
           CRIME_IN: "${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv"
           CRIME_OUT: "${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv"
+          ENABLE_DYNAMIC_POI_RISK: "0"
+          WRITE_CSV: "0"
         run: |
           set -euo pipefail
 
@@ -526,12 +528,21 @@ jobs:
         run: |
           set -euo pipefail
           D="${CRIME_DATA_DIR}"
-          F="${D}/sf_crime_06.csv"
-          echo "→ Beklenen: $F"
+          FCSV="${D}/sf_crime_06.csv"
+          FPQ="${D}/sf_crime_06.parquet"
+          echo "→ Beklenen: $FCSV veya $FPQ"
           ls -lah "$D" | sed -n '1,120p' || true
-          [ -f "$F" ] || { echo "❌ sf_crime_06.csv yok! POI adımının DAILY_OUT/CRIME_OUT loglarını kontrol et."; exit 2; }
-          echo "---- sf_crime_06.csv (head) ----"
-          head -n 5 "$F" || true
+
+          if [ -f "$FCSV" ]; then
+            echo "✅ sf_crime_06.csv bulundu"
+            head -n 5 "$FCSV" || true
+          elif [ -f "$FPQ" ]; then
+            echo "✅ sf_crime_06.parquet bulundu"
+            ls -lah "$FPQ" || true
+          else
+            echo "❌ sf_crime_06.csv / sf_crime_06.parquet yok!"
+            exit 2
+          fi
 
       - name: 08) Polis & Devlet binaları → sf_crime_07.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -544,9 +555,18 @@ jobs:
           echo "CWD=$(pwd)"
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" | sed -n '1,160p' || true
-      
+    
           # input kontrol
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_06.csv" || { echo "❌ sf_crime_06.csv yok"; exit 2; }
+          if [ -f "${CRIME_DATA_DIR}/sf_crime_06.csv" ]; then
+            echo "✅ sf_crime_06.csv bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_06.csv"
+          elif [ -f "${CRIME_DATA_DIR}/sf_crime_06.parquet" ]; then
+            echo "✅ sf_crime_06.parquet bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_06.parquet"
+          else
+            echo "❌ sf_crime_06.csv / sf_crime_06.parquet yok"
+            exit 2
+          fi
       
           # Perşembe: refresh=1, diğer günler: cache=0  (SF timezone)
           DOW=$(TZ=America/Los_Angeles date +%u)  # 1=Mon ... 4=Thu ... 7=Sun
