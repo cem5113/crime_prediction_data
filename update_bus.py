@@ -277,8 +277,14 @@ print(f"🧩 CRIME_INPUT farklı GEOID sayısı: {crime_geoids.size}")
 crime_out_exists = os.path.exists(CRIME_OUTPUT)
 bus_cols_expected = ["distance_to_bus", "bus_stop_count", "distance_to_bus_range", "bus_stop_count_range"]
 
+crime_old = None
+crime_new = None
+RUN_MODE = "FULL"
+
 if INCREMENTAL and crime_out_exists:
-    print("🧠 INCREMENTAL mod açık ve sf_crime_04.csv mevcut → sadece yeni satırlar eklenecek.")
+    print("🧠 INCREMENTAL mod açık ve sf_crime_04.csv mevcut.")
+    print("🧩 Kural: eski satırlar korunur, yalnızca yeni crime satırları güncel bus snapshot ile enrich edilir.")
+
     crime_old = pd.read_csv(CRIME_OUTPUT, low_memory=False)
     log_shape(crime_old, "CRIME_OUTPUT (mevcut)")
 
@@ -286,33 +292,35 @@ if INCREMENTAL and crime_out_exists:
         raise KeyError("❌ Mevcut sf_crime_04.csv içinde GEOID yok.")
     crime_old["GEOID"] = normalize_geoid(crime_old["GEOID"], DEFAULT_GEOID_LEN)
 
-    # eski dosyada bus kolonları yoksa: full backfill daha güvenli
+    # mevcut çıktı bus kolonlarını tam içermiyorsa 1 defalık full backfill
     if not all(c in crime_old.columns for c in bus_cols_expected):
-        print("⚠️ Mevcut çıktı bus kolonlarını tam içermiyor → FULL backfill yapılacak (1 defalık).")
+        print("⚠️ Mevcut çıktı bus kolonlarını tam içermiyor → FULL backfill yapılacak.")
         crime_old = None
+        crime_new = None
+        RUN_MODE = "FULL"
+
     else:
-        # yeni satırları bul (KEYS bazlı)
         old_keys = crime_old[KEYS].drop_duplicates()
         new_keys = crime_in[KEYS].drop_duplicates()
 
         marker = new_keys.merge(old_keys, on=KEYS, how="left", indicator=True)
-        only_new_keys = marker.loc[marker["_merge"] == "left_only", KEYS]
+        only_new_keys = marker.loc[marker["_merge"] == "left_only", KEYS].copy()
 
         n_new = len(only_new_keys)
         print(f"➕ Yeni satır anahtar sayısı: {n_new}")
 
         if n_new == 0:
-            print("✅ Yeni satır yok → mevcut sf_crime_04.csv aynen korunuyor.")
+            print("✅ Yeni crime satırı yok → bus indirme / hesaplama atlandı.")
+            print("✅ Eski sf_crime_04 aynen korunuyor.")
             raise SystemExit(0)
 
-        # sadece yeni satırlar
         crime_new = crime_in.merge(only_new_keys, on=KEYS, how="inner")
         log_shape(crime_new, "CRIME_NEW (sadece yeni satırlar)")
 
-        # aşağıda bus_feat üretilecek/okunacak, sadece crime_new'e merge yapılacak
+        RUN_MODE = "INCREMENTAL"
+
 else:
-    crime_old = None
-    crime_new = None
+    RUN_MODE = "FULL"
 
 # =========================
 # 3) bus_feat'i hazırla (cache veya full)
