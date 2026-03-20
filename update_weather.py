@@ -28,7 +28,10 @@ pd.options.mode.copy_on_write = True
 SF_TZ = ZoneInfo("America/Los_Angeles")
 
 DATA_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").rstrip("/")
+
+WEATHER_PARQUET = os.getenv("WEATHER_PARQUET", os.path.join(DATA_DIR, "sf_weather_5years.parquet"))
 WEATHER_CSV = os.getenv("WEATHER_CSV", os.path.join(DATA_DIR, "sf_weather_5years.csv"))
+WRITE_WEATHER_CSV = os.getenv("WRITE_WEATHER_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
 
 UPLOAD_WEATHER_TO_GH = os.getenv("UPLOAD_WEATHER_TO_GH", "0") in ("1", "true", "True")
 PROBE_GH_STATUS = os.getenv("PROBE_GH_STATUS", "1") in ("1", "true", "True")
@@ -227,16 +230,24 @@ def fetch_weather(lat: float, lon: float, start_d: date, end_d: date) -> pd.Data
     df.rename(columns={"time": "date"}, inplace=True)
     return normalize_weather_columns(df)
 
-def read_existing_weather(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        return normalize_weather_columns(pd.DataFrame())
+def read_existing_weather(parquet_path: str, csv_path: str) -> pd.DataFrame:
+    if os.path.exists(parquet_path):
+        try:
+            ex = pd.read_parquet(parquet_path)
+            print(f"📥 Mevcut weather parquet bulundu: {parquet_path}")
+            return normalize_weather_columns(ex)
+        except Exception as e:
+            print("⚠️ Mevcut weather parquet okunamadı:", e)
 
-    try:
-        ex = pd.read_csv(path, low_memory=False)
-        return normalize_weather_columns(ex)
-    except Exception as e:
-        print("⚠️ Mevcut weather dosyası okunamadı, baştan çekilecek:", e)
-        return normalize_weather_columns(pd.DataFrame())
+    if os.path.exists(csv_path):
+        try:
+            ex = pd.read_csv(csv_path, low_memory=False)
+            print(f"📥 Mevcut weather CSV bulundu: {csv_path}")
+            return normalize_weather_columns(ex)
+        except Exception as e:
+            print("⚠️ Mevcut weather CSV okunamadı:", e)
+
+    return normalize_weather_columns(pd.DataFrame())
 
 def fill_missing_prev_year_same_week(allw: pd.DataFrame) -> pd.DataFrame:
     """
@@ -381,7 +392,8 @@ def enrich_crime_with_weather(crime_path: str, out_path: str, weather_df: pd.Dat
     print(f"✅ Weather eklendi → {out_path} | Satır: {len(out):,} | Sütun: {out.shape[1]}")
     
     if WRITE_CSV:
-        out.to_csv(CRIME_OUT_CSV, index=False)
+        os.makedirs(os.path.dirname(CRIME_OUT_CSV), exist_ok=True)
+        out.to_csv(CRIME_OUT_CSV, index=False, encoding="utf-8-sig")
         print(f"✅ CSV de yazıldı → {CRIME_OUT_CSV}")
     else:
         print("ℹ️ CSV yazımı kapalı; yalnız parquet kaydedildi.")
@@ -491,6 +503,14 @@ def get_weather_df() -> pd.DataFrame:
     if _WEATHER_LATEST is not None:
         return _WEATHER_LATEST
 
+    if os.path.exists(WEATHER_PARQUET):
+        try:
+            df = pd.read_parquet(WEATHER_PARQUET)
+            _WEATHER_LATEST = normalize_weather_columns(df)
+            return _WEATHER_LATEST
+        except Exception:
+            pass
+
     if os.path.exists(WEATHER_CSV):
         try:
             df = pd.read_csv(WEATHER_CSV, low_memory=False)
@@ -505,7 +525,7 @@ def get_weather_df() -> pd.DataFrame:
 # =====================================================================================
 # WEATHER GÜNCELLE
 # =====================================================================================
-existing = read_existing_weather(WEATHER_CSV)
+existing = read_existing_weather(WEATHER_PARQUET, WEATHER_CSV)
 last_date = existing["date"].max() if not existing.empty else None
 fetch_start = (last_date + timedelta(days=1)) if pd.notna(last_date) else win_start
 fetch_end = win_end
@@ -543,9 +563,24 @@ if wx_cols:
     print("🔎 Weather kolonları NaN sayıları:")
     print(allw[wx_cols].isna().sum().to_string())
 
-os.makedirs(os.path.dirname(WEATHER_CSV), exist_ok=True)
-allw.to_csv(WEATHER_CSV, index=False, encoding="utf-8", lineterminator="\n")
-print(f"💾 Weather kaydedildi: {WEATHER_CSV} — {len(allw)} satır, {allw['date'].min()} → {allw['date'].max()}")
+os.makedirs(os.path.dirname(WEATHER_PARQUET), exist_ok=True)
+
+tmp_weather_parquet = WEATHER_PARQUET + ".tmp.parquet"
+allw.to_parquet(
+    tmp_weather_parquet,
+    index=False,
+    engine="pyarrow",
+    compression="snappy"
+)
+os.replace(tmp_weather_parquet, WEATHER_PARQUET)
+
+print(f"💾 Weather parquet kaydedildi: {WEATHER_PARQUET} — {len(allw)} satır, {allw['date'].min()} → {allw['date'].max()}")
+
+if WRITE_WEATHER_CSV:
+    allw.to_csv(WEATHER_CSV, index=False, encoding="utf-8", lineterminator="\n")
+    print(f"💾 Weather CSV de kaydedildi: {WEATHER_CSV}")
+else:
+    print("ℹ️ Weather CSV yazımı kapalı; yalnız parquet kaydedildi.")
 
 # cache
 _WEATHER_LATEST = allw.copy()
