@@ -490,24 +490,23 @@ def merge_bus(df: pd.DataFrame, bus_feat: pd.DataFrame) -> pd.DataFrame:
         out["bus_stop_count"] = pd.to_numeric(out["bus_stop_count"], errors="coerce").fillna(0).astype(int)
     return out
 
-if INCREMENTAL and crime_out_exists and (crime_old is not None):
-    # sadece yeni satırlara bus ekle
+if RUN_MODE == "INCREMENTAL":
     before = crime_new.shape
     crime_new2 = merge_bus(crime_new, bus_feat)
     log_delta(before, crime_new2.shape, "CRIME_NEW ⨯ BUS (incremental)")
     log_shape(crime_new2, "CRIME_NEW (bus enrich)")
 
-    # eskiyi aynen koru + yeni ekle
+    # eski satırlar eski haliyle korunur
+    # yeni satırlar güncel bus snapshot ile eklenir
     out = pd.concat([crime_old, crime_new2], ignore_index=True)
 
-    # (opsiyonel) aynı key tekrar ettiyse "son geleni" tut
+    # aynı key tekrar ederse yeni geleni tut
     out = out.drop_duplicates(subset=KEYS, keep="last")
 
     safe_save_csv(out, CRIME_OUTPUT)
     print(f"✅ INCREMENTAL güncelleme tamam → {CRIME_OUTPUT}")
 
 else:
-    # FULL backfill
     before = crime_in.shape
     out = merge_bus(crime_in, bus_feat)
     log_delta(before, out.shape, "CRIME ⨯ BUS (FULL)")
