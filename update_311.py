@@ -85,22 +85,9 @@ def normalize_geoid_11(x):
 def save_atomic(df, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    df.to_csv(tmp, index=False, encoding="utf-8-sig")
+    df.to_csv(tmp, index=False, encoding="utf-8")
     os.replace(tmp, path)
 
-def save_parquet_atomic(df: pd.DataFrame, path: str):
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    tmp = path + ".tmp.parquet"
-
-    df2 = df.copy()
-    for c in df2.select_dtypes(include=["float64"]).columns:
-        df2[c] = pd.to_numeric(df2[c], downcast="float")
-    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
-        df2[c] = pd.to_numeric(df2[c], downcast="integer")
-
-    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
-    os.replace(tmp, path)
-    
 def save_parquet_atomic(df: pd.DataFrame, path: str):
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     tmp = path + ".tmp.parquet"
@@ -583,8 +570,12 @@ def main():
 
     raw_path, source_kind = resolve_existing_raw_path()
     
-    # aggregate yolu her durumda SAVE_DIR altında dursun
-    agg_path = os.path.join(SAVE_DIR, AGG_BASENAME)
+    # canonical output path’ler
+    canonical_raw_csv = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
+    canonical_raw_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet")
+    
+    canonical_agg_csv = os.path.join(SAVE_DIR, AGG_BASENAME)
+    canonical_agg_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet")
     
     df_raw = load_existing_raw(raw_path, source_kind)
     start_date, _mode = decide_start_date(df_raw, source_kind)
@@ -646,21 +637,23 @@ def main():
         df_raw["GEOID"] = normalize_geoid(df_raw["GEOID"], DEFAULT_GEOID_LEN)
         df_raw["id"] = df_raw["id"].astype(str)
         df_raw = df_raw.drop_duplicates(subset=["id"], keep="last")
-
+    
         df_raw["date"] = pd.to_datetime(df_raw["date"], errors="coerce").dt.date
         min_date = start_date if BACKFILL_DAYS > 0 else DEFAULT_START
         df_raw = df_raw[df_raw["date"] >= min_date]
-
+    
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
         df_raw = df_raw.sort_values("datetime")
-
-        save_atomic(df_raw, raw_path)
-        save_parquet_atomic(df_raw, os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet"))
-        save_atomic(df_raw, os.path.join(SAVE_DIR, RAW_311_NAME_Y))
+    
+        canonical_raw_csv = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
+        canonical_raw_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years_y.parquet")
+    
+        # SADECE raw/event-level path’lere yaz
+        save_atomic(df_raw, canonical_raw_csv)
+        save_parquet_atomic(df_raw, canonical_raw_parquet)
         save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311_Y))
-        save_atomic(df_raw, os.path.join(SAVE_DIR, LEGACY_311))
-
-        print(f"✅ Ham 311 kaydedildi: {os.path.abspath(raw_path)}")
+    
+        print(f"✅ Ham 311 kaydedildi: {os.path.abspath(canonical_raw_csv)}")
         log_shape(df_raw, "311 raw")
     else:
         print("⚠️ Ham 311 boş.")
@@ -669,19 +662,22 @@ def main():
             "category","subcategory","service_details",
             "agency_responsible","status_description","source","GEOID"
         ]
-        for p in [RAW_311_NAME_Y, LEGACY_311_Y, LEGACY_311]:
+        for p in [RAW_311_NAME_Y, LEGACY_311_Y]:
             save_atomic(pd.DataFrame(columns=empty_raw_cols), os.path.join(SAVE_DIR, p))
 
     # ---- Aggregate kaydet
     grouped = build_311_aggregate(df_raw)
     
-    save_atomic(grouped, agg_path)
-    save_parquet_atomic(grouped, os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet"))
-    save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
+    canonical_agg_csv = os.path.join(SAVE_DIR, AGG_BASENAME)
+    canonical_agg_parquet = os.path.join(SAVE_DIR, "sf_311_last_5_years.parquet")
+    
+    save_atomic(grouped, canonical_agg_csv)
+    save_parquet_atomic(grouped, canonical_agg_parquet)
+    
     if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
         save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
-
-    print(f"📁 311 özet yazıldı: {os.path.abspath(agg_path)}")
+    
+    print(f"📁 311 özet yazıldı: {os.path.abspath(canonical_agg_csv)}")
     log_shape(grouped, "311 aggregate")
 
     # ---- Crime merge: sf_crime_01 -> sf_crime_02
@@ -745,7 +741,7 @@ def main():
                 ]
                 for c in fallback_cols:
                     crime[c] = 0
-                save_atomic(crime, crime_02_path)
+                save_parquet_atomic(crime, crime_02_path)
                 print("✅ Passthrough yazıldı.")
         except Exception as ee:
             print(f"❌ Passthrough da başarısız: {ee}")
