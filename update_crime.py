@@ -59,13 +59,9 @@ blocks_path = os.path.join(save_dir, "sf_census_blocks.geojson")
 
 # ---- OUTPUTS ----
 EVENT_CSV_NAME = os.getenv("EVENT_CSV_NAME", "sf_crime_x.csv")
-PANEL_PARQUET_NAME = os.getenv("PANEL_PARQUET_NAME", "sf_crime_y.parquet")
 PANEL_CSV_NAME = os.getenv("PANEL_CSV_NAME", "sf_crime_y.csv")
 
-WRITE_PANEL_CSV = os.getenv("WRITE_PANEL_CSV", "0").lower() in ("1", "true", "yes", "on")
-
 event_csv_path = os.path.join(save_dir, EVENT_CSV_NAME)
-panel_parquet_path = os.path.join(save_dir, PANEL_PARQUET_NAME)
 panel_csv_path = os.path.join(save_dir, PANEL_CSV_NAME)
 
 # ---- GitHub Actions artifact (sf_crime_y.csv) ayarları ----
@@ -105,29 +101,6 @@ def safe_save(df: pd.DataFrame, path: str) -> None:
         df.to_csv(backup_path, index=False, encoding="utf-8-sig")
         print(f"📁 Yedek dosya: {backup_path}")
 
-def safe_save_parquet(df: pd.DataFrame, path: str) -> None:
-    try:
-        Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
-
-        df2 = df.copy()
-
-        for c in df2.select_dtypes(include=["float64"]).columns:
-            df2[c] = pd.to_numeric(df2[c], downcast="float")
-        for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
-            df2[c] = pd.to_numeric(df2[c], downcast="integer")
-
-        tmp = path + ".tmp.parquet"
-        df2.to_parquet(
-            tmp,
-            index=False,
-            engine="pyarrow",
-            compression="snappy"
-        )
-        os.replace(tmp, path)
-    except Exception as e:
-        print(f"❌ Parquet kaydedilemedi: {path}\n{e}")
-        raise
-        
 def is_lfs_pointer(p: Path) -> bool:
     try:
         head = p.read_text(errors="ignore")[:200]
@@ -947,215 +920,6 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
 
     out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
     return out
-
-EVENT_FEATURES = [
-    "event_recent_mean_7",
-    "event_recent_mean_28",
-    "event_recent_std_14",
-    "event_same_hour_last_week",
-    "event_same_hour_last_4week_mean",
-    "event_spike_recent_7",
-    "event_spike_recent_28",
-    "event_extreme_recent_14",
-    "event_pressure_score",
-]
-
-# ============================================================
-# ✅ EVENT-LIKE PRESSURE FEATURES (LEAK-FREE, PANEL-LEVEL)
-#   - Gerçek event datası olmadığı için
-#     geçmiş suç anomalileri + çağrı baskısından
-#     event-benzeri sinyal üretir
-#   - Sadece geçmişe bakar
-# ============================================================
-def add_event_pressure_features(panel_df: pd.DataFrame) -> pd.DataFrame:
-    out = panel_df.copy()
-
-    required = ["GEOID", "date", "hour_range", "y_count"]
-    for c in required:
-        if c not in out.columns:
-            raise ValueError(f"panel_df içinde gerekli kolon yok: {c}")
-
-    out["GEOID"] = out["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out = out.sort_values(["GEOID", "date", "hour_range"]).reset_index(drop=True)
-
-    def grp_shift_roll_mean(s: pd.Series, by: pd.Series, win: int, minp: int):
-        return (
-            s.groupby(by).shift(1)
-             .groupby(by)
-             .rolling(win, min_periods=minp)
-             .mean()
-             .reset_index(level=0, drop=True)
-        )
-
-    def grp_shift_roll_std(s: pd.Series, by: pd.Series, win: int, minp: int):
-        return (
-            s.groupby(by).shift(1)
-             .groupby(by)
-             .rolling(win, min_periods=minp)
-             .std()
-             .reset_index(level=0, drop=True)
-        )
-
-    by_geoid = out["GEOID"]
-    y = out["y_count"].astype(float)
-
-    out["event_recent_mean_7"] = grp_shift_roll_mean(y, by_geoid, 7, 3)
-    out["event_recent_mean_28"] = grp_shift_roll_mean(y, by_geoid, 28, 7)
-    out["event_recent_std_14"] = grp_shift_roll_std(y, by_geoid, 14, 5)
-
-    by_geoid_hr = out["GEOID"].astype(str) + "|" + out["hour_range"].astype(str)
-    out["event_same_hour_last_week"] = y.groupby(by_geoid_hr).shift(7)
-    out["event_same_hour_last_4week_mean"] = (
-        y.groupby(by_geoid_hr).shift(1)
-         .groupby(by_geoid_hr)
-         .rolling(4, min_periods=2)
-         .mean()
-         .reset_index(level=0, drop=True)
-    )
-
-    past_mean_7 = grp_shift_roll_mean(y, by_geoid, 7, 3)
-    past_std_14 = grp_shift_roll_std(y, by_geoid, 14, 5)
-
-    raw_spike = (y > (past_mean_7 * 1.5)).astype(int)
-    raw_extreme = (((y - past_mean_7) / (past_std_14 + 1e-5)) > 2).astype(int)
-
-    out["event_spike_recent_7"] = (
-        raw_spike.groupby(by_geoid).shift(1)
-        .groupby(by_geoid)
-        .rolling(7, min_periods=3)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
-
-    out["event_spike_recent_28"] = (
-        raw_spike.groupby(by_geoid).shift(1)
-        .groupby(by_geoid)
-        .rolling(28, min_periods=7)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
-
-    out["event_extreme_recent_14"] = (
-        raw_extreme.groupby(by_geoid).shift(1)
-        .groupby(by_geoid)
-        .rolling(14, min_periods=5)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
-
-    out["event_pressure_score"] = (
-        0.30 * np.log1p(out["event_recent_mean_7"].fillna(0)) +
-        0.20 * np.log1p(out["event_recent_mean_28"].fillna(0)) +
-        0.15 * np.log1p(out["event_same_hour_last_week"].fillna(0)) +
-        0.10 * np.log1p(out["event_same_hour_last_4week_mean"].fillna(0)) +
-        0.15 * out["event_spike_recent_7"].fillna(0) +
-        0.05 * out["event_spike_recent_28"].fillna(0) +
-        0.05 * out["event_extreme_recent_14"].fillna(0)
-    )
-
-    event_cols = [
-        "event_recent_mean_7",
-        "event_recent_mean_28",
-        "event_recent_std_14",
-        "event_same_hour_last_week",
-        "event_same_hour_last_4week_mean",
-        "event_spike_recent_7",
-        "event_spike_recent_28",
-        "event_extreme_recent_14",
-        "event_pressure_score",
-    ]
-
-    for c in event_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    return out
-
-# ============================================================
-# ✅ CRIME MOMENTUM FEATURES (LEAK-FREE, PANEL-LEVEL)
-#   - 1d, 3d, 7d geçmiş suç yoğunluğu
-#   - momentum_1d = crime_1d - crime_3d
-#   - momentum_3d = crime_3d - crime_7d
-#   - acceleration = momentum_1d - momentum_3d
-#
-# Not:
-#   - 3 saatlik slot yapısına göre:
-#       1 gün = 8 slot
-#       3 gün = 24 slot
-#       7 gün = 56 slot
-#   - shift(1) kullanıldığı için current slot leakage yok
-# ============================================================
-def add_crime_momentum_features(panel_df: pd.DataFrame) -> pd.DataFrame:
-    out = panel_df.copy()
-
-    required = ["GEOID", "date", "hour_range", "slot_start_dt", "y_count"]
-    for c in required:
-        if c not in out.columns:
-            raise ValueError(f"panel_df içinde gerekli kolon yok: {c}")
-
-    out["GEOID"] = out["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["slot_start_dt"] = pd.to_datetime(out["slot_start_dt"], errors="coerce")
-    out["y_count"] = pd.to_numeric(out["y_count"], errors="coerce").fillna(0).astype(float)
-
-    out = out.sort_values(["GEOID", "slot_start_dt"]).reset_index(drop=True)
-
-    # 3 saatlik slot sayıları
-    WIN_1D = 8
-    WIN_3D = 24
-    WIN_7D = 56
-
-    by_geoid = out["GEOID"]
-
-    # geçmiş toplamlar (current slot HARİÇ)
-    out["crime_1d"] = (
-        out.groupby("GEOID")["y_count"]
-           .shift(1)
-           .rolling(WIN_1D, min_periods=1)
-           .sum()
-           .reset_index(level=0, drop=True)
-    )
-
-    out["crime_3d"] = (
-        out.groupby("GEOID")["y_count"]
-           .shift(1)
-           .rolling(WIN_3D, min_periods=1)
-           .sum()
-           .reset_index(level=0, drop=True)
-    )
-
-    out["crime_7d"] = (
-        out.groupby("GEOID")["y_count"]
-           .shift(1)
-           .rolling(WIN_7D, min_periods=1)
-           .sum()
-           .reset_index(level=0, drop=True)
-    )
-
-    # momentum
-    out["momentum_1d"] = out["crime_1d"] - out["crime_3d"]
-    out["momentum_3d"] = out["crime_3d"] - out["crime_7d"]
-    out["acceleration"] = out["momentum_1d"] - out["momentum_3d"]
-
-    # opsiyonel: normalize edilmiş versiyonlar (çok faydalı olabilir)
-    out["momentum_ratio_1d_3d"] = out["crime_1d"] / (out["crime_3d"] + 1e-6)
-    out["momentum_ratio_3d_7d"] = out["crime_3d"] / (out["crime_7d"] + 1e-6)
-
-    feat_cols = [
-        "crime_1d", "crime_3d", "crime_7d",
-        "momentum_1d", "momentum_3d", "acceleration",
-        "momentum_ratio_1d_3d", "momentum_ratio_3d_7d",
-    ]
-
-    for c in feat_cols:
-        out[c] = (
-            pd.to_numeric(out[c], errors="coerce")
-              .replace([np.inf, -np.inf], np.nan)
-              .fillna(0)
-              .astype("float32")
-        )
-
-    return out
     
 # ============================================================
 # ✅ PANEL (GRID) ÜRET — sf_crime_y.csv
@@ -1264,13 +1028,6 @@ panel["y_count"] = panel["y_count"].fillna(0).astype("int16")
 panel["y_event"] = panel["y_event"].fillna(0).astype("int8")
 panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
 
-# ✅ event-like pressure features
-panel = add_event_pressure_features(panel)
-print("✅ event-like pressure features eklendi")
-
-panel = add_crime_momentum_features(panel)
-print("✅ crime momentum features eklendi")
-
 panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
 panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
 panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
@@ -1280,24 +1037,13 @@ panel["season"] = panel["month"].map(season_map).astype("category")
 
 # 4) Yaz
 panel = panel.drop(columns=["slot_start_hour"], errors="ignore")
-
-print(f"🧾 PANEL output hedefi (parquet): {panel_parquet_path}")
-safe_save_parquet(panel, panel_parquet_path)
-print(f"💾 Panel (sf_crime_y) parquet yazıldı → {panel_parquet_path} | rows={len(panel):,}")
-
-if WRITE_PANEL_CSV:
-    print(f"🧾 PANEL output hedefi (csv): {panel_csv_path}")
-    safe_save(panel, panel_csv_path)
-    print(f"💾 Panel (sf_crime_y) csv yazıldı → {panel_csv_path} | rows={len(panel):,}")
-else:
-    print("ℹ️ WRITE_PANEL_CSV=0 → sf_crime_y.csv yazılmadı.")
+print(f"🧾 PANEL output hedefi: {panel_csv_path}")
+safe_save(panel, panel_csv_path)
+print(f"💾 Panel (sf_crime_y) yazıldı → {panel_csv_path} | rows={len(panel):,}")
 
 try:
-    _tmp = pd.read_parquet(panel_parquet_path)
-    if "GEOID" in _tmp.columns:
-        _tmp["GEOID"] = _tmp["GEOID"].astype(str)
-
-    print("\n📄 [QC] Dosyadan okunan sf_crime_y.parquet özeti")
+    _tmp = pd.read_csv(panel_csv_path, dtype={"GEOID": str}, low_memory=False)
+    print("\n📄 [QC] Dosyadan okunan sf_crime_y.csv özeti")
     print(f"🧮 Shape(file): {_tmp.shape[0]} satır × {_tmp.shape[1]} sütun")
 
     nan_counts_file = _tmp.isna().sum().sort_values(ascending=False)
@@ -1309,28 +1055,25 @@ try:
     with pd.option_context("display.max_columns", 200, "display.width", 200):
         print(_tmp.sample(n=min(5, len(_tmp)), random_state=42))
 except Exception as e:
-    print("⚠️ [QC] Dosyadan parquet okuma kontrolü başarısız:", e)
-
+    print("⚠️ [QC] Dosyadan okuma kontrolü başarısız:", e)
+    
 try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
 
-    # Artifact çıktıları
+    # Artifact çıktıları (ikisi de)
     shutil.copy2(event_out, f"crime_prediction_data/{Path(event_csv_path).name}")
-    shutil.copy2(panel_parquet_path, f"crime_prediction_data/{Path(panel_parquet_path).name}")
+    shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
+    print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.csv")
 
-    if WRITE_PANEL_CSV and os.path.exists(panel_csv_path):
-        shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
-        print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.parquet + sf_crime_y.csv")
-    else:
-        print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.parquet")
-
-    # Repo içine base ezme kapalı; isterse yalnız parquet kopyalansın
+    # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI) — DİKKAT:
+    # Eğer bunu açarsan, HANGİSİNİ base sayacağını seçmelisin.
+    # Ben güvenli tarafta kalıp paneli/base olarak ezmeyi önermiyorum.
     if WRITE_BASE_TO_REPO:
-        shutil.copy2(panel_parquet_path, "crime_prediction_data/sf_crime_y.parquet")
-        shutil.copy2(panel_parquet_path, "sf_crime_y.parquet")
-        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime_y.parquet repo workspace içine de kopyalandı.")
+        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime.csv")
+        shutil.copy2(panel_csv_path, "sf_crime.csv")
+        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv panel ile güncellendi (repo workspace).")
     else:
-        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo base dosyaları EZİLMEDİ (sadece artifact yazıldı).")
+        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece artifact yazıldı).")
 
 except Exception as e:
     print("Kopya uyarısı:", e)
