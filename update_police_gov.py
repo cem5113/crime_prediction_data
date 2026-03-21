@@ -11,7 +11,6 @@ import pandas as pd
 import requests
 from sklearn.neighbors import BallTree
 
-
 # =============================================================================
 # LOG / YARDIMCI
 # =============================================================================
@@ -45,14 +44,12 @@ def safe_save_csv(df: pd.DataFrame, path: str):
         except Exception as e2:
             print(f"❌ Yedek de kaydedilemedi: {e2}")
 
-
 def find_col(ci_names, candidates):
     m = {c.lower(): c for c in ci_names}
     for cand in candidates:
         if cand.lower() in m:
             return m[cand.lower()]
     return None
-
 
 def normalize_geoid(series: pd.Series, target_len: int = 11) -> pd.Series:
     s = pd.Series(series).astype(str).str.extract(r"(\d+)", expand=False).fillna("")
