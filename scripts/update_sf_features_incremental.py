@@ -23,12 +23,12 @@ from datetime import datetime, timezone
 # =========================================================
 # CONFIG
 # =========================================================
-BASE_DIR = "/content/drive/MyDrive/crime_inputs"
+BASE_DIR = "/content/crime_prediction_data"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 CENSUS_PATH = f"{BASE_DIR}/sf_census_blocks.geojson"
 
-CRIME_INPUT_PATH = f"{BASE_DIR}/sf_crime_base.parquet"
+CRIME_INPUT_PATH = f"{BASE_DIR}/sf_crime_09.parquet"
 CRIME_OUTPUT_PATH = f"{BASE_DIR}/sf_crime_features.parquet"
 
 WRITE_CSV = True
