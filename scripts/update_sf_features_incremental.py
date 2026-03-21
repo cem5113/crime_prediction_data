@@ -1,263 +1,53 @@
 # =========================================================
-# update_sf_features_incremental.py
-#
-# AMAÇ
-# - 4 veri setini cache/incremental mantıkla yönetmek
-# - Her çalışmada hepsini baştan indirmemek
-# - Son indirilen tarih / son max kayıt tarihine göre güncellemek
-#
-# ÇIKTILAR
-#   sf_business_landuse.csv
-#   sf_building_permits_vacancy.csv
-#   sf_traffic_transport.csv
-#   sf_street_environment.csv
-#
-# NOT
-# - Socrata dataset id ve tarih kolonları ENV ile override edilebilir
-# - GEOID eşleme için sf_census_blocks.geojson gerekir
+# ✅ INCREMENTAL FEATURE UPDATE + ONLY-NEW-CRIME ENRICH
+# business  -> GEOID
+# building  -> GEOID + date
+# traffic   -> ÇIKARILDI
+# street    -> ÇIKARILDI
 # =========================================================
 
+!pip -q install geopandas pyarrow requests shapely fiona
+
 import os
+import re
 import json
 import time
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
-
+import requests
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-import requests
+
+from pathlib import Path
+from datetime import datetime, timezone
 
 # =========================================================
-# küçük yardımcılar
+# CONFIG
 # =========================================================
-def log(msg: str):
-    print(msg, flush=True)
+BASE_DIR = "/content/drive/MyDrive/crime_inputs"
+os.makedirs(BASE_DIR, exist_ok=True)
 
-def log_shape(df: pd.DataFrame, label: str):
-    r, c = df.shape
-    print(f"📊 {label}: {r} satır × {c} sütun")
+CENSUS_PATH = f"{BASE_DIR}/sf_census_blocks.geojson"
 
-def ensure_parent(path):
-    Path(str(path)).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+CRIME_INPUT_PATH = f"{BASE_DIR}/sf_crime_base.parquet"
+CRIME_OUTPUT_PATH = f"{BASE_DIR}/sf_crime_features.parquet"
 
-def sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    obj_cols = df.select_dtypes(include=["object"]).columns
-    repl = {
-        "–": "-", "−": "-", "≤": "<=", "≥": ">=",
-        "â€“": "-", "â€": "-", "â‰¤": "<=", "â‰¥": ">=",
-    }
-    for c in obj_cols:
-        df[c] = df[c].replace(repl, regex=False)
-    return df
+WRITE_CSV = True
+HEADERS = {}
+GEOID_LEN = 11
 
-def read_table(parquet_path: str, csv_path: str) -> pd.DataFrame:
-    if os.path.exists(parquet_path):
-        log(f"📥 Parquet bulundu: {parquet_path}")
-        return pd.read_parquet(parquet_path)
-    if os.path.exists(csv_path):
-        log(f"📥 CSV bulundu: {csv_path}")
-        return pd.read_csv(csv_path, low_memory=False)
-    return pd.DataFrame()
-    
-def safe_save_csv(df: pd.DataFrame, path: str):
-    ensure_parent(path)
-    tmp = str(path) + ".tmp"
-    df2 = sanitize_text_columns(df)
-    with open(tmp, "w", encoding="utf-8-sig", errors="replace", newline="") as f:
-        df2.to_csv(f, index=False)
-    os.replace(tmp, path)
-
-DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
-
-def safe_save_parquet(df: pd.DataFrame, path: str):
-    ensure_parent(path)
-    tmp = str(path) + ".tmp.parquet"
-
-    df2 = sanitize_text_columns(df)
-
-    for c in df2.select_dtypes(include=["float64"]).columns:
-        df2[c] = pd.to_numeric(df2[c], downcast="float")
-    for c in df2.select_dtypes(include=["int64", "Int64"]).columns:
-        df2[c] = pd.to_numeric(df2[c], downcast="integer")
-
-    df2.to_parquet(tmp, index=False, engine="pyarrow", compression="snappy")
-    os.replace(tmp, path)
-    
-def normalize_geoid(s: pd.Series, target_len: int = DEFAULT_GEOID_LEN) -> pd.Series:
-    s = s.astype(str).str.extract(r"(\d+)", expand=False)
-    return s.str[:target_len].str.zfill(target_len)
-
-def load_json(path: str, default=None):
-    if not os.path.exists(path):
-        return {} if default is None else default
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_json(obj, path: str):
-    ensure_parent(path)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-
-def utc_now_iso():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-def parse_dt(x):
-    try:
-        return pd.to_datetime(x, errors="coerce", utc=True)
-    except Exception:
-        return pd.NaT
-
-def days_since_iso(iso_str: str):
-    if not iso_str:
-        return 10**9
-    try:
-        then = pd.to_datetime(iso_str, utc=True)
-        now = pd.Timestamp.now(tz="UTC")
-        return (now - then).days
-    except Exception:
-        return 10**9
-
-def extract_lat_lon(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    candidates = [
-        ("latitude", "longitude"),
-        ("lat", "lon"),
-        ("lat", "long"),
-        ("y", "x"),
-        ("stop_lat", "stop_lon"),
-        ("point_y", "point_x"),
-    ]
-    for la, lo in candidates:
-        if la in df.columns and lo in df.columns:
-            df["lat_"] = pd.to_numeric(df[la], errors="coerce")
-            df["lon_"] = pd.to_numeric(df[lo], errors="coerce")
-            return df
-
-    if "location" in df.columns:
-        def _pull(o, key):
-            if isinstance(o, dict):
-                return o.get(key)
-            if isinstance(o, str):
-                try:
-                    j = json.loads(o)
-                    return j.get(key)
-                except Exception:
-                    return None
-            return None
-
-        df["lat_"] = pd.to_numeric(df["location"].apply(lambda o: _pull(o, "latitude")), errors="coerce")
-        df["lon_"] = pd.to_numeric(df["location"].apply(lambda o: _pull(o, "longitude")), errors="coerce")
-        return df
-
-    if "the_geom" in df.columns:
-        def _coords(o):
-            if isinstance(o, dict) and "coordinates" in o and len(o["coordinates"]) >= 2:
-                lon, lat = o["coordinates"][:2]
-                return lat, lon
-            if isinstance(o, str):
-                try:
-                    j = json.loads(o)
-                    if "coordinates" in j and len(j["coordinates"]) >= 2:
-                        lon, lat = j["coordinates"][:2]
-                        return lat, lon
-                except Exception:
-                    pass
-            return None, None
-
-        latlon = df["the_geom"].apply(_coords)
-        df["lat_"] = pd.to_numeric(latlon.apply(lambda t: t[0]), errors="coerce")
-        df["lon_"] = pd.to_numeric(latlon.apply(lambda t: t[1]), errors="coerce")
-        return df
-
-    df["lat_"] = np.nan
-    df["lon_"] = np.nan
-    return df
+try:
+    import zoneinfo
+    SF_TZ = zoneinfo.ZoneInfo("America/Los_Angeles")
+except Exception:
+    SF_TZ = None
 
 # =========================================================
-# Socrata downloader
+# GEOID
 # =========================================================
-def socrata_download_with_retry(base_url: str, headers: dict, where_clause: str | None = None,
-                                select_clause: str | None = None, order_clause: str | None = None,
-                                limit: int = 50000, max_retries: int = 5, backoff_base: float = 1.7):
-    rows = []
-    offset = 0
+if not os.path.exists(CENSUS_PATH):
+    raise FileNotFoundError(f"❌ Census dosyası yok: {CENSUS_PATH}")
 
-    while True:
-        params = {"$limit": limit, "$offset": offset}
-        if where_clause:
-            params["$where"] = where_clause
-        if select_clause:
-            params["$select"] = select_clause
-        if order_clause:
-            params["$order"] = order_clause
-
-        attempt = 0
-        while True:
-            try:
-                r = requests.get(base_url, params=params, headers=headers, timeout=90)
-                if r.status_code in (429,) or 500 <= r.status_code < 600:
-                    attempt += 1
-                    if attempt > max_retries:
-                        r.raise_for_status()
-                    sleep_s = backoff_base ** attempt
-                    log(f"⚠️ Geçici hata status={r.status_code} offset={offset} → {attempt}. deneme, {sleep_s:.1f}s")
-                    time.sleep(sleep_s)
-                    continue
-
-                r.raise_for_status()
-                data = r.json()
-                chunk = pd.DataFrame(data)
-                break
-
-            except requests.HTTPError as e:
-                log(f"❌ HTTP hatası offset={offset}: {e}")
-                return None
-            except Exception as e:
-                attempt += 1
-                if attempt > max_retries:
-                    log(f"❌ Ağ/parse hatası offset={offset}: {e}")
-                    return None
-                sleep_s = backoff_base ** attempt
-                log(f"⚠️ Ağ/parse hatası offset={offset} → {attempt}. deneme, {sleep_s:.1f}s ({e})")
-                time.sleep(sleep_s)
-
-        if chunk is None or chunk.empty:
-            break
-
-        if offset == 0:
-            log(f"🔎 İlk chunk kolonları: {list(chunk.columns)}")
-
-        rows.append(chunk)
-        offset += len(chunk)
-        log(f"  + {offset} kayıt indirildi...")
-
-        if len(chunk) < limit:
-            break
-
-    if not rows:
-        return pd.DataFrame()
-    return pd.concat(rows, ignore_index=True)
-
-# =========================================================
-# GEOID eşleme
-# =========================================================
-BASE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
-Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
-print(f"[INFO] BASE_DIR: {BASE_DIR}")
-
-CENSUS_CANDIDATES = [
-    os.path.join(BASE_DIR, "sf_census_blocks.geojson"),
-    os.path.join(".", "sf_census_blocks.geojson"),
-]
-
-census_path = next((p for p in CENSUS_CANDIDATES if os.path.exists(p)), None)
-if census_path is None:
-    raise FileNotFoundError("❌ sf_census_blocks.geojson bulunamadı.")
-
-gdf_blocks = gpd.read_file(census_path)
+gdf_blocks = gpd.read_file(CENSUS_PATH)
 if gdf_blocks.crs is None:
     gdf_blocks.set_crs("EPSG:4326", inplace=True, allow_override=True)
 else:
@@ -265,455 +55,569 @@ else:
     if epsg != 4326:
         gdf_blocks = gdf_blocks.to_crs(epsg=4326)
 
-gcol = "GEOID" if "GEOID" in gdf_blocks.columns else next(
-    (c for c in gdf_blocks.columns if str(c).upper().startswith("GEOID")), None
+gcol_candidates = [c for c in gdf_blocks.columns if "GEOID" in str(c).upper()]
+if "GEOID" in gdf_blocks.columns:
+    gcol = "GEOID"
+elif gcol_candidates:
+    gcol = gcol_candidates[0]
+else:
+    raise ValueError("❌ Census dosyasında GEOID kolonu bulunamadı.")
+
+gdf_blocks[gcol] = (
+    gdf_blocks[gcol]
+    .astype(str)
+    .str.extract(r"(\d+)", expand=False)
+    .str.zfill(GEOID_LEN)
 )
-if not gcol:
-    raise KeyError("❌ sf_census_blocks.geojson içinde GEOID yok.")
+gdf_blocks = gdf_blocks[[gcol, "geometry"]].rename(columns={gcol: "GEOID"}).copy()
 
-gdf_blocks["GEOID"] = normalize_geoid(gdf_blocks[gcol], DEFAULT_GEOID_LEN)
+# =========================================================
+# HELPERS
+# =========================================================
+def log(msg):
+    print(msg, flush=True)
 
-def assign_geoid(df: pd.DataFrame) -> pd.DataFrame:
-    df = extract_lat_lon(df)
-    df = df.dropna(subset=["lat_", "lon_"]).copy()
-    if df.empty:
-        df["GEOID"] = pd.NA
-        return df
+def ensure_parent(path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-    gdf_pts = gpd.GeoDataFrame(
-        df,
-        geometry=gpd.points_from_xy(df["lon_"], df["lat_"]),
-        crs="EPSG:4326"
+def safe_save_parquet(df, path):
+    ensure_parent(path)
+    df.to_parquet(path, index=False)
+    log(f"💾 parquet yazıldı: {path}")
+
+def safe_save_csv(df, path):
+    ensure_parent(path)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    log(f"💾 csv yazıldı: {path}")
+
+def save_json(obj, path):
+    ensure_parent(path)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+def load_json(path, default=None):
+    if not os.path.exists(path):
+        return {} if default is None else default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def normalize_geoid_series(s):
+    return (
+        s.astype(str)
+         .str.extract(r"(\d+)", expand=False)
+         .str.zfill(GEOID_LEN)
     )
 
-    try:
-        gdf_pts = gpd.sjoin(gdf_pts, gdf_blocks[["GEOID", "geometry"]], how="left", predicate="within")
-    except Exception as e:
-        log(f"⚠️ sjoin(within) başarısız ({e}), nearest deneniyor...")
-        gdf_pts = gpd.sjoin_nearest(gdf_pts, gdf_blocks[["GEOID", "geometry"]], how="left", max_distance=0.001)
+def to_sf_datetime(series):
+    s = pd.to_datetime(series, errors="coerce", utc=True)
+    if SF_TZ is not None:
+        s = s.dt.tz_convert(SF_TZ)
+    return s
 
-    gdf_pts = gdf_pts.drop(columns=["geometry", "index_right"], errors="ignore")
-    gdf_pts["GEOID"] = normalize_geoid(gdf_pts["GEOID"], DEFAULT_GEOID_LEN)
-    return pd.DataFrame(gdf_pts)
+def to_sf_date(series):
+    return to_sf_datetime(series).dt.date
+
+def normalize_hour_range(hr):
+    m = re.match(r"^\s*(\d{1,2})\s*[-:]\s*(\d{1,2})\s*$", str(hr))
+    if not m:
+        return np.nan
+    a = int(m.group(1)) % 24
+    b = int(m.group(2))
+    if b <= a:
+        b = min(a + 3, 24)
+    return f"{a:02d}-{b:02d}"
+
+def to_sf_hour_range(series):
+    s = to_sf_datetime(series)
+    h = s.dt.hour.fillna(0).astype(int)
+    st = (h // 3) * 3
+    return st.map(lambda x: f"{x:02d}-{min(x+3,24):02d}")
+
+def read_table(preferred_parquet, fallback_csv=None):
+    if os.path.exists(preferred_parquet):
+        return pd.read_parquet(preferred_parquet)
+    if fallback_csv and os.path.exists(fallback_csv):
+        return pd.read_csv(fallback_csv, low_memory=False)
+    return pd.DataFrame()
+
+def geocode_to_geoid(df, lon_col="longitude", lat_col="latitude"):
+    if df.empty:
+        return df.copy()
+
+    tmp = df.copy()
+    tmp[lon_col] = pd.to_numeric(tmp[lon_col], errors="coerce")
+    tmp[lat_col] = pd.to_numeric(tmp[lat_col], errors="coerce")
+    tmp = tmp.dropna(subset=[lon_col, lat_col]).copy()
+    if tmp.empty:
+        return tmp
+
+    gdf = gpd.GeoDataFrame(
+        tmp,
+        geometry=gpd.points_from_xy(tmp[lon_col], tmp[lat_col]),
+        crs="EPSG:4326"
+    )
+    joined = gpd.sjoin(
+        gdf,
+        gdf_blocks[["GEOID", "geometry"]],
+        how="left",
+        predicate="within"
+    )
+    joined = joined.drop(columns=["geometry", "index_right"], errors="ignore")
+    joined["GEOID"] = normalize_geoid_series(joined["GEOID"])
+    joined = joined.dropna(subset=["GEOID"]).copy()
+    return pd.DataFrame(joined)
+
+def socrata_download_with_retry(base_url, headers=None, where=None, select=None, order=None,
+                                page_limit=50000, max_retries=5, sleep_sec=0.3):
+    headers = headers or {}
+    pieces = []
+    offset = 0
+
+    while True:
+        params = {
+            "$limit": page_limit,
+            "$offset": offset,
+        }
+        if where:
+            params["$where"] = where
+        if select:
+            params["$select"] = select
+        if order:
+            params["$order"] = order
+
+        ok = False
+        last_err = None
+
+        for k in range(max_retries):
+            try:
+                r = requests.get(base_url, params=params, headers=headers, timeout=90)
+                r.raise_for_status()
+                data = r.json()
+                df = pd.DataFrame(data)
+                ok = True
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(sleep_sec * (k + 1))
+
+        if not ok:
+            log(f"❌ indirme hatası: {last_err}")
+            return pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+
+        if df.empty:
+            break
+
+        pieces.append(df)
+        log(f"  + {offset + len(df)} kayıt indirildi...")
+
+        if len(df) < page_limit:
+            break
+
+        offset += page_limit
+        time.sleep(sleep_sec)
+
+    return pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+
+def append_dedup(old_df, new_df, subset_cols, sort_cols=None):
+    if old_df is None or old_df.empty:
+        out = new_df.copy()
+    elif new_df is None or new_df.empty:
+        out = old_df.copy()
+    else:
+        out = pd.concat([old_df, new_df], ignore_index=True)
+
+    if sort_cols:
+        sort_cols = [c for c in sort_cols if c in out.columns]
+        if sort_cols:
+            out = out.sort_values(sort_cols)
+
+    subset_cols = [c for c in subset_cols if c in out.columns]
+    if subset_cols:
+        out = out.drop_duplicates(subset=subset_cols, keep="last")
+
+    return out.reset_index(drop=True)
 
 # =========================================================
-# Config
+# FEATURE PREP
 # =========================================================
-SOCS_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
-HEADERS = {"Accept": "application/json"}
-if SOCS_APP_TOKEN:
-    HEADERS["X-App-Token"] = SOCS_APP_TOKEN
+def prep_business(raw):
+    cols = ["GEOID", "business_count", "landuse_mix_score"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
 
-FORCE_ALL = os.getenv("FORCE_ALL_REFRESH", "0").strip().lower() in ("1", "true", "yes")
+    df = raw.copy()
 
-# yollar
-BUSINESS_OUT = os.path.join(BASE_DIR, "sf_business_landuse.parquet")
-BUILDING_OUT = os.path.join(BASE_DIR, "sf_building_permits_vacancy.parquet")
-TRAFFIC_OUT  = os.path.join(BASE_DIR, "sf_traffic_transport.parquet")
-STREET_OUT   = os.path.join(BASE_DIR, "sf_street_environment.parquet")
+    # sadece gerekli kolonlar varsayımı:
+    # facilitytype, status, latitude, longitude, approved, expirationdate, received
+    if "status" in df.columns:
+        df = df[df["status"].astype(str).str.lower().isin(["approved", "requested"])].copy()
 
-WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
+    if "longitude" not in df.columns and "x" in df.columns:
+        df["longitude"] = df["x"]
+    if "latitude" not in df.columns and "y" in df.columns:
+        df["latitude"] = df["y"]
 
-BUSINESS_OUT_CSV = BUSINESS_OUT.replace(".parquet", ".csv")
-BUILDING_OUT_CSV = BUILDING_OUT.replace(".parquet", ".csv")
-TRAFFIC_OUT_CSV  = TRAFFIC_OUT.replace(".parquet", ".csv")
-STREET_OUT_CSV   = STREET_OUT.replace(".parquet", ".csv")
+    df = geocode_to_geoid(df, "longitude", "latitude")
+    if df.empty:
+        return pd.DataFrame(columns=cols)
 
-BUSINESS_META = os.path.join(BASE_DIR, "sf_business_landuse_meta.json")
-BUILDING_META = os.path.join(BASE_DIR, "sf_building_permits_vacancy_meta.json")
-TRAFFIC_META  = os.path.join(BASE_DIR, "sf_traffic_transport_meta.json")
-STREET_META   = os.path.join(BASE_DIR, "sf_street_environment_meta.json")
+    if "facilitytype" not in df.columns:
+        df["facilitytype"] = "unknown"
+
+    out = (
+        df.groupby("GEOID", as_index=False)
+          .agg(
+              business_count=("GEOID", "size"),
+              landuse_mix_score=("facilitytype", lambda s: s.astype(str).nunique())
+          )
+    )
+    return out
+
+def prep_building(raw):
+    cols = ["GEOID", "date", "building_permit_count", "building_completed_count", "building_estimated_cost_sum"]
+    if raw.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = raw.copy()
+
+    if "location" in df.columns and ("longitude" not in df.columns or "latitude" not in df.columns):
+        try:
+            loc = df["location"].astype(str).str.extract(r"POINT \(([-\d\.]+) ([-\d\.]+)\)")
+            df["longitude"] = loc[0]
+            df["latitude"] = loc[1]
+        except Exception:
+            pass
+
+    df = geocode_to_geoid(df, "longitude", "latitude")
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    date_col = "issued_date" if "issued_date" in df.columns else ("filed_date" if "filed_date" in df.columns else None)
+    if date_col is None:
+        return pd.DataFrame(columns=cols)
+
+    df["date"] = to_sf_date(df[date_col])
+
+    if "completed_date" in df.columns:
+        df["is_completed"] = pd.to_datetime(df["completed_date"], errors="coerce").notna().astype(int)
+    else:
+        df["is_completed"] = 0
+
+    if "estimated_cost" in df.columns:
+        df["estimated_cost"] = pd.to_numeric(df["estimated_cost"], errors="coerce").fillna(0)
+    else:
+        df["estimated_cost"] = 0
+
+    df = df.dropna(subset=["date"]).copy()
+
+    out = (
+        df.groupby(["GEOID", "date"], as_index=False)
+          .agg(
+              building_permit_count=("GEOID", "size"),
+              building_completed_count=("is_completed", "sum"),
+              building_estimated_cost_sum=("estimated_cost", "sum")
+          )
+    )
+    return out
 
 # =========================================================
-# Dataset config
-# Burada ID ve date kolonlarını kendi datasetlerinle eşleştirebilirsin.
+# PATHS / META
 # =========================================================
+BUSINESS_OUT = f"{BASE_DIR}/sf_business_landuse.parquet"
+BUSINESS_META = f"{BASE_DIR}/sf_business_landuse.meta.json"
+
+BUILDING_OUT = f"{BASE_DIR}/sf_building_permits_vacancy.parquet"
+BUILDING_META = f"{BASE_DIR}/sf_building_permits_vacancy.meta.json"
+
 CFG = {
     "business": {
-        "rid": os.getenv("BUSINESS_DATASET_ID", "rqzj-sfat"),
+        "rid": "rqzj-sfat",
         "out": BUSINESS_OUT,
         "meta": BUSINESS_META,
-        "mode": "static_periodic",   # statik/yavaş değişen
-        "refresh_days": int(os.getenv("BUSINESS_REFRESH_DAYS", "30")),
-        "date_col": os.getenv("BUSINESS_DATE_COL", ""),  # çoğu zaman yok; boş olabilir
+        "mode": "incremental",
+        "date_col": None,
+        "select": ",".join([
+            "objectid",
+            "facilitytype",
+            "status",
+            "latitude",
+            "longitude",
+            "approved",
+            "expirationdate",
+            "received"
+        ]),
+        "prep": prep_business,
+        "dedup_keys": ["GEOID"],
+        "sort_cols": ["GEOID"],
     },
     "building": {
-        "rid": os.getenv("BUILDING_DATASET_ID", "i98e-djp9"),
+        "rid": "i98e-djp9",
         "out": BUILDING_OUT,
         "meta": BUILDING_META,
         "mode": "incremental",
-        "refresh_days": 0,
-        "date_col": os.getenv("BUILDING_DATE_COL", "filed_date"),
-    },
-    "traffic": {
-        "rid": os.getenv("TRAFFIC_DATASET_ID", "w969-5mn4"),
-        "out": TRAFFIC_OUT,
-        "meta": TRAFFIC_META,
-        "mode": "incremental",
-        "refresh_days": 0,
-        "date_col": os.getenv("TRAFFIC_DATE_COL", "date"),
-    },
-    "street": {
-        "rid": os.getenv("STREET_DATASET_ID", "tgmn-chn8"),
-        "out": STREET_OUT,
-        "meta": STREET_META,
-        "mode": "static_periodic",
-        "refresh_days": int(os.getenv("STREET_REFRESH_DAYS", "30")),
-        "date_col": os.getenv("STREET_DATE_COL", ""),
+        "date_col": "issued_date",
+        "select": ",".join([
+            "permit_number",
+            "status",
+            "filed_date",
+            "issued_date",
+            "completed_date",
+            "estimated_cost",
+            "proposed_units",
+            "location",
+            "data_as_of",
+            "data_loaded_at"
+        ]),
+        "prep": prep_building,
+        "dedup_keys": ["GEOID", "date"],
+        "sort_cols": ["GEOID", "date"],
     },
 }
 
 # =========================================================
-# Temizleme / standardizasyon
+# FEATURE UPDATE LOGIC
 # =========================================================
-def prep_business(df: pd.DataFrame) -> pd.DataFrame:
-    df = assign_geoid(df)
-
-    # örnek standardizasyon
-    rename_map = {}
-    if "location_id" in df.columns:
-        rename_map["location_id"] = "business_id"
-    if "naics_code_description" in df.columns:
-        rename_map["naics_code_description"] = "business_type"
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
-    keep = [c for c in ["business_id", "business_type", "GEOID", "lat_", "lon_"] if c in df.columns]
-    if not keep:
-        keep = ["GEOID"]
-    df = df[keep].copy()
-
-    # mümkünse tekrarları azalt
-    subset = [c for c in ["business_id", "GEOID", "lat_", "lon_"] if c in df.columns]
-    if subset:
-        df = df.drop_duplicates(subset=subset, keep="last")
-
-    df = df.sort_values(["GEOID"]).reset_index(drop=True)
-    return df
-
-def prep_building(df: pd.DataFrame) -> pd.DataFrame:
-    df = assign_geoid(df)
-
-    date_col = CFG["building"]["date_col"]
-    if date_col in df.columns:
-        df["date"] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
-    else:
-        df["date"] = pd.NaT
-
-    # örnek izin tipleri
-    type_col = None
-    for c in ["permit_type", "permit_type_definition", "description", "current_status"]:
-        if c in df.columns:
-            type_col = c
-            break
-
-    if type_col is None:
-        df["permit_type_std"] = "unknown"
-    else:
-        df["permit_type_std"] = df[type_col].astype(str).str.lower()
-
-    # kaba vacancy proxy
-    txt = df["permit_type_std"].fillna("")
-    df["permit_count"] = 1
-    df["new_construction_count"] = txt.str.contains("new|construction", regex=True).astype(int)
-    df["demolition_count"] = txt.str.contains("demolition|demo", regex=True).astype(int)
-    df["renovation_count"] = txt.str.contains("alter|repair|renov|addition", regex=True).astype(int)
-    df["vacant_building_count"] = txt.str.contains("vacant", regex=True).astype(int)
-    df["unsafe_building_count"] = txt.str.contains("unsafe|dangerous|hazard", regex=True).astype(int)
-
-    out = (
-        df.dropna(subset=["GEOID", "date"])
-          .groupby(["GEOID", "date"], as_index=False)[
-              ["permit_count", "new_construction_count", "demolition_count",
-               "renovation_count", "vacant_building_count", "unsafe_building_count"]
-          ].sum()
-    )
-
-    out = out.sort_values(["GEOID", "date"]).reset_index(drop=True)
-    return out
-
-def hour_to_hour_range(hour):
-    if pd.isna(hour):
-        return np.nan
-    try:
-        h = int(hour)
-    except Exception:
-        return np.nan
-    start = (h // 3) * 3
-    end = start + 3
-    return f"{start:02d}:00-{end:02d}:00"
-
-def prep_traffic(df: pd.DataFrame) -> pd.DataFrame:
-    df = assign_geoid(df)
-
-    date_col = CFG["traffic"]["date_col"]
-    if date_col in df.columns:
-        dt = pd.to_datetime(df[date_col], errors="coerce")
-    else:
-        dt = pd.to_datetime(pd.Series([pd.NaT] * len(df)), errors="coerce")
-
-    df["date"] = dt.dt.normalize()
-
-    if "hour" in df.columns:
-        df["hour_num"] = pd.to_numeric(df["hour"], errors="coerce")
-    else:
-        df["hour_num"] = dt.dt.hour
-
-    df["hour_range"] = df["hour_num"].apply(hour_to_hour_range)
-
-    # ölçüm kolonu yoksa count tabanlı proxy
-    measure_col = None
-    for c in ["count", "traffic_count", "volume", "boardings", "pedestrian_count"]:
-        if c in df.columns:
-            measure_col = c
-            break
-
-    if measure_col is None:
-        df["traffic_count"] = 1.0
-    else:
-        df["traffic_count"] = pd.to_numeric(df[measure_col], errors="coerce").fillna(0)
-
-    # ek proxy kolonlar
-    df["transit_boardings"] = df["traffic_count"] if "boardings" in str(measure_col or "") else 0.0
-    df["bus_activity"] = 0.0
-    df["train_activity"] = 0.0
-    df["congestion_index"] = 0.0
-    df["avg_speed"] = 0.0
-    df["pedestrian_count"] = 0.0
-
-    out = (
-        df.dropna(subset=["GEOID", "date", "hour_range"])
-          .groupby(["GEOID", "date", "hour_range"], as_index=False)[
-              ["traffic_count", "transit_boardings", "bus_activity",
-               "train_activity", "congestion_index", "avg_speed", "pedestrian_count"]
-          ].mean()
-    )
-
-    out = out.sort_values(["GEOID", "date", "hour_range"]).reset_index(drop=True)
-    return out
-
-def prep_street(df: pd.DataFrame) -> pd.DataFrame:
-    df = assign_geoid(df)
-
-    # kaba environment proxy
-    out = df.groupby("GEOID", as_index=False).size().rename(columns={"size": "street_light_count"})
-    out["tree_count"] = 0
-    out["sidewalk_score"] = 0
-    out["road_quality_score"] = 0
-    out["intersection_density"] = 0
-    out["walkability_score"] = 0
-    out["abandoned_vehicle_count"] = 0
-
-    out = out.sort_values(["GEOID"]).reset_index(drop=True)
-    return out
-
-PREP_FN = {
-    "business": prep_business,
-    "building": prep_building,
-    "traffic": prep_traffic,
-    "street": prep_street,
-}
-
-# =========================================================
-# Append / merge helpers
-# =========================================================
-def append_incremental(existing: pd.DataFrame, new_df: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
-    if existing is None or existing.empty:
-        return new_df.copy()
-
-    both = pd.concat([existing, new_df], ignore_index=True)
-    key_cols = [c for c in key_cols if c in both.columns]
-    if key_cols:
-        both = both.drop_duplicates(subset=key_cols, keep="last")
-    else:
-        both = both.drop_duplicates(keep="last")
-    return both.reset_index(drop=True)
-
-def get_max_date_for_meta(df: pd.DataFrame, date_col: str):
-    if date_col and date_col in df.columns:
-        mx = pd.to_datetime(df[date_col], errors="coerce").max()
-        if pd.notna(mx):
-            return pd.Timestamp(mx).isoformat()
-    if "date" in df.columns:
-        mx = pd.to_datetime(df["date"], errors="coerce").max()
-        if pd.notna(mx):
-            return pd.Timestamp(mx).isoformat()
-    return ""
-
-# =========================================================
-# İndirme kararı
-# =========================================================
-def should_refresh_static(meta_path: str, out_path: str, refresh_days: int, force: bool = False):
-    if force:
-        return True
-    if not os.path.exists(out_path):
-        return True
-    meta = load_json(meta_path, {})
-    last_download_utc = meta.get("last_download_utc", "")
-    return days_since_iso(last_download_utc) >= refresh_days
-
-def build_incremental_where(date_col: str, meta_path: str):
-    meta = load_json(meta_path, {})
-    last_max_date = meta.get("last_max_date", "")
+def build_incremental_where(date_col, last_max_date):
     if not date_col or not last_max_date:
         return None
-    # Socrata date literal
-    return f"{date_col} > '{last_max_date}'"
+    return f"{date_col} >= '{last_max_date}T00:00:00'"
 
-# =========================================================
-# Ana update fonksiyonu
-# =========================================================
-def run_dataset(name: str):
-    cfg = CFG[name]
+def run_dataset_incremental(name, cfg):
     rid = cfg["rid"]
     out_path = cfg["out"]
     meta_path = cfg["meta"]
-    mode = cfg["mode"]
-    refresh_days = cfg["refresh_days"]
+    prep_fn = cfg["prep"]
     date_col = cfg["date_col"]
+    select_clause = cfg["select"]
+    dedup_keys = cfg["dedup_keys"]
+    sort_cols = cfg["sort_cols"]
 
     base_url = f"https://data.sfgov.org/resource/{rid}.json"
 
-    log("\n" + "=" * 70)
-    log(f"🚀 DATASET: {name.upper()} | rid={rid}")
+    old_df = read_table(out_path, out_path.replace(".parquet", ".csv"))
+    meta = load_json(meta_path, default={})
 
-    # ---------------------
-    # STATIC / PERIODIC
-    # ---------------------
-    if mode == "static_periodic":
-        refresh = should_refresh_static(meta_path, out_path, refresh_days, force=FORCE_ALL)
+    last_max_date = meta.get("last_max_date", None)
 
-        if not refresh:
-            log(f"✅ {name}: cache geçerli, refresh gerekmiyor.")
-            csv_fallback = out_path.replace(".parquet", ".csv")
-            df = read_table(out_path, csv_fallback)
-            if not df.empty:
-                log_shape(df, f"{name} (cache)")
-            return
+    first_load = old_df.empty
+    if first_load:
+        log("=" * 70)
+        log(f"🚀 DATASET: {name.upper()} | first full load")
+        where = None
+    else:
+        log("=" * 70)
+        log(f"🚀 DATASET: {name.upper()} | incremental update")
+        where = build_incremental_where(date_col, last_max_date)
 
-        log(f"📥 {name}: periyodik full refresh başlıyor...")
-        raw = socrata_download_with_retry(base_url, HEADERS, order_clause=None)
-        if raw is None:
-            log(f"❌ {name}: indirme başarısız.")
-            return
+    raw = socrata_download_with_retry(
+        base_url,
+        headers=HEADERS,
+        where=where,
+        select=select_clause,
+        order=f"{date_col} ASC" if date_col else None
+    )
 
-        log_shape(raw, f"{name} raw")
-        out_df = PREP_FN[name](raw)
-        log_shape(out_df, f"{name} prepared")
+    if raw is None or raw.empty:
+        log(f"ℹ️ {name}: yeni kayıt yok. Eski parquet korunacak.")
+        return old_df, False
 
-        safe_save_parquet(out_df, out_path)
-        if WRITE_CSV:
-            safe_save_csv(out_df, out_path.replace(".parquet", ".csv"))
-        save_json({
-            "dataset": name,
-            "rid": rid,
-            "mode": mode,
-            "last_download_utc": utc_now_iso(),
-            "last_max_date": get_max_date_for_meta(out_df, date_col),
-            "rows": int(len(out_df)),
-            "columns": list(out_df.columns),
-        }, meta_path)
+    log(f"📊 {name} raw: {raw.shape[0]} satır × {raw.shape[1]} sütun")
 
-        log(f"✅ {name}: yazıldı → {out_path}")
-        return
+    new_df = prep_fn(raw)
+    log(f"📊 {name} prepared(new): {new_df.shape[0]} satır × {new_df.shape[1]} sütun")
 
-    # ---------------------
-    # INCREMENTAL
-    # ---------------------
-    if mode == "incremental":
-        if FORCE_ALL or (not os.path.exists(out_path)):
-            log(f"📥 {name}: full initial refresh...")
-            raw = socrata_download_with_retry(base_url, HEADERS, order_clause=f"{date_col} ASC" if date_col else None)
-            if raw is None:
-                log(f"❌ {name}: full indirme başarısız.")
-                return
+    if new_df.empty:
+        log(f"ℹ️ {name}: prep sonrası yeni kayıt kalmadı.")
+        return old_df, False
 
-            log_shape(raw, f"{name} raw")
-            out_df = PREP_FN[name](raw)
-            log_shape(out_df, f"{name} prepared")
+    merged_df = append_dedup(old_df, new_df, subset_cols=dedup_keys, sort_cols=sort_cols)
 
-            safe_save_parquet(out_df, out_path)
-            if WRITE_CSV:
-                safe_save_csv(out_df, out_path.replace(".parquet", ".csv"))
-            save_json({
-                "dataset": name,
-                "rid": rid,
-                "mode": mode,
-                "last_download_utc": utc_now_iso(),
-                "last_max_date": get_max_date_for_meta(out_df, date_col),
-                "rows": int(len(out_df)),
-                "columns": list(out_df.columns),
-            }, meta_path)
+    safe_save_parquet(merged_df, out_path)
+    if WRITE_CSV:
+        safe_save_csv(merged_df, out_path.replace(".parquet", ".csv"))
 
-            log(f"✅ {name}: full yazıldı → {out_path}")
-            return
+    new_last_max_date = last_max_date
+    if date_col and date_col in raw.columns:
+        tmp_dates = to_sf_date(raw[date_col])
+        if not tmp_dates.dropna().empty:
+            new_last_max_date = str(tmp_dates.dropna().max())
 
-        # incremental path
-        existing = read_table(out_path, out_path.replace(".parquet", ".csv"))
-        log_shape(existing, f"{name} existing")
+    meta_new = {
+        "dataset": name,
+        "rid": rid,
+        "mode": cfg["mode"],
+        "last_download_utc": utc_now_iso(),
+        "last_max_date": new_last_max_date,
+        "rows": int(merged_df.shape[0]),
+        "columns": list(merged_df.columns),
+    }
+    save_json(meta_new, meta_path)
 
-        where_clause = build_incremental_where(date_col, meta_path)
-        if not where_clause:
-            log(f"⚠️ {name}: last_max_date yok, full refresh fallback.")
-            raw = socrata_download_with_retry(base_url, HEADERS, order_clause=f"{date_col} ASC" if date_col else None)
-        else:
-            log(f"🧠 {name}: incremental where = {where_clause}")
-            raw = socrata_download_with_retry(
-                base_url,
-                HEADERS,
-                where_clause=where_clause,
-                order_clause=f"{date_col} ASC" if date_col else None
-            )
-
-        if raw is None:
-            log(f"❌ {name}: incremental indirme başarısız.")
-            return
-
-        if raw.empty:
-            log(f"✅ {name}: yeni kayıt yok.")
-            meta = load_json(meta_path, {})
-            meta["last_download_utc"] = utc_now_iso()
-            save_json(meta, meta_path)
-            return
-
-        log_shape(raw, f"{name} new raw")
-        new_df = PREP_FN[name](raw)
-        log_shape(new_df, f"{name} new prepared")
-
-        if name == "building":
-            key_cols = ["GEOID", "date"]
-        elif name == "traffic":
-            key_cols = ["GEOID", "date", "hour_range"]
-        else:
-            key_cols = ["GEOID"]
-
-        merged = append_incremental(existing, new_df, key_cols)
-        log_shape(merged, f"{name} merged")
-
-        safe_save_parquet(merged, out_path)
-        if WRITE_CSV:
-            safe_save_csv(merged, out_path.replace(".parquet", ".csv"))
-        save_json({
-            "dataset": name,
-            "rid": rid,
-            "mode": mode,
-            "last_download_utc": utc_now_iso(),
-            "last_max_date": get_max_date_for_meta(merged, date_col),
-            "rows": int(len(merged)),
-            "columns": list(merged.columns),
-        }, meta_path)
-
-        log(f"✅ {name}: incremental güncellendi → {out_path}")
-        return
+    log(f"✅ {name}: update tamamlandı → {out_path}")
+    return merged_df, True
 
 # =========================================================
-# Çalıştır
+# NEW CRIME ROW DETECTION
 # =========================================================
-if __name__ == "__main__":
-    for ds in ["business", "building", "traffic", "street"]:
-        try:
-            run_dataset(ds)
-        except Exception as e:
-            log(f"❌ {ds} hata: {e}")
+def prepare_crime(df):
+    if df.empty:
+        return df
 
-    log("\n🎉 Tüm update işlemleri tamamlandı.")
+    out = df.copy()
+
+    if "GEOID" in out.columns:
+        out["GEOID"] = normalize_geoid_series(out["GEOID"])
+
+    if "date" not in out.columns:
+        if "datetime" in out.columns:
+            out["date"] = to_sf_date(out["datetime"])
+
+    if "hour_range" not in out.columns:
+        if "datetime" in out.columns:
+            out["hour_range"] = to_sf_hour_range(out["datetime"])
+        elif "event_hour" in out.columns:
+            eh = pd.to_numeric(out["event_hour"], errors="coerce").fillna(0).astype(int) % 24
+            st = (eh // 3) * 3
+            out["hour_range"] = st.map(lambda x: f"{x:02d}-{min(x+3,24):02d}")
+        else:
+            out["hour_range"] = np.nan
+
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
+    if "hour_range" in out.columns:
+        out["hour_range"] = out["hour_range"].apply(normalize_hour_range)
+
+    return out
+
+def get_crime_key_cols(df):
+    for cand in [
+        ["id"],
+        ["GEOID", "datetime"],
+        ["GEOID", "date", "hour_range"],
+    ]:
+        if all(c in df.columns for c in cand):
+            return cand
+    raise ValueError("❌ Crime için uygun benzersiz anahtar bulunamadı.")
+
+def find_new_crime_rows(crime_all, crime_old_enriched):
+    crime_all = prepare_crime(crime_all)
+
+    if crime_old_enriched is None or crime_old_enriched.empty:
+        return crime_all.copy()
+
+    crime_old_enriched = prepare_crime(crime_old_enriched)
+
+    key_cols = get_crime_key_cols(crime_all)
+    old_keys = crime_old_enriched[key_cols].drop_duplicates().copy()
+    old_keys["_seen_"] = 1
+
+    merged = crime_all.merge(old_keys, on=key_cols, how="left")
+    new_rows = merged[merged["_seen_"].isna()].drop(columns=["_seen_"]).copy()
+
+    return new_rows.reset_index(drop=True)
+
+# =========================================================
+# ENRICH ONLY NEW CRIME
+# =========================================================
+def enrich_new_crime_rows(new_crime, business_df, building_df):
+    if new_crime.empty:
+        return new_crime.copy()
+
+    out = prepare_crime(new_crime)
+
+    if "GEOID" not in out.columns:
+        raise ValueError("❌ Crime dataframe içinde GEOID yok.")
+
+    # business -> GEOID
+    if business_df is not None and not business_df.empty:
+        business_df = business_df.copy()
+        business_df["GEOID"] = normalize_geoid_series(business_df["GEOID"])
+        overlap = [c for c in business_df.columns if c in out.columns and c != "GEOID"]
+        if overlap:
+            business_df = business_df.drop(columns=overlap)
+        out = out.merge(business_df, on="GEOID", how="left")
+
+    # building -> GEOID + date
+    if building_df is not None and not building_df.empty:
+        building_df = building_df.copy()
+        building_df["GEOID"] = normalize_geoid_series(building_df["GEOID"])
+        building_df["date"] = pd.to_datetime(building_df["date"], errors="coerce").dt.date
+        overlap = [c for c in building_df.columns if c in out.columns and c not in ["GEOID", "date"]]
+        if overlap:
+            building_df = building_df.drop(columns=overlap)
+        out = out.merge(building_df, on=["GEOID", "date"], how="left")
+
+    fill_zero_cols = [
+        "business_count",
+        "landuse_mix_score",
+        "building_permit_count",
+        "building_completed_count",
+        "building_estimated_cost_sum",
+    ]
+    for c in fill_zero_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+
+    return out
+
+# =========================================================
+# MAIN
+# =========================================================
+if not os.path.exists(CRIME_INPUT_PATH):
+    raise FileNotFoundError(f"❌ Crime input yok: {CRIME_INPUT_PATH}")
+
+log("🏙️ Feature parquet update başlıyor...")
+
+updated_tables = {}
+update_flags = {}
+
+for ds_name, ds_cfg in CFG.items():
+    tbl, changed = run_dataset_incremental(ds_name, ds_cfg)
+    updated_tables[ds_name] = tbl
+    update_flags[ds_name] = changed
+
+log("=" * 70)
+log(f"📌 update flags: {update_flags}")
+
+crime_all = pd.read_parquet(CRIME_INPUT_PATH)
+log(f"📥 crime_all: {crime_all.shape}")
+
+crime_old_enriched = read_table(CRIME_OUTPUT_PATH, CRIME_OUTPUT_PATH.replace(".parquet", ".csv"))
+if not crime_old_enriched.empty:
+    log(f"📥 old enriched crime: {crime_old_enriched.shape}")
+else:
+    log("ℹ️ Eski enriched crime yok. İlk enrich yapılacak.")
+
+new_crime = find_new_crime_rows(crime_all, crime_old_enriched)
+log(f"🆕 new crime rows: {new_crime.shape}")
+
+if new_crime.empty:
+    log("✅ Yeni suç satırı yok. Eski enriched çıktı korunuyor.")
+else:
+    new_enriched = enrich_new_crime_rows(
+        new_crime=new_crime,
+        business_df=updated_tables["business"],
+        building_df=updated_tables["building"],
+    )
+    log(f"📊 new enriched: {new_enriched.shape}")
+
+    crime_all_prepared = prepare_crime(crime_all)
+
+    final_df = append_dedup(
+        crime_old_enriched,
+        new_enriched,
+        subset_cols=get_crime_key_cols(crime_all_prepared),
+        sort_cols=[c for c in ["date", "datetime", "GEOID", "hour_range"] if c in crime_all_prepared.columns]
+    )
+
+    safe_save_parquet(final_df, CRIME_OUTPUT_PATH)
+    if WRITE_CSV:
+        safe_save_csv(final_df, CRIME_OUTPUT_PATH.replace(".parquet", ".csv"))
+
+    log(f"✅ Final enriched crime kaydedildi: {CRIME_OUTPUT_PATH}")
+    log(f"📦 final shape: {final_df.shape}")
+
+log("=" * 70)
+log("🎉 Incremental feature update + only-new-crime enrich tamamlandı.")
