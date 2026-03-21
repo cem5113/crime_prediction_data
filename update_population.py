@@ -49,12 +49,10 @@ def log_shape(df: pd.DataFrame, label: str):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
 
-
 def log_delta(before_shape, after_shape, label: str):
     br, bc = before_shape
     ar, ac = after_shape
     print(f"🔗 {label}: {br}×{bc} → {ar}×{ac} (Δr={ar-br}, Δc={ac-bc})")
-
 
 def ensure_parent(path: str):
     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +83,17 @@ def read_existing_output(parquet_path: str) -> pd.DataFrame | None:
         return pd.read_csv(csv_path, low_memory=False)
 
     return None
-    
+
+def read_table_auto(path: str) -> pd.DataFrame:
+    path = str(path)
+    suffix = Path(path).suffix.lower()
+
+    if suffix == ".parquet":
+        return pd.read_parquet(path)
+    if suffix == ".csv":
+        return pd.read_csv(path, low_memory=False)
+
+    raise ValueError(f"❌ Desteklenmeyen dosya uzantısı: {path}")
 def digits_only(s: pd.Series) -> pd.Series:
     return s.astype(str).str.extract(r"(\d+)", expand=False).fillna("")
 
@@ -595,7 +603,6 @@ def main():
     # 3) Yalnızca gerçekten yeni satır varsa demographic oku
     # -------------------------------------------------------------------------
     demo_raw = read_table_auto(DEMOGRAPHIC_PATH)
-    demo_raw = demo_raw.astype(str)
     log_shape(demo_raw, f"DEMOGRAPHIC INPUT ({Path(DEMOGRAPHIC_PATH).suffix})")
 
     # -------------------------------------------------------------------------
