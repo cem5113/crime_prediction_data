@@ -67,7 +67,7 @@ def _safe_write_table(df: pd.DataFrame, p: Path, write_csv: bool = False, csv_pa
         tmp_csv = Path(str(csv_path) + ".tmp")
         df2.to_csv(tmp_csv, index=False, encoding="utf-8-sig")
         tmp_csv.replace(csv_path)
-        log(f"💾 CSV yazıldı: {csv_path} ({len(df2):,}×{df2.shape[1]})")shape[1]})")
+        log(f"💾 CSV yazıldı: {csv_path} ({len(df2):,}×{df2.shape[1]})")
 
 def _norm_geoid(s: pd.Series, L: int = 11) -> pd.Series:
     return (
