@@ -1193,30 +1193,30 @@ jobs:
             echo "📦 Converting sf_crime_x.csv → sf_crime_x.parquet"
 
             python - <<'PY'
-          import os
-          import pandas as pd
-          
-          D = os.environ["CRIME_DATA_DIR"]
-          csv_file = os.path.join(D, "sf_crime_x.csv")
-          parquet_file = os.path.join(D, "sf_crime_x.parquet")
-          
-          df_tmp = pd.read_csv(csv_file, low_memory=False)
-          
-          if "GEOID" in df_tmp.columns:
-              df_tmp["GEOID"] = (
-                  df_tmp["GEOID"]
-                  .astype("string")
-                  .str.replace(r"\.0$", "", regex=True)
-                  .str.zfill(11)
-              )
-          
-          df_tmp.to_parquet(parquet_file, index=False)
-          print("✅ Saved:", parquet_file)
-          
-          if "GEOID" in df_tmp.columns:
-              print("GEOID length distribution:")
-              print(df_tmp["GEOID"].str.len().value_counts())
-          PY
+        import os
+        import pandas as pd
+        
+        D = os.environ["CRIME_DATA_DIR"]
+        csv_file = os.path.join(D, "sf_crime_x.csv")
+        parquet_file = os.path.join(D, "sf_crime_x.parquet")
+        
+        df_tmp = pd.read_csv(csv_file, low_memory=False)
+        
+        if "GEOID" in df_tmp.columns:
+            df_tmp["GEOID"] = (
+                df_tmp["GEOID"]
+                .astype("string")
+                .str.replace(r"\.0$", "", regex=True)
+                .str.zfill(11)
+            )
+        
+        df_tmp.to_parquet(parquet_file, index=False)
+        print("✅ Saved:", parquet_file)
+        
+        if "GEOID" in df_tmp.columns:
+            print("GEOID length distribution:")
+            print(df_tmp["GEOID"].str.len().value_counts())
+        PY
           else
             echo "⚠️ sf_crime_x.csv yok → parquet conversion atlandı."
           fi
