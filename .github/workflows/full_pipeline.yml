@@ -301,28 +301,28 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-import os, pandas as pd
-
-D = os.environ["CRIME_DATA_DIR"]
-GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
-
-csvp = os.path.join(D, "sf_crime.csv")
-parp = os.path.join(D, "sf_crime.parquet")
-
-if os.path.isfile(csvp):
-    df = pd.read_csv(csvp, low_memory=False)
-    if "GEOID" in df.columns:
-        df["GEOID"] = (
-            df["GEOID"]
-            .astype(str)
-            .str.replace(r"\D", "", regex=True)
-            .str.zfill(GEOID_LEN)
-        )
-    df.to_parquet(parp, index=False, engine="pyarrow")
-    print("✅ wrote", parp, "shape=", df.shape)
-else:
-    print("⚠️ sf_crime.csv not found")
-PY
+          import os, pandas as pd
+          
+          D = os.environ["CRIME_DATA_DIR"]
+          GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
+          
+          csvp = os.path.join(D, "sf_crime.csv")
+          parp = os.path.join(D, "sf_crime.parquet")
+          
+          if os.path.isfile(csvp):
+              df = pd.read_csv(csvp, low_memory=False)
+              if "GEOID" in df.columns:
+                  df["GEOID"] = (
+                      df["GEOID"]
+                      .astype(str)
+                      .str.replace(r"\D", "", regex=True)
+                      .str.zfill(GEOID_LEN)
+                  )
+              df.to_parquet(parp, index=False, engine="pyarrow")
+              print("✅ wrote", parp, "shape=", df.shape)
+          else:
+              print("⚠️ sf_crime.csv not found")
+          PY
 
       - name: 02) 911 → sf_crime_01.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -905,23 +905,23 @@ PY
           # sf_crime_08 parquet ise CSV'ye çevir
           if [ ! -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ]; then
             python - <<'PY'
-import os, pandas as pd
-D = os.environ["CRIME_DATA_DIR"]
-pq = os.path.join(D, "sf_crime_08.parquet")
-csv = os.path.join(D, "sf_crime_08.csv")
-df = pd.read_parquet(pq)
-df.to_csv(csv, index=False)
-print("✅ converted:", pq, "->", csv, "shape=", df.shape)
-PY
-          fi
-      
-          [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
-          [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
-      
-          python -u "$PY"
-      
-          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
-          head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
+          import os, pandas as pd
+          D = os.environ["CRIME_DATA_DIR"]
+          pq = os.path.join(D, "sf_crime_08.parquet")
+          csv = os.path.join(D, "sf_crime_08.csv")
+          df = pd.read_parquet(pq)
+          df.to_csv(csv, index=False)
+          print("✅ converted:", pq, "->", csv, "shape=", df.shape)
+          PY
+                    fi
+                
+                    [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
+                    [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
+                
+                    python -u "$PY"
+                
+                    [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
+                    head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
 
           # =========================
           # 🧪 Coverage report (nei_7d_sum / neighbor_crime_7d vb.)
@@ -1193,16 +1193,16 @@ PY
             echo "📦 Converting sf_crime_x.csv → sf_crime_x.parquet"
 
             python - <<'PY'
-        import os
-        import pandas as pd
-        
-        D = os.environ["CRIME_DATA_DIR"]
-        csv_file = os.path.join(D, "sf_crime_x.csv")
-        parquet_file = os.path.join(D, "sf_crime_x.parquet")
-        
-        df_tmp = pd.read_csv(csv_file, low_memory=False)
-        
-        if "GEOID" in df_tmp.columns:
+          import os
+          import pandas as pd
+          
+          D = os.environ["CRIME_DATA_DIR"]
+          csv_file = os.path.join(D, "sf_crime_x.csv")
+          parquet_file = os.path.join(D, "sf_crime_x.parquet")
+          
+          df_tmp = pd.read_csv(csv_file, low_memory=False)
+          
+          if "GEOID" in df_tmp.columns:
             df_tmp["GEOID"] = (
                 df_tmp["GEOID"]
                 .astype("string")
@@ -1210,13 +1210,13 @@ PY
                 .str.zfill(11)
             )
         
-        df_tmp.to_parquet(parquet_file, index=False)
-        print("✅ Saved:", parquet_file)
-        
-        if "GEOID" in df_tmp.columns:
-            print("GEOID length distribution:")
-            print(df_tmp["GEOID"].str.len().value_counts())
-        PY
+          df_tmp.to_parquet(parquet_file, index=False)
+          print("✅ Saved:", parquet_file)
+          
+          if "GEOID" in df_tmp.columns:
+              print("GEOID length distribution:")
+              print(df_tmp["GEOID"].str.len().value_counts())
+          PY
           else
             echo "⚠️ sf_crime_x.csv yok → parquet conversion atlandı."
           fi
