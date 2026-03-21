@@ -921,23 +921,34 @@ jobs:
           # =========================
           python - <<'PY'
           import os, pandas as pd
-
+          
           D = os.environ["CRIME_DATA_DIR"]
-          p = os.path.join(D, "sf_crime_09.csv")
-          df = pd.read_csv(p, low_memory=False)
-
-          # kolon adayları (senin script: nei_7d_sum)
+          pq = os.path.join(D, "sf_crime_09.parquet")
+          csv = os.path.join(D, "sf_crime_09.csv")
+          
+          if os.path.isfile(pq):
+              df = pd.read_parquet(pq)
+              src = pq
+          elif os.path.isfile(csv):
+              df = pd.read_csv(csv, low_memory=False)
+              src = csv
+          else:
+              raise FileNotFoundError(f"❌ sf_crime_09.parquet / sf_crime_09.csv yok")
+          
           cands = [
               "nei_7d_sum",
               "neighbor_crime_7d",
               "neighbor_crime_3d",
-              "neighbor_crime_1d",
+              "neighbor_crime_24h",
+              "neighbor_crime_6h",
+              "neighbor_crime_3h",
           ]
           found = [c for c in cands if c in df.columns]
-
+          
           print("🧪 NEIGHBOR coverage check")
+          print("source:", src)
           print("rows:", len(df), "cols:", df.shape[1])
-
+          
           if not found:
               print("⚠️ Neighbor kolonu bulunamadı. Adaylar:", cands)
           else:
@@ -948,7 +959,7 @@ jobs:
                   zero = int((s.fillna(0) == 0).sum())
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
-
+          
       - name: 10.1) Update new SF feature sources (business/building/traffic/street)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
