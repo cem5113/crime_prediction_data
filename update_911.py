@@ -231,9 +231,9 @@ log(f"📂 BASE_DIR = {Path(BASE_DIR).resolve()}")
 OUT_DIR = Path(os.getenv("CRIME_DATA_DIR", str(Path(BASE_DIR)))).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-LOCAL_NAME = "sf_911_last_5_year.csv"
+LOCAL_NAME = "sf_911_last_5_year.parquet"
 local_summary_path = OUT_DIR / LOCAL_NAME
-Y_NAME = "sf_911_last_5_year_y.csv"
+Y_NAME = "sf_911_last_5_year_y.parquet"
 y_summary_path = OUT_DIR / Y_NAME
 
 merged_output_path = Path(os.getenv("DAILY_OUT", str(OUT_DIR / "sf_crime_01.parquet")))
@@ -260,13 +260,6 @@ IS_V3 = "/api/v3/views/" in SF911_API_URL
 V3_PAGE_LIMIT = int(os.getenv("SF_V3_PAGE_LIMIT", "1000"))
 SF911_RECENT_HOURS = int(os.getenv("SF911_RECENT_HOURS", "6"))
 SF911_REINGEST_DAYS = int(os.getenv("SF911_REINGEST_DAYS", "14"))
-
-RAW_911_URL_ENV = os.getenv("RAW_911_URL", "").strip()
-RAW_911_URL_CANDIDATES = [
-    RAW_911_URL_ENV or "",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year_y.csv",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
-]
 
 ENABLE_NEIGHBORS = os.getenv("ENABLE_NEIGHBORS", "1").lower() in ("1", "true", "yes", "on")
 NEIGHBOR_METHOD = os.getenv("NEIGHBOR_METHOD", "touches")
@@ -587,10 +580,14 @@ def make_standard_summary(raw: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in out.columns if c not in cols_tail] + cols_tail
     return out[cols]
 
-
 def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
+    path = Path(path)
     log(f"📥 Yerel 911 tabanı okunuyor: {path}")
-    df = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"})
+
+    if path.suffix.lower() == ".parquet":
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"})
 
     is_already_summary = {"date", "hour_range"}.issubset(df.columns) and (
         "911_request_count_hour_range" in df.columns or
@@ -601,44 +598,55 @@ def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
     )
 
     if is_already_summary:
-        cnt_col = _first_existing_col(df, ["911_request_count_hour_range", "call_count", "count", "requests", "n"])
+        cnt_col = _first_existing_col(
+            df,
+            ["911_request_count_hour_range", "call_count", "count", "requests", "n"]
+        )
         if cnt_col != "911_request_count_hour_range":
             df = df.rename(columns={cnt_col: "911_request_count_hour_range"})
 
         df["date"] = to_date(df["date"])
+
         if "GEOID" in df.columns:
             df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
 
         df["hour_range"] = df["hour_range"].apply(normalize_hour_range)
-        
+
         bad_hr = df["hour_range"].isna().sum()
         if bad_hr:
             log(f"⚠️ LOCAL hour_range parse edilemeyen: {bad_hr:,}")
 
         if "hr_key" not in df.columns:
-            df["hr_key"] = df["hour_range"].astype(str).str.extract(r"^(\d{2})").astype(float)
+            df["hr_key"] = (
+                df["hour_range"]
+                .astype(str)
+                .str.extract(r"^(\d{2})")[0]
+                .astype(float)
+            )
 
         if "911_request_count_daily(before_24_hours)" not in df.columns:
             keys = (["GEOID"] if "GEOID" in df.columns else []) + ["date"]
             day = (
                 df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"]
-                .sum()
-                .reset_index(name="911_request_count_daily(before_24_hours)")
+                  .sum()
+                  .reset_index(name="911_request_count_daily(before_24_hours)")
             )
             df = df.merge(day, on=keys, how="left")
 
         if min_date is not None:
-            df = df[df["date"] >= min_date]
+            df = df[df["date"] >= min_date].copy()
 
         cols_tail = [c for c in ["date", "hour_range", "GEOID"] if c in df.columns]
         cols = [c for c in df.columns if c not in cols_tail] + cols_tail
         return df[cols]
 
+    # event-level ise standard summary üret
     std = make_standard_summary(df)
-    if min_date is not None:
-        std = std[std["date"] >= min_date]
-    return std
 
+    if min_date is not None:
+        std = std[std["date"] >= min_date].copy()
+
+    return std
 
 def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
     log(f"⬇️ Release 911 özeti indiriliyor: {url}")
@@ -696,10 +704,14 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
         std = std[std["date"] >= min_date]
     return std
 
-
 def ensure_local_911_base() -> Optional[Path]:
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
+
+    # Öncelik: parquet -> csv
+    prefer_names = [
+        "sf_911_last_5_year.parquet",
+        "sf_911_last_5_year_y.parquet",
+    ]
 
     crime_grid_candidates = [
         OUT_DIR / "sf_crime_y.parquet",
@@ -712,27 +724,31 @@ def ensure_local_911_base() -> Optional[Path]:
         Path(ARTIFACT_NAME) / "crime_prediction_data/sf_crime_y.parquet",
     ]
 
-    crime_grid_path = next(
-        (p for p in crime_grid_candidates if p.exists()),
-        None
-    )
+    crime_grid_path = next((p for p in crime_grid_candidates if p.exists()), None)
     crime_grid_dir = crime_grid_path.parent if crime_grid_path else None
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
             return False
-        if p.suffix.lower() != ".csv":
+
+        suf = p.suffix.lower()
+        if suf not in [".csv", ".parquet"]:
             return False
-        if is_lfs_pointer_file(p):
-            return False
-        try:
-            if p.stat().st_size < 200:
+
+        if suf == ".csv":
+            if is_lfs_pointer_file(p):
                 return False
-        except Exception:
-            return False
+            try:
+                if p.stat().st_size < 200:
+                    return False
+            except Exception:
+                return False
+
+        # parquet için küçük dosya kontrolü yapabiliriz ama şart değil
         return True
 
     roots = [OUT_DIR, Path(BASE_DIR), Path.cwd()]
+
     if crime_grid_dir:
         roots.insert(0, crime_grid_dir)
 
@@ -748,9 +764,24 @@ def ensure_local_911_base() -> Optional[Path]:
         except Exception:
             pass
 
+    # tekrar eden root'ları temizle
+    seen = set()
+    uniq_roots = []
+    for r in roots:
+        rr = str(Path(r).resolve())
+        if rr not in seen:
+            uniq_roots.append(Path(r))
+            seen.add(rr)
+    roots = uniq_roots
+
     for nm in prefer_names:
         for rt in roots:
-            for cand in [rt / nm, rt / "crime_prediction_data" / nm, rt / "outputs" / nm]:
+            candidates = [
+                rt / nm,
+                rt / "crime_prediction_data" / nm,
+                rt / "outputs" / nm,
+            ]
+            for cand in candidates:
                 if _ok(cand):
                     log(f"📦 911 base bulundu: {cand}")
                     return cand
