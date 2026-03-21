@@ -3,8 +3,8 @@
 # POI ENRICH — INCREMENTAL / APPEND-ONLY REVIZE
 #
 # SÖZLEŞME:
-# 1) sf_crime_05 güncel kaynak kabul edilir.
-# 2) sf_crime_06 varsa:
+# 1) sf_crime_05.csv güncel kaynak kabul edilir.
+# 2) sf_crime_06.csv varsa:
 #    - eski satırlar korunur
 #    - yalnızca yeni tarihli satırlar POI ile zenginleştirilir
 #    - eski satırlar overwrite edilmez
@@ -14,13 +14,10 @@
 # 5) POI geojson / clean CSV cache mantığı korunur.
 # -----------------------------------------------------------------------------
 
-from __future__ import annotations
-
 import os
 import ast
 import json
 import time
-import shutil
 from pathlib import Path
 from collections import defaultdict, Counter
 
@@ -59,36 +56,24 @@ Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 POI_GEOJSON_1 = os.path.join(BASE_DIR, "sf_pois.geojson")
 POI_GEOJSON_2 = os.path.join(".", "sf_pois.geojson")
 
-BLOCK_PATH_1 = os.path.join(BASE_DIR, "sf_census_blocks.geojson")
-BLOCK_PATH_2 = os.path.join(".", "sf_census_blocks.geojson")
+BLOCK_PATH_1 = os.path.join(BASE_DIR, "sf_census_blocks_with_population.geojson")
+BLOCK_PATH_2 = os.path.join(".", "sf_census_blocks_with_population.geojson")
 
 POI_CLEAN_CSV = os.path.join(BASE_DIR, "sf_pois_cleaned_with_geoid.csv")
 POI_RISK_JSON = os.path.join(BASE_DIR, "risky_pois_dynamic.json")
 POI_GEOID_SUMMARY_CSV = os.path.join(BASE_DIR, "poi_geoid_summary.csv")
 
-POI_GEOJSON_RAW_URL = os.getenv(
-    "POI_GEOJSON_RAW_URL",
-    "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois.geojson"
-)
-
-POI_CLEAN_RAW_URL = os.getenv(
-    "POI_CLEAN_RAW_URL",
-    "https://raw.githubusercontent.com/cem5113/crime_prediction_data/main/sf_pois_cleaned_with_geoid.csv"
-)
-
-CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.parquet"))
-
-# ÇIKTI YOLLARI AYRILDI
-CRIME_OUT_CSV = os.getenv("CRIME_OUT_CSV", os.path.join(BASE_DIR, "sf_crime_06.csv"))
-CRIME_OUT_PARQUET = os.getenv("CRIME_OUT_PARQUET", os.path.join(BASE_DIR, "sf_crime_06.parquet"))
+CRIME_IN = os.getenv("CRIME_IN", os.path.join(BASE_DIR, "sf_crime_05.csv"))
+CRIME_OUT = os.getenv("CRIME_OUT", os.path.join(BASE_DIR, "sf_crime_06.csv"))
 
 FORCE_POI_REFRESH = os.getenv("FORCE_POI_REFRESH", "0").strip().lower() in ("1", "true", "yes")
 POI_RISK_LOOKBACK_YEARS = int(os.getenv("POI_RISK_LOOKBACK_YEARS", "5"))
 INCLUDE_OFFICE_CRAFT = os.getenv("INCLUDE_OFFICE_CRAFT", "1").strip().lower() not in ("0", "false", "no")
-ENABLE_DYNAMIC_POI_RISK = os.getenv("ENABLE_DYNAMIC_POI_RISK", "1").strip().lower() in ("1", "true", "yes", "on")
 
+# Eğer çıktı varsa, append-only mantık gereği eski dosyayı referans alacağız.
 USE_EXISTING_OUTPUT_IF_ANY = True
 
+# Anahtar kolonlar
 PANEL_KEYS = ["GEOID", "date", "hour_range"]
 
 
@@ -106,17 +91,6 @@ def _ensure_parent(path: str):
     Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
 
-def _download_file(url: str, out_path: str, timeout: int = 120):
-    _ensure_parent(out_path)
-    print(f"🌐 İndiriliyor: {url}")
-    with requests.get(url, stream=True, timeout=timeout) as r:
-        r.raise_for_status()
-        with open(out_path, "wb") as f:
-            shutil.copyfileobj(r.raw, f)
-    print(f"✅ İndirildi: {out_path}")
-    return out_path
-
-
 def _safe_save_csv(df: pd.DataFrame, path: str):
     _ensure_parent(path)
     tmp = path + ".tmp"
@@ -131,20 +105,6 @@ def _safe_save_csv(df: pd.DataFrame, path: str):
             print(f"📁 Yedek oluşturuldu: {path}.bak")
         except Exception:
             pass
-
-
-def _read_existing_output(csv_path: str, parquet_path: str) -> pd.DataFrame | None:
-    # Önce gerçek CSV'yi dene
-    if csv_path and os.path.exists(csv_path) and str(csv_path).lower().endswith(".csv"):
-        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
-        return pd.read_csv(csv_path, low_memory=False)
-
-    # Sonra gerçek Parquet'i dene
-    if parquet_path and os.path.exists(parquet_path) and str(parquet_path).lower().endswith(".parquet"):
-        print(f"📥 Mevcut çıktı Parquet bulundu: {parquet_path}")
-        return pd.read_parquet(parquet_path)
-
-    return None
 
 
 def _bbox_ok_sf(features, min_lon=-123.5, max_lon=-121.5, min_lat=37.0, max_lat=38.5):
@@ -252,6 +212,17 @@ def _drop_existing_poi_columns(df: pd.DataFrame) -> pd.DataFrame:
         "poi_risk_score_range",
     ]
     return df.drop(columns=[c for c in poi_cols if c in df.columns], errors="ignore")
+
+
+def _value_range_label(x, edges, prefix="Q"):
+    if pd.isna(x):
+        if len(edges) >= 2:
+            return f"{prefix}1 ({edges[0]:.1f}-{edges[1]:.1f})"
+        return f"{prefix}1 (0-0)"
+    for i in range(len(edges) - 1):
+        if x <= edges[i + 1]:
+            return f"{prefix}{i+1} ({edges[i]:.1f}-{edges[i+1]:.1f})"
+    return f"{prefix}{len(edges)-1} ({edges[-2]:.1f}-{edges[-1]:.1f})"
 
 
 def _make_dynamic_labels(series: pd.Series, bin_count=5):
@@ -461,6 +432,7 @@ def build_poi_clean_with_geoid(blocks_path: str, poi_geojson_path: str) -> pd.Da
                 cands = tree.query(pt, predicate="contains")
             except TypeError:
                 cands = [g for g in tree.query(pt) if g.contains(pt)]
+
             geoid_list.append(geom_id_to_geoid[id(cands[0])] if cands else None)
 
         joined = gdf.copy()
@@ -495,6 +467,12 @@ def build_poi_clean_with_geoid(blocks_path: str, poi_geojson_path: str) -> pd.Da
 # 3) DİNAMİK POI RISK
 # =============================================================================
 def compute_dynamic_poi_risk(df_crime: pd.DataFrame, df_poi: pd.DataFrame, radius_m=300) -> dict:
+    """
+    POI alt-kategorileri için çevresindeki suç yoğunluğuna göre 0–3 arası skor.
+    Bu sürümde risk hesabı dinamik olabilir.
+    Ancak bu risk sonucu sadece yeni satırlara yazılacaktır.
+    """
+
     dfp = df_poi.copy()
     dfp["lat"] = pd.to_numeric(dfp.get("lat"), errors="coerce")
     dfp["lon"] = pd.to_numeric(dfp.get("lon"), errors="coerce")
@@ -557,6 +535,7 @@ def compute_dynamic_poi_risk(df_crime: pd.DataFrame, df_poi: pd.DataFrame, radiu
         agg[t].append(c)
 
     avg = {t: float(np.mean(v)) for t, v in agg.items()}
+
     vals = list(avg.values())
     vmin, vmax = min(vals), max(vals)
 
@@ -580,6 +559,17 @@ def compute_dynamic_poi_risk(df_crime: pd.DataFrame, df_poi: pd.DataFrame, radiu
 # 4) GEOID DÜZEYİ POI ÖZET
 # =============================================================================
 def build_geoid_level_poi_features(df_poi: pd.DataFrame, poi_risk: dict) -> pd.DataFrame:
+    """
+    GEOID bazında:
+      - poi_total_count
+      - poi_risk_score
+      - poi_dominant_type
+      - range kolonları
+    Not:
+      Bu summary her çalışmada yeniden üretilebilir.
+      Ancak append-only mantığı gereği sadece yeni satırlara yazılır.
+    """
+
     dfp = df_poi.copy()
     dfp["GEOID"] = _normalize_geoid(dfp["GEOID"], 11) if "GEOID" in dfp.columns else pd.NA
 
@@ -602,6 +592,7 @@ def build_geoid_level_poi_features(df_poi: pd.DataFrame, poi_risk: dict) -> pd.D
         "poi_dominant_type": grp["poi_subcategory"].agg(_mode).values,
     })
 
+    # Dinamik label burada kalabilir; çünkü eski satırlar overwrite edilmeyecek.
     lab_cnt = _make_dynamic_labels(out["poi_total_count"])
     lab_risk = _make_dynamic_labels(out["poi_risk_score"])
 
@@ -626,58 +617,57 @@ def enrich_crime_by_geoid(df_crime: pd.DataFrame, geoid_poi: pd.DataFrame) -> pd
     out["GEOID"] = _normalize_geoid(out.get("GEOID"), 11)
 
     out = _drop_existing_poi_columns(out)
+
     before = out.shape
 
-    geoid_poi = geoid_poi.copy()
-    geoid_poi["GEOID"] = _normalize_geoid(geoid_poi["GEOID"], 11)
-    geoid_poi = geoid_poi.drop_duplicates(subset=["GEOID"], keep="first")
+    _overlap = (set(out.columns) & set(geoid_poi.columns)) - {"GEOID"}
+    if _overlap:
+        print(f"🧹 POI merge overlap bulundu, geoid_poi'den düşürüldü: {sorted(_overlap)}")
+        geoid_poi = geoid_poi.drop(columns=list(_overlap), errors="ignore")
 
-    poi_total_map = geoid_poi.set_index("GEOID")["poi_total_count"].to_dict()
-    poi_risk_map = geoid_poi.set_index("GEOID")["poi_risk_score"].to_dict()
-    poi_dom_map = geoid_poi.set_index("GEOID")["poi_dominant_type"].to_dict()
-    poi_total_rng_map = geoid_poi.set_index("GEOID")["poi_total_count_range"].to_dict()
-    poi_risk_rng_map = geoid_poi.set_index("GEOID")["poi_risk_score_range"].to_dict()
+    out = out.merge(geoid_poi, on="GEOID", how="left")
 
-    out["poi_total_count"] = out["GEOID"].map(poi_total_map)
-    out["poi_risk_score"] = out["GEOID"].map(poi_risk_map)
-    out["poi_dominant_type"] = out["GEOID"].map(poi_dom_map)
-    out["poi_total_count_range"] = out["GEOID"].map(poi_total_rng_map)
-    out["poi_risk_score_range"] = out["GEOID"].map(poi_risk_rng_map)
+    out = out.fillna({
+        "poi_total_count": 0,
+        "poi_risk_score": 0.0,
+        "poi_dominant_type": "No_POI",
+        "poi_total_count_range": "Q1 (0-0)",
+        "poi_risk_score_range": "Q1 (0-0)",
+    })
 
-    out["poi_total_count"] = pd.to_numeric(out["poi_total_count"], errors="coerce").fillna(0).astype("int32")
-    out["poi_risk_score"] = pd.to_numeric(out["poi_risk_score"], errors="coerce").fillna(0.0).astype("float32")
-    out["poi_dominant_type"] = out["poi_dominant_type"].fillna("No_POI").astype("string")
-    out["poi_total_count_range"] = out["poi_total_count_range"].fillna("Q1 (0-0)").astype("string")
-    out["poi_risk_score_range"] = out["poi_risk_score_range"].fillna("Q1 (0-0)").astype("string")
+    out["poi_total_count"] = pd.to_numeric(out["poi_total_count"], errors="coerce").fillna(0).astype(int)
+    out["poi_risk_score"] = pd.to_numeric(out["poi_risk_score"], errors="coerce").fillna(0.0).astype(float)
+    out["poi_dominant_type"] = out["poi_dominant_type"].astype(str)
 
-    log_delta(before, out.shape, "CRIME ⨯ POI (GEOID-map)")
+    log_delta(before, out.shape, "CRIME ⨯ POI (GEOID-merge)")
     return out
 
 
 # =============================================================================
 # 6) APPEND-ONLY / NEW ROW TESPİTİ
 # =============================================================================
-def split_existing_and_new_rows(
-    df_in: pd.DataFrame,
-    existing_out_csv: str,
-    existing_out_parquet: str
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_existing_and_new_rows(df_in: pd.DataFrame, existing_out_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Eğer sf_crime_06.csv mevcutsa:
+      - eski satırları korur
+      - df_in içindeki yeni satırları bulur
+    Yeni satır tespiti PANEL_KEYS üzerinden yapılır.
+    """
 
-    old = _read_existing_output(existing_out_csv, existing_out_parquet)
-    if old is None:
-        print("ℹ️ Eski sf_crime_06 çıktısı (csv/parquet) yok → tüm giriş satırları yeni kabul edilecek.")
+    if not os.path.exists(existing_out_path):
+        print("ℹ️ Eski sf_crime_06.csv yok → tüm giriş satırları yeni kabul edilecek.")
         return pd.DataFrame(columns=df_in.columns), df_in.copy()
 
+    old = pd.read_csv(existing_out_path, low_memory=False)
     if not set(PANEL_KEYS).issubset(old.columns):
         print("⚠️ Eski çıktı dosyasında panel anahtarları eksik → güvenli tarafta kalıp tüm girişi yeni kabul ediyorum.")
         return old, df_in.copy()
 
     old = old.copy()
-    cur = df_in.copy()
-
     old["GEOID"] = _normalize_geoid(old["GEOID"], 11)
     old = _ensure_datetime_date_col(old, "date")
 
+    cur = df_in.copy()
     cur["GEOID"] = _normalize_geoid(cur["GEOID"], 11)
     cur = _ensure_datetime_date_col(cur, "date")
 
@@ -687,7 +677,7 @@ def split_existing_and_new_rows(
     marked = cur.merge(old_keys, on=PANEL_KEYS, how="left")
     new_rows = marked[marked["__seen__"].isna()].drop(columns=["__seen__"]).copy()
 
-    print("🧠 Eski çıktı bulundu (csv/parquet destekli incremental).")
+    print(f"🧠 Eski çıktı bulundu: {existing_out_path}")
     log_shape(old, "MEVCUT sf_crime_06")
     log_shape(cur, "GÜNCEL sf_crime_05")
     log_shape(new_rows, "YENİ SATIRLAR (POI enrich edilecek)")
@@ -696,6 +686,12 @@ def split_existing_and_new_rows(
 
 
 def restrict_risk_history_window(df_crime_full: pd.DataFrame, reference_new_rows: pd.DataFrame, years: int = 5) -> pd.DataFrame:
+    """
+    POI risk skoru üretiminde kullanılacak suç tarih aralığını kısıtlar.
+    Hesap evreni = son X yıl olabilir.
+    Yazım evreni = yalnızca yeni satırlar.
+    """
+
     full = df_crime_full.copy()
     full = _ensure_datetime_date_col(full, "date")
 
@@ -718,26 +714,22 @@ def restrict_risk_history_window(df_crime_full: pd.DataFrame, reference_new_rows
 
 
 def finalize_append_only_output(old_out: pd.DataFrame, new_enriched: pd.DataFrame) -> pd.DataFrame:
+    """
+    Eski çıktı + yeni enrich edilmiş satırlar birleştirilir.
+    Eski satırlar değiştirilmez.
+    """
+
     if old_out is None or len(old_out) == 0:
         final = new_enriched.copy()
+    else:
+        final = pd.concat([old_out, new_enriched], ignore_index=True)
 
-        if "GEOID" in final.columns:
-            final["GEOID"] = _normalize_geoid(final["GEOID"], 11)
-
-        if "date" in final.columns:
-            final["date"] = pd.to_datetime(final["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-        print("ℹ️ İlk kurulum modu: eski çıktı yok, concat/drop_duplicates/sort atlandı.")
-        return final
-
-    final = pd.concat([old_out, new_enriched], ignore_index=True)
-
-    if "GEOID" in final.columns:
-        final["GEOID"] = _normalize_geoid(final["GEOID"], 11)
+    final["GEOID"] = _normalize_geoid(final.get("GEOID"), 11)
 
     if "date" in final.columns:
         final["date"] = pd.to_datetime(final["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
+    # Duplikasyon güvenliği
     if set(PANEL_KEYS).issubset(final.columns):
         before = len(final)
         final = final.drop_duplicates(subset=PANEL_KEYS, keep="first").copy()
@@ -745,6 +737,7 @@ def finalize_append_only_output(old_out: pd.DataFrame, new_enriched: pd.DataFram
         if dropped > 0:
             print(f"⚠️ PANEL_KEYS bazında {dropped} duplikasyon temizlendi (keep='first').")
 
+    # Sıralama
     sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in final.columns]
     if sort_cols:
         final = final.sort_values(sort_cols).reset_index(drop=True)
@@ -764,8 +757,14 @@ if __name__ == "__main__":
     if not os.path.exists(CRIME_IN):
         candidates = [
             CRIME_IN,
-            os.path.join(BASE_DIR, "sf_crime_05.parquet"),
             os.path.join(BASE_DIR, "sf_crime_05.csv"),
+            os.path.join(BASE_DIR, "sf_crime_03.csv"),
+            os.path.join(BASE_DIR, "sf_crime_02.csv"),
+            os.path.join(BASE_DIR, "sf_crime.csv"),
+            "sf_crime_05.csv",
+            "sf_crime_03.csv",
+            "sf_crime_02.csv",
+            "sf_crime.csv",
         ]
         resolved = _first_exists(*candidates)
         if resolved:
@@ -774,12 +773,7 @@ if __name__ == "__main__":
         else:
             raise FileNotFoundError(f"❌ Suç girdisi bulunamadı. Denenenler: {candidates}")
 
-    print(f"📥 Crime input kullanılıyor: {CRIME_IN}")
-    if str(CRIME_IN).lower().endswith(".parquet"):
-        df_crime_full = pd.read_parquet(CRIME_IN)
-    else:
-        df_crime_full = pd.read_csv(CRIME_IN, low_memory=False)
-
+    df_crime_full = pd.read_csv(CRIME_IN, low_memory=False)
     if "GEOID" not in df_crime_full.columns:
         raise KeyError("❌ Suç verisinde GEOID yok.")
     if "date" not in df_crime_full.columns:
@@ -793,22 +787,16 @@ if __name__ == "__main__":
     # B) ESKİ ÇIKTI VARSA YENİ SATIRLARI AYIR
     # -------------------------------------------------------------------------
     if USE_EXISTING_OUTPUT_IF_ANY:
-        old_out, new_rows = split_existing_and_new_rows(
-            df_crime_full,
-            CRIME_OUT_CSV,
-            CRIME_OUT_PARQUET
-        )
+        old_out, new_rows = split_existing_and_new_rows(df_crime_full, CRIME_OUT)
     else:
         old_out = pd.DataFrame(columns=df_crime_full.columns)
         new_rows = df_crime_full.copy()
 
     if new_rows.empty:
         print("✅ Yeni satır yok. Eski sf_crime_06 olduğu gibi korunuyor.")
-        if os.path.exists(CRIME_OUT_CSV):
-            print(f"📁 Mevcut CSV çıktı korunuyor: {CRIME_OUT_CSV}")
-        if os.path.exists(CRIME_OUT_PARQUET):
-            print(f"📁 Mevcut Parquet çıktı korunuyor: {CRIME_OUT_PARQUET}")
-        if (not os.path.exists(CRIME_OUT_CSV)) and (not os.path.exists(CRIME_OUT_PARQUET)):
+        if os.path.exists(CRIME_OUT):
+            print(f"📁 Mevcut çıktı korunuyor: {CRIME_OUT}")
+        else:
             print("⚠️ Eski çıktı da yok; yazılacak veri bulunamadı.")
         raise SystemExit(0)
 
@@ -817,13 +805,8 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
     blocks_path = _pick_existing(BLOCK_PATH_1, BLOCK_PATH_2)
     poi_geojson = _pick_existing(POI_GEOJSON_1, POI_GEOJSON_2)
-
     if poi_geojson is None:
         poi_geojson = os.path.join(BASE_DIR, "sf_pois.geojson")
-        try:
-            _download_file(POI_GEOJSON_RAW_URL, poi_geojson)
-        except Exception as e:
-            print(f"⚠️ GitHub raw sf_pois.geojson indirilemedi: {e}")
 
     poi_geojson = ensure_sf_pois_geojson(
         poi_geojson,
@@ -836,14 +819,6 @@ if __name__ == "__main__":
     # D) POI CLEAN DOSYASI
     # -------------------------------------------------------------------------
     use_clean = os.path.exists(POI_CLEAN_CSV) and (not FORCE_POI_REFRESH)
-
-    if not use_clean:
-        try:
-            _download_file(POI_CLEAN_RAW_URL, POI_CLEAN_CSV)
-            use_clean = os.path.exists(POI_CLEAN_CSV)
-        except Exception as e:
-            print(f"⚠️ GitHub raw sf_pois_cleaned_with_geoid.csv indirilemedi: {e}")
-            use_clean = False
 
     if use_clean:
         try:
@@ -871,42 +846,27 @@ if __name__ == "__main__":
         df_poi["GEOID"] = _normalize_geoid(df_poi.get("GEOID"), 11)
     else:
         if blocks_path is None:
-            raise FileNotFoundError("❌ sf_census_blocks.geojson yok. GEOID atamak için gerekli.")
+            raise FileNotFoundError("❌ sf_census_blocks_with_population.geojson yok. GEOID atamak için gerekli.")
         df_poi = build_poi_clean_with_geoid(blocks_path, poi_geojson)
 
     log_shape(df_poi, "POI clean")
 
     # -------------------------------------------------------------------------
-    # E) RİSK HESAP EVRENİ
+    # E) RİSK HESAP EVRENİ = SON 5 YIL (veya env)
     # -------------------------------------------------------------------------
-    risk_cols = [c for c in ["date", "latitude", "longitude", "lat", "lon", "x", "y"] if c in df_crime_full.columns]
-    if "date" not in risk_cols:
-        raise KeyError("❌ Risk hesabı için 'date' kolonu bulunamadı.")
-
-    risk_base = df_crime_full[risk_cols].copy()
-
     risk_crime_universe = restrict_risk_history_window(
-        df_crime_full=risk_base,
-        reference_new_rows=new_rows[["date"]].copy(),
+        df_crime_full=df_crime_full,
+        reference_new_rows=new_rows,
         years=POI_RISK_LOOKBACK_YEARS,
     )
 
-    has_lat = any(c in df_crime_full.columns for c in ["latitude", "lat", "y"])
-    has_lon = any(c in df_crime_full.columns for c in ["longitude", "lon", "long", "x"])
-
-    enable_dynamic_poi_risk = ENABLE_DYNAMIC_POI_RISK
-    if enable_dynamic_poi_risk and not (has_lat and has_lon):
-        print("⚠️ Dinamik POI risk kapatıldı: suç verisinde koordinat kolonları yok.")
-        enable_dynamic_poi_risk = False
-
-    if enable_dynamic_poi_risk:
-        try:
-            risk_dict = compute_dynamic_poi_risk(risk_crime_universe, df_poi, radius_m=300)
-        except Exception as e:
-            print(f"⚠️ Risk sözlüğü üretilemedi: {e}; boş sözlük kullanılacak.")
-            risk_dict = {}
-    else:
-        print("ℹ️ ENABLE_DYNAMIC_POI_RISK=0 → dinamik POI risk hesabı atlandı.")
+    # -------------------------------------------------------------------------
+    # F) DİNAMİK RISK SÖZLÜĞÜ
+    # -------------------------------------------------------------------------
+    try:
+        risk_dict = compute_dynamic_poi_risk(risk_crime_universe, df_poi, radius_m=300)
+    except Exception as e:
+        print(f"⚠️ Risk sözlüğü üretilemedi: {e}; boş sözlük kullanılacak.")
         risk_dict = {}
 
     print(f"🧪 Risk sözlüğü boyutu: {len(risk_dict)} alt-kategori")
@@ -924,24 +884,22 @@ if __name__ == "__main__":
     log_delta(before_enrich, new_rows_enriched.shape, "YENİ SATIRLAR ⨯ POI")
 
     # -------------------------------------------------------------------------
-    # I) ESKİ + YENİ BİRLEŞTİR
+    # I) ESKİ + YENİ BİRLEŞTİR (APPEND-ONLY)
     # -------------------------------------------------------------------------
-    if old_out is None or len(old_out) == 0:
-        final_df = new_rows_enriched.copy()
-        if "GEOID" in final_df.columns:
-            final_df["GEOID"] = _normalize_geoid(final_df["GEOID"], 11)
-        if "date" in final_df.columns:
-            final_df["date"] = pd.to_datetime(final_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        print("ℹ️ İlk kurulum: final_df doğrudan new_rows_enriched olarak alındı.")
-    else:
-        final_df = finalize_append_only_output(old_out, new_rows_enriched)
-
+    final_df = finalize_append_only_output(old_out, new_rows_enriched)
     log_shape(final_df, "FINAL sf_crime_06")
 
     # -------------------------------------------------------------------------
     # J) NaN RAPORU
     # -------------------------------------------------------------------------
-    print("🔎 Genel NaN raporu atlandı (büyük veri koruması).")
+    nan_counts = final_df.isna().sum()
+    nan_counts = nan_counts[nan_counts > 0].sort_values(ascending=False)
+
+    print("🔎 NaN sayıları (sf_crime_06 yazılmadan önce):")
+    if nan_counts.empty:
+        print("✅ NaN yok.")
+    else:
+        print(nan_counts.to_string())
 
     poi_cols = [
         "poi_total_count",
@@ -951,56 +909,31 @@ if __name__ == "__main__":
         "poi_risk_score_range",
     ]
     poi_cols = [c for c in poi_cols if c in final_df.columns]
-
     if poi_cols:
-        try:
-            print("🔎 POI kolonları NaN sayıları:")
-            print(final_df[poi_cols].isna().sum().to_string())
-        except Exception as e:
-            print(f"⚠️ POI NaN raporu üretilemedi: {e}")
-    else:
-        print("ℹ️ POI kolonu bulunamadı; POI bazlı NaN raporu atlandı.")
+        print("🔎 POI kolonları NaN sayıları:")
+        print(final_df[poi_cols].isna().sum().to_string())
 
     # -------------------------------------------------------------------------
     # K) KAYDET
     # -------------------------------------------------------------------------
-    print("💾 Kaydetme aşaması başlıyor...")
-
     final_to_save = final_df.copy()
-    print(f"🧪 final_to_save hazır | shape={final_to_save.shape}")
-
     if "date" in final_to_save.columns:
-        print("🧪 date kolonu string formata çevriliyor...")
-        final_to_save["date"] = pd.to_datetime(
-            final_to_save["date"], errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
+        final_to_save["date"] = pd.to_datetime(final_to_save["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    print("🧪 parquet yazımı için parent hazırlanıyor...")
-    _ensure_parent(CRIME_OUT_PARQUET)
+    _safe_save_csv(final_to_save, CRIME_OUT)
+    print(f"✅ Yazıldı: {CRIME_OUT} | Satır: {len(final_to_save):,}")
 
-    tmp_parquet = CRIME_OUT_PARQUET + ".tmp.parquet"
-    print(f"🧪 parquet tmp yolu: {tmp_parquet}")
+    try:
+        cols = [c for c in ["GEOID", "date", "hour_range", "poi_total_count", "poi_risk_score", "poi_dominant_type"] if c in final_to_save.columns]
+        preview = final_to_save[cols].tail(10) if cols else final_to_save.tail(10)
+        print("📌 Son 10 satır önizleme:")
+        print(preview.to_string(index=False))
+    except Exception as e:
+        print(f"(info) Örnek yazdırılamadı: {e}")
 
-    t0 = time.time()
-    print("🧪 to_parquet başlıyor...")
-    final_to_save.to_parquet(
-        tmp_parquet,
-        index=False,
-        engine="pyarrow",
-        compression="snappy"
-    )
-    print(f"🧪 to_parquet tamamlandı. süre={time.time()-t0:.1f} sn")
-
-    print("🧪 tmp → final replace başlıyor...")
-    os.replace(tmp_parquet, CRIME_OUT_PARQUET)
-    print(f"✅ Parquet yazıldı: {CRIME_OUT_PARQUET} | Satır: {len(final_to_save):,}")
-
-    WRITE_CSV = os.getenv("WRITE_CSV", "0").strip().lower() in ("1", "true", "yes", "on")
-    if WRITE_CSV:
-        print("🧪 CSV yazımı başlıyor...")
-        _safe_save_csv(final_to_save, CRIME_OUT_CSV)
-        print(f"✅ CSV yazıldı: {CRIME_OUT_CSV} | Satır: {len(final_to_save):,}")
-    else:
-        print("ℹ️ Büyük CSV yazımı kapalı; yalnız parquet kaydedildi.")
-
-    print("ℹ️ Büyük veri nedeniyle tail preview ve dosyayı geri okuyup preview alma atlandı.")
+    try:
+        preview_file = pd.read_csv(CRIME_OUT, nrows=3, low_memory=False)
+        print(f"{CRIME_OUT} — ilk 3 satır")
+        print(preview_file.to_string(index=False))
+    except Exception as e:
+        print(f"(info) Kaydedilen dosya önizlemesi okunamadı: {e}")
