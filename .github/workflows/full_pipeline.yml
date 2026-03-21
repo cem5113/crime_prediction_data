@@ -886,42 +886,35 @@ jobs:
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          NEIGHBOR_INPUT_CSV:  ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
-          NEIGHBOR_OUTPUT_CSV: ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
-          NEIGHBOR_FILE:       ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+          sf_CRIME_IN: ${{ env.CRIME_DATA_DIR }}/sf_crime_08.parquet
+          sf_CRIME_OUT: ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
+          sf_CRIME_OUT_CSV: ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
+          NEIGH_FILE: ${{ env.CRIME_DATA_DIR }}/neighbors.csv
           GEOID_LEN: "11"
+          WRITE_CSV: "0"
+          PUBLISH_LAG_DAYS: "2"
+          MAKE_LEGACY_NEI7: "0"
         shell: bash
         run: |
           set -euo pipefail
+      
           if [ -f scripts/update_neighbors.py ]; then
             PY="scripts/update_neighbors.py"
           else
-            echo "⚠️ scripts/update_neighbors.py yok"; exit 2
+            echo "⚠️ scripts/update_neighbors.py yok"
+            exit 2
           fi
       
           echo "✅ Using PY=$PY"
           ls -lah "$PY" || true
       
-          # sf_crime_08 parquet ise CSV'ye çevir
-          if [ ! -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ]; then
-            python - <<'PY'
-          import os, pandas as pd
-          D = os.environ["CRIME_DATA_DIR"]
-          pq = os.path.join(D, "sf_crime_08.parquet")
-          csv = os.path.join(D, "sf_crime_08.csv")
-          df = pd.read_parquet(pq)
-          df.to_csv(csv, index=False)
-          print("✅ converted:", pq, "->", csv, "shape=", df.shape)
-          PY
-                    fi
-                
-                    [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
-                    [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
-                
-                    python -u "$PY"
-                
-                    [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
-                    head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
+          [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ] || { echo "❌ sf_crime_08.parquet yok"; exit 2; }
+          [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
+      
+          python -u "$PY"
+      
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.parquet" ] || { echo "❌ sf_crime_09.parquet oluşmadı"; exit 3; }
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
           # =========================
           # 🧪 Coverage report (nei_7d_sum / neighbor_crime_7d vb.)
@@ -955,29 +948,6 @@ jobs:
                   zero = int((s.fillna(0) == 0).sum())
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
-
-      - name: Convert sf_crime_09.csv to sf_crime_09.parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os, pandas as pd
-          D = os.environ['CRIME_DATA_DIR']
-          csvp = os.path.join(D, 'sf_crime_09.csv')
-          parp = os.path.join(D, 'sf_crime_09.parquet')
-
-          df = pd.read_csv(csvp, low_memory=False)
-
-          # GEOID kritikse stringe sabitle (opsiyonel ama öneririm)
-          if 'GEOID' in df.columns:
-              df['GEOID'] = df['GEOID'].astype(str).str.replace(r'\D', '', regex=True).str.zfill(11)
-
-          df.to_parquet(parp, index=False, engine='pyarrow')
-          print('✅ wrote', parp, 'shape=', df.shape)
-          PY
-          ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
       - name: 10.1) Update new SF feature sources (business/building/traffic/street)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
