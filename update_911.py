@@ -59,17 +59,90 @@ def log(msg: str):
 def ensure_parent(path: str):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
+def ensure_parent(path: str):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
+# CSV AUDIT + SAFE SAVE (FINAL)
+# ============================================================
+def audit_csv_columns(df: pd.DataFrame, label: str = "df"):
+    cols = pd.Series(df.columns.astype(str))
+
+    unnamed = cols[cols.str.lower().str.startswith("unnamed:")].tolist()
+    empty = cols[cols.str.strip().eq("")].tolist()
+    dupes = cols[cols.duplicated()].tolist()
+    all_null = [c for c in df.columns if df[c].isna().all()]
+
+    log(
+        f"🔎 {label} | "
+        f"unnamed={len(unnamed)} "
+        f"empty={len(empty)} "
+        f"dupes={len(dupes)} "
+        f"all_null={len(all_null)}"
+    )
+
+    if unnamed:
+        log(f"   unnamed örnek: {unnamed[:10]}")
+    if empty:
+        log(f"   empty örnek: {empty[:10]}")
+    if dupes:
+        log(f"   duplicate örnek: {dupes[:10]}")
+    if all_null:
+        log(f"   all-null örnek: {all_null[:10]}")
+
 
 def safe_save_csv(df: pd.DataFrame, path: str):
     try:
         ensure_parent(path)
-        df.to_csv(path, index=False, encoding="utf-8")
-        df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
+
+        out = df.copy()
+
+        # 1) kolon isimlerini temizle
+        out.columns = [
+            str(c).replace("\ufeff", "").strip()
+            for c in out.columns
+        ]
+
+        # 2) boş isimli / unnamed kolonları at
+        bad_cols = [
+            c for c in out.columns
+            if c == "" or c.lower().startswith("unnamed:")
+        ]
+        if bad_cols:
+            log(f"🧹 Kaldırılan boş/unnamed kolonlar: {bad_cols[:20]}")
+            out = out.drop(columns=bad_cols, errors="ignore")
+
+        # 3) duplicate kolonları düşür
+        dup_mask = out.columns.duplicated()
+        if dup_mask.any():
+            dup_cols = out.columns[dup_mask].tolist()
+            log(f"🧹 Kaldırılan duplicate kolonlar: {dup_cols[:20]}")
+            out = out.loc[:, ~dup_mask]
+
+        # 4) tamamen boş kolonları at
+        all_null_cols = [c for c in out.columns if out[c].isna().all()]
+        if all_null_cols:
+            log(f"🧹 Kaldırılan all-null kolonlar: {all_null_cols[:20]}")
+            out = out.drop(columns=all_null_cols, errors="ignore")
+
+        # 5) son kontrol
+        audit_csv_columns(out, f"AFTER CLEAN -> {os.path.basename(path)}")
+
+        # 6) yaz
+        out.to_csv(path, index=False, encoding="utf-8")
+        log(f"💾 CSV kaydedildi: {path} | shape={out.shape}")
+
     except Exception as e:
         log(f"❌ Kaydetme hatası: {path}\n{e}")
-        df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
-        log(f"📁 Yedek oluşturuldu: {path}.bak")
-
+        try:
+            ensure_parent(path + ".bak")
+            df.to_csv(path + ".bak", index=False, encoding="utf-8-sig")
+            log(f"📁 Yedek oluşturuldu: {path}.bak")
+        except Exception as e2:
+            log(f"❌ Yedek oluşturma da başarısız: {path}.bak\n{e2}")
+            raise
+            
 def safe_save_parquet(df: pd.DataFrame, path: str):
     try:
         ensure_parent(path)
@@ -988,12 +1061,14 @@ log(f"📁 911 yerel özet yolu: {local_summary_path}")
 base_csv_path = ensure_local_911_base()
 if base_csv_path is not None:
     final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
+    audit_csv_columns(final_911, "911 BASE SUMMARY BEFORE SAVE")
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Yerel 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
 else:
     release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
     final_911 = summary_from_release(release_url, min_date=five_years_ago)
+    audit_csv_columns(final_911, "911 RELEASE SUMMARY BEFORE SAVE")
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Release özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
@@ -1012,33 +1087,36 @@ log(f"🗓️ İndirme aralığı: {fetch_start} → {fetch_end} ({(fetch_end - 
 
 inc = incremental_summary(fetch_start, fetch_end)
 if inc is not None and not inc.empty:
-    if "GEOID" in inc.columns:
-        inc["GEOID"] = normalize_geoid(inc["GEOID"], DEFAULT_GEOID_LEN)
-    inc["date"] = to_date(inc["date"])
-
     before = len(final_911)
     final_911 = pd.concat([final_911, inc], ignore_index=True)
 
     subset_cols = [c for c in ["GEOID", "date", "hour_range"] if c in final_911.columns]
-    if subset_cols:
+    if set(["GEOID", "date", "hour_range"]).issubset(final_911.columns):
         final_911 = (
             final_911.dropna(subset=["date"])
-            .sort_values(subset_cols)
-            .drop_duplicates(subset=subset_cols, keep="last")
+                     .sort_values(["GEOID", "date", "hour_range"])
+                     .drop_duplicates(subset=["GEOID", "date", "hour_range"], keep="last")
+                     .reset_index(drop=True)
         )
     else:
         final_911 = (
             final_911
-            .dropna(subset=["date"])
-            .sort_values(["date"])
-            .drop_duplicates(keep="last")
+            .drop_duplicates()
+            .reset_index(drop=True)
         )
-    
+
+    final_911["date"] = to_date(final_911["date"])
     final_911 = final_911[final_911["date"] >= five_years_ago].copy()
 
+    audit_csv_columns(final_911, "911 SUMMARY BEFORE SAVE")
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
-    log(f"💾 911 özet GÜNCELLENDİ (base+API) → {local_summary_path} & {y_summary_path} (+{len(final_911) - before:,} satır)")
+    log(
+        f"💾 911 özet GÜNCELLENDİ (base+API) → "
+        f"{local_summary_path} & {y_summary_path} "
+        f"(+{len(final_911) - before:,} satır)"
+    )
+
 else:
     log("ℹ️ API tarafında yeni gün yok veya boş döndü; taban veri geçerli.")
 
