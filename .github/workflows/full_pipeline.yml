@@ -960,164 +960,81 @@ jobs:
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
           
-      - name: 10.1) Update new SF feature sources (business/building/traffic/street)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
+      - name: 10.1) Update new SF feature sources (business/building)
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          SOCS_APP_TOKEN: ${{ secrets.SOCS_APP_TOKEN }}
-          BUSINESS_REFRESH_DAYS: ${{ env.BUSINESS_REFRESH_DAYS }}
-          STREET_REFRESH_DAYS: ${{ env.STREET_REFRESH_DAYS }}
+          GEOID_LEN: ${{ env.GEOID_LEN }}
           BUSINESS_DATASET_ID: ${{ env.BUSINESS_DATASET_ID }}
           BUILDING_DATASET_ID: ${{ env.BUILDING_DATASET_ID }}
-          TRAFFIC_DATASET_ID: ${{ env.TRAFFIC_DATASET_ID }}
-          STREET_DATASET_ID: ${{ env.STREET_DATASET_ID }}
-          BUILDING_DATE_COL: ${{ env.BUILDING_DATE_COL }}
-          TRAFFIC_DATE_COL: ${{ env.TRAFFIC_DATE_COL }}
-          FORCE_ALL_REFRESH: "0"
         run: |
           set -euo pipefail
-          echo "🏙️ Updating new SF feature datasets..."
+          echo "🏙️ Updating SF feature datasets (business/building)..."
           python -u scripts/update_sf_features_incremental.py
-
-          echo "=== Generated feature files ==="
+      
+          echo "📁 Feature outputs:"
           ls -lah "${CRIME_DATA_DIR}/sf_business_landuse.csv" || true
+          ls -lah "${CRIME_DATA_DIR}/sf_business_landuse.parquet" || true
           ls -lah "${CRIME_DATA_DIR}/sf_building_permits_vacancy.csv" || true
-          ls -lah "${CRIME_DATA_DIR}/sf_traffic_transport.csv" || true
-          ls -lah "${CRIME_DATA_DIR}/sf_street_environment.csv" || true
+          ls -lah "${CRIME_DATA_DIR}/sf_building_permits_vacancy.parquet" || true
 
-      - name: 10.2) Merge sf_crime_09.parquet + new features -> sf_crime_10.parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
+      - name: 10.2) Merge sf_crime_09.parquet + business/building -> sf_crime_10.parquet
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          GEOID_LEN: ${{ env.GEOID_LEN }}
         run: |
           set -euo pipefail
           echo "🧩 Building sf_crime_10.parquet..."
           python -u scripts/make_sf_crime_10.py
-
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.parquet" || { echo "❌ sf_crime_10.parquet oluşmadı"; exit 3; }
+      
+          test -f "${CRIME_DATA_DIR}/sf_crime_10.parquet"
+          ls -lh "${CRIME_DATA_DIR}/sf_crime_10.parquet"
           
-      - name: 10.9) Quick verify (after neighbors + sf_crime_10)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        run: |
-          set -euo pipefail
-          echo "=== AFTER NEIGHBORS / FEATURES: files in CRIME_DATA_DIR ==="
-          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,240p' || true
-
-          for f in \
-            sf_crime.csv \
-            sf_crime_y.csv \
-            sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
-            sf_business_landuse.csv \
-            sf_building_permits_vacancy.csv \
-            sf_traffic_transport.csv \
-            sf_street_environment.csv \
-            sf_911_last_5_year.csv \
-            sf_311_last_5_years.csv \
-            sf_crime_grid_full_labeled.csv \
-            neighbors.csv
-          do
-            p="${CRIME_DATA_DIR}/$f"
-
-            if [ -f "$p" ]; then
-              echo "✅ $f"
-              head -n 3 "$p" || true
-            elif [[ "$f" == *.csv ]]; then
-              pq="${CRIME_DATA_DIR}/${f%.csv}.parquet"
-              if [ -f "$pq" ]; then
-                echo "✅ $(basename "$pq")"
-                ls -lah "$pq" || true
-              else
-                echo "⚠️ missing: $f and ${f%.csv}.parquet"
-              fi
-            else
-              echo "⚠️ missing: $f"
-            fi
-          done
-
-          for f in \
-            sf_crime_09.parquet \
-            sf_crime_10.parquet \
-            sf_business_landuse.parquet \
-            sf_building_permits_vacancy.parquet \
-            sf_traffic_transport.parquet \
-            sf_street_environment.parquet
-          do
-            p="${CRIME_DATA_DIR}/$f"
-            if [ -f "$p" ]; then
-              echo "✅ $f"
-              ls -lah "$p" || true
-            else
-              echo "⚠️ missing: $f"
-            fi
-          done
-
-      - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
+      - name: 10.9) Quick verify outputs
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GEOID_LEN: "11"
+        run: |
+          set -euo pipefail
+          echo "🔎 Quick verify..."
+          for f in \
+            sf_business_landuse.csv \
+            sf_business_landuse.parquet \
+            sf_building_permits_vacancy.csv \
+            sf_building_permits_vacancy.parquet \
+            sf_crime_10.parquet
+          do
+            if [ -f "${CRIME_DATA_DIR}/$f" ]; then
+              echo "✅ Found: $f"
+              ls -lh "${CRIME_DATA_DIR}/$f"
+            else
+              echo "ℹ️ Missing (allowed if not produced in this run): $f"
+            fi
+          done
+
+      - name: 11) Convert selected csv files to parquet cache
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, re
+          import os
           import pandas as pd
-
-          D = os.environ["CRIME_DATA_DIR"]
-          GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
-
-          csv_files = [
-              "sf_crime_x.csv",
-              "sf_crime_y.csv",
-              "sf_crime_01.csv","sf_crime_02.csv","sf_crime_03.csv",
-              "sf_crime_04.csv","sf_crime_05.csv","sf_crime_06.csv",
-              "sf_crime_07.csv","sf_crime_08.csv","sf_crime_09.csv",
+      
+          base = os.environ["CRIME_DATA_DIR"]
+          files = [
               "sf_business_landuse.csv",
               "sf_building_permits_vacancy.csv",
-              "sf_traffic_transport.csv",
-              "sf_street_environment.csv",
-              "sf_weather_5years.csv",
-              "week.csv",
           ]
-
-          def norm_geoid(df):
-              if "GEOID" in df.columns:
-                  df["GEOID"] = (
-                      df["GEOID"].astype(str)
-                               .str.replace(r"\D", "", regex=True)
-                               .str.zfill(GEOID_LEN)
-                  )
-              return df
-
-          def to_parquet(csv_name: str):
-              csv_path = os.path.join(D, csv_name)
-              if not os.path.isfile(csv_path):
-                  print("⚠️ missing:", csv_path)
-                  return
-
-              df = pd.read_csv(csv_path, low_memory=False)
-              df = norm_geoid(df)
-
-              pq_path = os.path.join(D, csv_name.replace(".csv", ".parquet"))
-              df.to_parquet(pq_path, index=False, engine="pyarrow")
-              print("✅ wrote", os.path.basename(pq_path), "shape=", df.shape)
-
-          for f in csv_files:
-              to_parquet(f)
-
-          for name in os.listdir(D):
-              if re.fullmatch(r"sf_crime_\d{2}\.csv", name) and name not in csv_files:
-                  to_parquet(name)
+      
+          for fn in files:
+              csv_path = os.path.join(base, fn)
+              pq_path = csv_path[:-4] + ".parquet"
+              if os.path.exists(csv_path):
+                  df = pd.read_csv(csv_path, low_memory=False)
+                  df.to_parquet(pq_path, index=False)
+                  print(f"✅ converted: {csv_path} -> {pq_path} shape={df.shape}")
+              else:
+                  print(f"ℹ️ skip missing: {csv_path}")
           PY
-
-          if [ -f "${CRIME_DATA_DIR}/sf_crime_10.parquet" ]; then
-            echo "✅ sf_crime_10.parquet already exists"
-            ls -lh "${CRIME_DATA_DIR}/sf_crime_10.parquet"
-          else
-            echo "⚠️ sf_crime_10.parquet not found"
-          fi
-
-          echo "=== Parquet outputs (crime dir) ==="
-          ls -lah "${CRIME_DATA_DIR}" | grep -E "\.parquet$" || true
           
       - name: Upload artifact (datasets only, after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
@@ -1145,8 +1062,6 @@ jobs:
 
             ${{ env.CRIME_DATA_DIR }}/sf_business_landuse.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_building_permits_vacancy.parquet
-            ${{ env.CRIME_DATA_DIR }}/sf_traffic_transport.parquet
-            ${{ env.CRIME_DATA_DIR }}/sf_street_environment.parquet
 
             ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
             ${{ env.CRIME_DATA_DIR }}/week.parquet
@@ -1154,7 +1069,7 @@ jobs:
 
             ${{ env.CRIME_DATA_DIR }}/neighbors.csv
             ${{ env.CRIME_DATA_DIR }}/*.geojson
-            
+
       - name: Upload selected outputs to Google Drive (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
@@ -1163,7 +1078,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-      
+
           echo "Files check:"
           ls -lah "${CRIME_DATA_DIR}/week.csv" || true
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
@@ -1176,24 +1091,24 @@ jobs:
             python - <<'PY'
           import os
           import pandas as pd
-          
+
           D = os.environ["CRIME_DATA_DIR"]
           csv_file = os.path.join(D, "sf_crime_x.csv")
           parquet_file = os.path.join(D, "sf_crime_x.parquet")
-          
+
           df_tmp = pd.read_csv(csv_file, low_memory=False)
-          
+
           if "GEOID" in df_tmp.columns:
-            df_tmp["GEOID"] = (
-                df_tmp["GEOID"]
-                .astype("string")
-                .str.replace(r"\.0$", "", regex=True)
-                .str.zfill(11)
-            )
-        
+              df_tmp["GEOID"] = (
+                  df_tmp["GEOID"]
+                  .astype("string")
+                  .str.replace(r"\.0$", "", regex=True)
+                  .str.zfill(11)
+              )
+
           df_tmp.to_parquet(parquet_file, index=False)
           print("✅ Saved:", parquet_file)
-          
+
           if "GEOID" in df_tmp.columns:
               print("GEOID length distribution:")
               print(df_tmp["GEOID"].str.len().value_counts())
@@ -1201,45 +1116,41 @@ jobs:
           else
             echo "⚠️ sf_crime_x.csv yok → parquet conversion atlandı."
           fi
-          
+
           if ! command -v rclone >/dev/null; then
             echo "rclone not found, installing..."
             curl -fsSL https://rclone.org/install.sh | sudo bash
           fi
-          
+
           mkdir -p ~/.config/rclone
           cat > ~/.config/rclone/rclone.conf <<EOF
           [gdrive]
           type = drive
           token = ${RCLONE_GDRIVE_TOKEN}
           EOF
-          
+
           DEST="gdrive:crime_inputs"
           echo "Uploading files to Google Drive..."
 
           rclone copyto "${CRIME_DATA_DIR}/week.csv"     "${DEST}/week.csv"     || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet" "${DEST}/week.parquet" || true
-          
+
           for i in 01 02 03 04 05 06 07 08 09; do
             rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.parquet" "${DEST}/sf_crime_${i}.parquet" || true
           done
-          
+
           rclone copyto "${CRIME_DATA_DIR}/sf_crime.parquet"    "${DEST}/sf_crime.parquet"    || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"  "${DEST}/sf_crime_x.parquet"  || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.parquet"  "${DEST}/sf_crime_y.parquet"  || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_10.parquet" "${DEST}/sf_crime_10.parquet" || true
-          
+
           rclone copyto "${CRIME_DATA_DIR}/neighbors.csv" "${DEST}/neighbors.csv" || true
-          
+
           rclone copyto "${CRIME_DATA_DIR}/sf_business_landuse.csv"             "${DEST}/sf_business_landuse.csv" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_building_permits_vacancy.csv"     "${DEST}/sf_building_permits_vacancy.csv" || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_traffic_transport.csv"            "${DEST}/sf_traffic_transport.csv" || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_street_environment.csv"           "${DEST}/sf_street_environment.csv" || true
-          
+
           rclone copyto "${CRIME_DATA_DIR}/sf_business_landuse.parquet"         "${DEST}/sf_business_landuse.parquet" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_building_permits_vacancy.parquet" "${DEST}/sf_building_permits_vacancy.parquet" || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_traffic_transport.parquet"        "${DEST}/sf_traffic_transport.parquet" || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_street_environment.parquet"       "${DEST}/sf_street_environment.parquet" || true
-          
+
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 30 || true
