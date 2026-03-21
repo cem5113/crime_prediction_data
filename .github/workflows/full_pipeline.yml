@@ -301,28 +301,28 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, pandas as pd
-      
-          D = os.environ["CRIME_DATA_DIR"]
-          GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
-      
-          csvp = os.path.join(D, "sf_crime.csv")
-          parp = os.path.join(D, "sf_crime.parquet")
-      
-          if os.path.isfile(csvp):
-              df = pd.read_csv(csvp, low_memory=False)
-              if "GEOID" in df.columns:
-                  df["GEOID"] = (
-                      df["GEOID"]
-                      .astype(str)
-                      .str.replace(r"\D", "", regex=True)
-                      .str.zfill(GEOID_LEN)
-                  )
-              df.to_parquet(parp, index=False, engine="pyarrow")
-              print("✅ wrote", parp, "shape=", df.shape)
-          else:
-              print("⚠️ sf_crime.csv not found")
-          PY
+import os, pandas as pd
+
+D = os.environ["CRIME_DATA_DIR"]
+GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
+
+csvp = os.path.join(D, "sf_crime.csv")
+parp = os.path.join(D, "sf_crime.parquet")
+
+if os.path.isfile(csvp):
+    df = pd.read_csv(csvp, low_memory=False)
+    if "GEOID" in df.columns:
+        df["GEOID"] = (
+            df["GEOID"]
+            .astype(str)
+            .str.replace(r"\D", "", regex=True)
+            .str.zfill(GEOID_LEN)
+        )
+    df.to_parquet(parp, index=False, engine="pyarrow")
+    print("✅ wrote", parp, "shape=", df.shape)
+else:
+    print("⚠️ sf_crime.csv not found")
+PY
 
       - name: 02) 911 → sf_crime_01.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -905,14 +905,14 @@ jobs:
           # sf_crime_08 parquet ise CSV'ye çevir
           if [ ! -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ]; then
             python - <<'PY'
-      import os, pandas as pd
-      D = os.environ["CRIME_DATA_DIR"]
-      pq = os.path.join(D, "sf_crime_08.parquet")
-      csv = os.path.join(D, "sf_crime_08.csv")
-      df = pd.read_parquet(pq)
-      df.to_csv(csv, index=False)
-      print("✅ converted:", pq, "->", csv, "shape=", df.shape)
-      PY
+import os, pandas as pd
+D = os.environ["CRIME_DATA_DIR"]
+pq = os.path.join(D, "sf_crime_08.parquet")
+csv = os.path.join(D, "sf_crime_08.csv")
+df = pd.read_parquet(pq)
+df.to_csv(csv, index=False)
+print("✅ converted:", pq, "->", csv, "shape=", df.shape)
+PY
           fi
       
           [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
