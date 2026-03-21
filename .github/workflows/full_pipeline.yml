@@ -545,7 +545,7 @@ jobs:
             exit 2
           fi
 
-      - name: 08) Polis & Devlet binaları → sf_crime_07.csv
+      - name: 08) Polis & Devlet binaları → sf_crime_07.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -556,7 +556,7 @@ jobs:
           echo "CWD=$(pwd)"
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" | sed -n '1,160p' || true
-    
+      
           # input kontrol
           if [ -f "${CRIME_DATA_DIR}/sf_crime_06.csv" ]; then
             echo "✅ sf_crime_06.csv bulundu"
@@ -569,8 +569,7 @@ jobs:
             exit 2
           fi
       
-          # Perşembe: refresh=1, diğer günler: cache=0  (SF timezone)
-          DOW=$(TZ=America/Los_Angeles date +%u)  # 1=Mon ... 4=Thu ... 7=Sun
+          DOW=$(TZ=America/Los_Angeles date +%u)
           if [ "$DOW" = "4" ]; then
             export FORCE_PG_REFRESH=1
             echo "🟢 Thursday → FORCE_PG_REFRESH=1"
@@ -579,7 +578,6 @@ jobs:
             echo "🟡 Not Thursday → FORCE_PG_REFRESH=0 (cache mode)"
           fi
       
-          # script seç ve çalıştır
           if [ -f update_police_gov.py ]; then
             python -u update_police_gov.py
           elif [ -f scripts/enrich_police_gov_06_to_07.py ]; then
@@ -588,15 +586,15 @@ jobs:
             echo "❌ Polis/Gov adımı bulunamadı"; exit 2
           fi
       
-          # output kontrol
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_07.csv" || { echo "❌ sf_crime_07.csv oluşmadı"; exit 3; }
-          echo "sf_crime_07.csv (head):"
-          head -n 5 "${CRIME_DATA_DIR}/sf_crime_07.csv" || true
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_07.parquet" || { echo "❌ sf_crime_07.parquet oluşmadı"; exit 3; }
+          echo "✅ sf_crime_07.parquet bulundu"
 
-      - name: 09) Hava durumu — sadece update
+      - name: 09) Hava durumu + sf_crime_08.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
-          set -e
+          set -euo pipefail
           if [ -f update_weather.py ]; then
             python -u update_weather.py
           elif [ -f scripts/update_weather.py ]; then
@@ -604,8 +602,20 @@ jobs:
           else
             echo "❌ Weather script not found"; exit 2
           fi
+      
           echo "sf_weather_5years.csv — ilk 5 satır:"
-          head -n 5 "${CRIME_DATA_DIR}/sf_weather_5years.csv" || head -n 5 sf_weather_5years.csv || true
+          head -n 5 "${CRIME_DATA_DIR}/sf_weather_5years.csv" || true
+      
+          if [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ]; then
+            echo "✅ sf_crime_08.parquet bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_08.parquet"
+          elif [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ]; then
+            echo "✅ sf_crime_08.csv bulundu"
+            ls -lah "${CRIME_DATA_DIR}/sf_crime_08.csv"
+          else
+            echo "❌ update_weather.py sonrası sf_crime_08 oluşmadı"
+            exit 3
+          fi
 
       - name: Weather → parquet cache
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -888,19 +898,29 @@ jobs:
           else
             echo "⚠️ scripts/update_neighbors.py yok"; exit 2
           fi
-
+      
           echo "✅ Using PY=$PY"
           ls -lah "$PY" || true
-
+      
+          # sf_crime_08 parquet ise CSV'ye çevir
+          if [ ! -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] && [ -f "${CRIME_DATA_DIR}/sf_crime_08.parquet" ]; then
+            python - <<'PY'
+      import os, pandas as pd
+      D = os.environ["CRIME_DATA_DIR"]
+      pq = os.path.join(D, "sf_crime_08.parquet")
+      csv = os.path.join(D, "sf_crime_08.csv")
+      df = pd.read_parquet(pq)
+      df.to_csv(csv, index=False)
+      print("✅ converted:", pq, "->", csv, "shape=", df.shape)
+      PY
+          fi
+      
           [ -f "${CRIME_DATA_DIR}/sf_crime_08.csv" ] || { echo "❌ sf_crime_08.csv yok"; exit 2; }
           [ -f "${CRIME_DATA_DIR}/neighbors.csv" ] || { echo "❌ neighbors.csv yok"; exit 2; }
-
-          python -u "$PY"
-
-          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
-          head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
       
-          echo "✅ Neighbors çıktı: ${CRIME_DATA_DIR}/sf_crime_09.csv"
+          python -u "$PY"
+      
+          [ -f "${CRIME_DATA_DIR}/sf_crime_09.csv" ] || { echo "❌ sf_crime_09.csv oluşmadı"; exit 3; }
           head -n 5 "${CRIME_DATA_DIR}/sf_crime_09.csv" || true
 
           # =========================
@@ -1016,9 +1036,18 @@ jobs:
             neighbors.csv
           do
             p="${CRIME_DATA_DIR}/$f"
+
             if [ -f "$p" ]; then
               echo "✅ $f"
               head -n 3 "$p" || true
+            elif [[ "$f" == *.csv ]]; then
+              pq="${CRIME_DATA_DIR}/${f%.csv}.parquet"
+              if [ -f "$pq" ]; then
+                echo "✅ $(basename "$pq")"
+                ls -lah "$pq" || true
+              else
+                echo "⚠️ missing: $f and ${f%.csv}.parquet"
+              fi
             else
               echo "⚠️ missing: $f"
             fi
