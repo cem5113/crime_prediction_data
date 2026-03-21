@@ -324,7 +324,9 @@ def resolve_existing_raw_path():
         return True
 
     # 1) Öncelik: GitHub'daki mevcut base raw kaynak
-    base_raw_names = [BASE_RAW_311_NAME]
+    base_raw_names = [
+        "sf_311_last_5_years.parquet",
+    ]
     for cand in candidate_paths(base_raw_names, roots):
         if _ok(cand):
             try:
