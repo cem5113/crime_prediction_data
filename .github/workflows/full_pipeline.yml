@@ -910,31 +910,6 @@ jobs:
           print('✅ wrote', parp, 'shape=', df.shape)
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
-          
-      - name: 10.9) Quick verify (after neighbors + sf_crime_10)
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        run: |
-          set -euo pipefail
-          echo "=== AFTER NEIGHBORS: files in CRIME_DATA_DIR ==="
-          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,200p' || true
-
-          for f in \
-            sf_crime.csv \
-            sf_crime_y.csv \
-            sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
-            sf_911_last_5_year.csv sf_311_last_5_years.csv \
-            sf_crime_grid_full_labeled.csv \
-            neighbors.csv
-            sf_crime_10.parquet
-          do
-            p="${CRIME_DATA_DIR}/$f"
-            if [ -f "$p" ]; then
-              echo "✅ $f"
-              head -n 3 "$p" || true
-            else
-              echo "⚠️ missing: $f"
-            fi
-          done
 
       - name: 10.10) Business + Building enrich → sf_crime_10.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -965,8 +940,33 @@ jobs:
 
           [ -f "${CRIME_DATA_DIR}/sf_crime_10.parquet" ] || { echo "❌ sf_crime_10.parquet oluşmadı"; exit 3; }
           ls -lh "${CRIME_DATA_DIR}/sf_crime_10.parquet" || true
+
+      - name: 10.9) Quick verify (after neighbors + sf_crime_10)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          set -euo pipefail
+          echo "=== AFTER NEIGHBORS: files in CRIME_DATA_DIR ==="
+          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,200p' || true
+
+          for f in \
+            sf_crime.csv \
+            sf_crime_y.csv \
+            sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
+            sf_911_last_5_year.csv sf_311_last_5_years.csv \
+            sf_crime_grid_full_labeled.csv \
+            neighbors.csv \
+            sf_crime_10.parquet
+          do
+            p="${CRIME_DATA_DIR}/$f"
+            if [ -f "$p" ]; then
+              echo "✅ $f"
+              head -n 3 "$p" || true
+            else
+              echo "⚠️ missing: $f"
+            fi
+          done
           
-            - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core, sf_crime_10 ayrı üretilir)
+      - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core, sf_crime_10 ayrı üretilir)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
