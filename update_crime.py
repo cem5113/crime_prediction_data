@@ -268,18 +268,9 @@ def safe_zfill_geoid(x, width: int = DEFAULT_GEOID_LEN):
     except Exception:
         return np.nan
 
-
 def parse_dt_to_sf(s: pd.Series) -> pd.Series:
-    dt = pd.to_datetime(s, errors="coerce")
-    try:
-        if getattr(dt.dt, "tz", None) is None:
-            dt = dt.dt.tz_localize(SF_TZ, nonexistent="shift_forward", ambiguous="NaT")
-        else:
-            dt = dt.dt.tz_convert(SF_TZ)
-    except Exception:
-        pass
-    return dt
-
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+    return dt.dt.tz_convert(SF_TZ)
 
 def to_slot_start_hour(hour_s: pd.Series) -> pd.Series:
     h = pd.to_numeric(hour_s, errors="coerce").fillna(0).astype(int) % 24
@@ -970,7 +961,7 @@ def build_panel_from_event(df_all: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         pass
 
-    latest_published_dt = pd.to_datetime(panel_evt["datetime"], errors="coerce").max()
+    latest_published_dt = parse_dt_to_sf(panel_evt["datetime"]).max()
     if pd.notna(latest_published_dt):
         latest_published_dt = pd.Timestamp(latest_published_dt)
         try:
