@@ -546,6 +546,22 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
+print("🚀 Demographic update başlıyor...", flush=True)
+print(f"CRIME_INPUT={CRIME_INPUT}", flush=True)
+print(f"DEMOGRAPHIC_PATH={DEMOGRAPHIC_PATH}", flush=True)
+print("1) crime okunacak", flush=True)
+crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
+print("1) crime okundu", flush=True)
+print("2) split başlayacak", flush=True)
+old_out, new_rows = split_old_and_new_rows(
+    crime_in,
+    CRIME_OUTPUT,
+    CRIME_OUTPUT_PARQUET
+)
+print("2) split bitti", flush=True)
+print("3) demographic okunacak", flush=True)
+demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
+print("3) demographic okundu", flush=True)
 
 # =============================================================================
 # MAIN
