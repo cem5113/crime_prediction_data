@@ -799,20 +799,59 @@ def add_cell_rolling_history(panel: pd.DataFrame) -> pd.DataFrame:
 
     grp = out.groupby(["GEOID", "hour_range"], sort=False)["y_count"]
 
-    # geçmiş aynı slot
-    out["same_slot_prev_1"] = grp.shift(1).fillna(0).astype("float32")
-    out["same_slot_prev_2"] = grp.shift(2).fillna(0).astype("float32")
-    out["same_slot_prev_7"] = grp.shift(7).fillna(0).astype("float32")
+    out["same_slot_prev_1"]  = grp.shift(1).fillna(0).astype("float32")
+    out["same_slot_prev_2"]  = grp.shift(2).fillna(0).astype("float32")
+    out["same_slot_prev_7"]  = grp.shift(7).fillna(0).astype("float32")
     out["same_slot_prev_14"] = grp.shift(14).fillna(0).astype("float32")
     out["same_slot_prev_28"] = grp.shift(28).fillna(0).astype("float32")
 
-    out["same_slot_mean_7"] = grp.shift(1).rolling(7, min_periods=1).mean().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
-    out["same_slot_mean_14"] = grp.shift(1).rolling(14, min_periods=1).mean().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
-    out["same_slot_mean_28"] = grp.shift(1).rolling(28, min_periods=1).mean().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
+    shifted = grp.shift(1)
 
-    out["same_slot_std_7"] = grp.shift(1).rolling(7, min_periods=2).std().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
-    out["same_slot_std_14"] = grp.shift(1).rolling(14, min_periods=2).std().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
-    out["same_slot_std_28"] = grp.shift(1).rolling(28, min_periods=2).std().reset_index(level=[0, 1], drop=True).fillna(0).astype("float32")
+    roll_grp = shifted.groupby([out["GEOID"], out["hour_range"]], sort=False)
+
+    out["same_slot_mean_7"]  = (
+        roll_grp.rolling(7, min_periods=1)
+        .mean()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+    out["same_slot_mean_14"] = (
+        roll_grp.rolling(14, min_periods=1)
+        .mean()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+    out["same_slot_mean_28"] = (
+        roll_grp.rolling(28, min_periods=1)
+        .mean()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+
+    out["same_slot_std_7"] = (
+        roll_grp.rolling(7, min_periods=2)
+        .std()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+    out["same_slot_std_14"] = (
+        roll_grp.rolling(14, min_periods=2)
+        .std()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+    out["same_slot_std_28"] = (
+        roll_grp.rolling(28, min_periods=2)
+        .std()
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
 
     return out
 
