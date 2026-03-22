@@ -531,6 +531,20 @@ def main():
     # 3) Feature üret
     # -------------------------------------------------------------------------
     demo_feat = build_demographic_features(demo_raw)
+    
+    print("🚀 Demographic update başlıyor...", flush=True)
+    print(f"CRIME_INPUT={CRIME_INPUT}", flush=True)
+    print(f"DEMOGRAPHIC_PATH={DEMOGRAPHIC_PATH}", flush=True)
+    
+    print("1) crime okunacak", flush=True)
+    crime = pd.read_csv(CRIME_INPUT, low_memory=False)
+    print("1) crime okundu", flush=True)
+    
+    print("2) demographic okunacak", flush=True)
+    demo = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False)
+    print("2) demographic okundu", flush=True)
+    
+    print("3) feature build başlayacak", flush=True)
 
     # -------------------------------------------------------------------------
     # 4) Append-only split
