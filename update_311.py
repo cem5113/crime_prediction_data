@@ -283,27 +283,36 @@ def ensure_blocks_gdf():
 
 def geotag_to_geoid11(df_new: pd.DataFrame) -> pd.DataFrame:
     df_new = df_new.copy()
+    df_new["__rowid__"] = range(len(df_new))
 
     if "latitude" not in df_new.columns and "lat" in df_new.columns:
         df_new["latitude"] = pd.to_numeric(df_new["lat"], errors="coerce")
+
     if "longitude" not in df_new.columns and "long" in df_new.columns:
         df_new["longitude"] = pd.to_numeric(df_new["long"], errors="coerce")
 
-    df_new["latitude"] = pd.to_numeric(df_new.get("latitude"), errors="coerce")
-    df_new["longitude"] = pd.to_numeric(df_new.get("longitude"), errors="coerce")
+    if "latitude" not in df_new.columns:
+        df_new["latitude"] = pd.NA
+    if "longitude" not in df_new.columns:
+        df_new["longitude"] = pd.NA
+
+    df_new["latitude"] = pd.to_numeric(df_new["latitude"], errors="coerce")
+    df_new["longitude"] = pd.to_numeric(df_new["longitude"], errors="coerce")
 
     df_ok = df_new.dropna(subset=["latitude", "longitude"]).copy()
     if df_ok.empty:
-        df_new["GEOID"] = pd.NA
-        return df_new
+        out = df_new.copy()
+        out["GEOID"] = pd.NA
+        return out.drop(columns="__rowid__", errors="ignore")
 
     gdf_blocks = ensure_blocks_gdf()
-    if gdf_blocks is None:
-        df_new["GEOID"] = pd.NA
-        return df_new
+    if gdf_blocks is None or gdf_blocks.empty:
+        out = df_new.copy()
+        out["GEOID"] = pd.NA
+        return out.drop(columns="__rowid__", errors="ignore")
 
     gdf_pts = gpd.GeoDataFrame(
-        df_ok,
+        df_ok.copy(),
         geometry=gpd.points_from_xy(df_ok["longitude"], df_ok["latitude"]),
         crs="EPSG:4326",
     )
@@ -312,21 +321,50 @@ def geotag_to_geoid11(df_new: pd.DataFrame) -> pd.DataFrame:
         gdf_join = gpd.sjoin(gdf_pts, gdf_blocks, how="left", predicate="within")
     except Exception:
         try:
-            gdf_join = gpd.sjoin_nearest(gdf_pts, gdf_blocks, how="left", max_distance=0.001)
+            gdf_join = gpd.sjoin_nearest(
+                gdf_pts,
+                gdf_blocks,
+                how="left",
+                max_distance=0.001
+            )
         except Exception:
-            df_new["GEOID"] = pd.NA
-            return df_new
+            out = df_new.copy()
+            out["GEOID"] = pd.NA
+            return out.drop(columns="__rowid__", errors="ignore")
 
-    out = pd.DataFrame(gdf_join.drop(columns=["geometry"], errors="ignore"))
-    out.rename(columns={"TRACT11": "GEOID"}, inplace=True)
-    out["GEOID"] = normalize_geoid(out["GEOID"], DEFAULT_GEOID_LEN)
+    out = pd.DataFrame(gdf_join.drop(columns=["geometry"], errors="ignore")).copy()
 
-    back = df_new.copy()
-    back["__rowid__"] = np.arange(len(back))
-    out["__rowid__"] = out.index.values
+    # Aynı isimli kolonlardan kaynaklı patlamayı önle
+    out = out.loc[:, ~out.columns.duplicated()].copy()
 
-    merged = back.merge(out[["__rowid__", "GEOID"]], on="__rowid__", how="left")
-    merged.drop(columns="__rowid__", inplace=True)
+    # Eski GEOID varsa kaldır, TRACT11'den tek GEOID üret
+    if "GEOID" in out.columns:
+        out = out.drop(columns=["GEOID"], errors="ignore")
+
+    if "TRACT11" in out.columns:
+        out = out.rename(columns={"TRACT11": "GEOID"})
+        out["GEOID"] = normalize_geoid(out["GEOID"], DEFAULT_GEOID_LEN)
+    else:
+        out["GEOID"] = pd.NA
+
+    keep_cols = ["__rowid__", "GEOID"]
+    out = out[[c for c in keep_cols if c in out.columns]].copy()
+
+    merged = df_new.merge(out, on="__rowid__", how="left")
+
+    if "GEOID_x" in merged.columns and "GEOID_y" in merged.columns:
+        merged["GEOID"] = merged["GEOID_y"].combine_first(merged["GEOID_x"])
+        merged = merged.drop(columns=["GEOID_x", "GEOID_y"], errors="ignore")
+    elif "GEOID_y" in merged.columns:
+        merged = merged.rename(columns={"GEOID_y": "GEOID"})
+    elif "GEOID_x" in merged.columns:
+        merged = merged.rename(columns={"GEOID_x": "GEOID"})
+    elif "GEOID" not in merged.columns:
+        merged["GEOID"] = pd.NA
+
+    merged["GEOID"] = normalize_geoid(merged["GEOID"], DEFAULT_GEOID_LEN)
+    merged = merged.drop(columns="__rowid__", errors="ignore")
+
     return merged
 
 # =============================================================================
@@ -381,6 +419,8 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
     log(f"🧩 İndirme modu: DATE-CHUNKS ({CHUNK_DAYS} gün) + paging")
 
     session = requests.Session()
+    all_chunks = []
+    consec_empty = 0
 
     # Daha geniş sinyal için police-only yerine tüm 311 çekilebilir.
     # İstersen agency filtresi env ile ver.
@@ -401,19 +441,17 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
         "service_details",
         "lat",
         "long",
-        "point",
         "source"
     ])
 
-    all_chunks = []
-    consec_empty = 0
     cur = start_date
-    end = TODAY
 
-    while cur <= end:
-        chunk_end = min(cur + timedelta(days=CHUNK_DAYS - 1), end)
-        start_iso = f"{cur.isoformat()}T00:00:00.000"
-        end_iso   = f"{chunk_end.isoformat()}T23:59:59.999"
+    while cur <= TODAY:
+        chunk_end = min(cur + timedelta(days=CHUNK_DAYS - 1), TODAY)
+
+        # Socrata için daha güvenli tarih filtresi
+        start_iso = pd.Timestamp(cur).strftime("%Y-%m-%dT00:00:00")
+        end_iso = (pd.Timestamp(chunk_end) + pd.Timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
 
         log(f"⛏️  {cur} → {chunk_end} aralığı çekiliyor…")
 
@@ -424,7 +462,7 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
         while True:
             params = {
                 "$select": cols,
-                "$where": f"datetime between '{start_iso}' and '{end_iso}'{extra_where}",
+                "$where": f"datetime >= '{start_iso}' AND datetime < '{end_iso}'{extra_where}",
                 "$order": "datetime ASC",
                 "$limit": PAGE_LIMIT,
                 "$offset": offset,
@@ -433,10 +471,14 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
             try:
                 data = socrata_get(session, DATASET_BASE, params)
             except Exception as e:
-                log(f"❌ Chunk hata ({cur}→{chunk_end}, offset={offset}): {e} → chunk geçiliyor.")
+                log(
+                    f"❌ Chunk hata ({cur}→{chunk_end}, offset={offset}) | "
+                    f"where={params.get('$where')} | err={e} → chunk geçiliyor."
+                )
                 break
 
             df = pd.DataFrame(data)
+
             if df.empty:
                 break
 
@@ -446,19 +488,23 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
             chunk_rows.append(df)
             offset += len(df)
             pages += 1
+
             log(f"   + {offset:,} kayıt (sayfa={pages})")
 
-            if len(df) < PAGE_LIMIT or pages >= MAX_PAGES_PER_CHUNK:
-                if pages >= MAX_PAGES_PER_CHUNK:
-                    log(f"   ↪️ MAX_PAGES_PER_CHUNK={MAX_PAGES_PER_CHUNK} doldu, chunk kesildi.")
+            if len(df) < PAGE_LIMIT:
+                break
+
+            if pages >= MAX_PAGES_PER_CHUNK:
+                log(f"   ↪️ MAX_PAGES_PER_CHUNK={MAX_PAGES_PER_CHUNK} doldu, chunk kesildi.")
                 break
 
             time.sleep(SLEEP_SEC)
 
         if chunk_rows:
             consec_empty = 0
-            all_chunks.append(pd.concat(chunk_rows, ignore_index=True))
-            log(f"✅ Chunk bitti: satır={sum(len(x) for x in chunk_rows):,}")
+            one_chunk = pd.concat(chunk_rows, ignore_index=True)
+            all_chunks.append(one_chunk)
+            log(f"✅ Chunk bitti: satır={len(one_chunk):,}")
         else:
             consec_empty += 1
             log(f"ℹ️ Chunk boş döndü (ardışık boş={consec_empty}).")
@@ -469,7 +515,13 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
         cur = chunk_end + timedelta(days=1)
         time.sleep(SLEEP_SEC)
 
-    return pd.concat(all_chunks, ignore_index=True) if all_chunks else pd.DataFrame()
+    if all_chunks:
+        out = pd.concat(all_chunks, ignore_index=True)
+        log(f"📦 DATE-CHUNKS tamamlandı | toplam satır={len(out):,}")
+        return out
+
+    log("ℹ️ Hiç veri inmedi.")
+    return pd.DataFrame(columns=cols.split(","))
 
 # =============================================================================
 # ŞEMA / TEMİZLİK
@@ -479,7 +531,7 @@ def standardize_raw_schema(df: pd.DataFrame) -> pd.DataFrame:
         cols = [
             "id", "datetime", "closed_date", "updated_datetime", "status_description",
             "agency_responsible", "category", "subcategory", "service_details",
-            "lat", "long", "point", "source", "latitude", "longitude",
+            "lat", "long", "source", "latitude", "longitude",
             "sf_date", "sf_time", "event_hour", "hour_range", "GEOID",
             "status_closed_flag", "resolution_hours", "category_group", "source_group"
         ]
@@ -491,7 +543,7 @@ def standardize_raw_schema(df: pd.DataFrame) -> pd.DataFrame:
     for c in [
         "id", "datetime", "closed_date", "updated_datetime", "status_description",
         "agency_responsible", "category", "subcategory", "service_details",
-        "lat", "long", "point", "source", "latitude", "longitude", "GEOID"
+        "lat", "long", "source", "latitude", "longitude", "GEOID"
     ]:
         if c not in df.columns:
             df[c] = pd.NA
