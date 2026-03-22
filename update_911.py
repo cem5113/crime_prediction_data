@@ -856,25 +856,32 @@ def add_rolling_features(summary_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     final_911 = summary_df[need_cols].copy()
 
     # günlük unique
+    day_keep = ["GEOID", "date"]
+    day_keep += [c for c in [
+        "911_request_count_daily(before_24_hours)",
+        "911_violent_count_day",
+        "911_property_count_day",
+        "911_weapons_count_day",
+        "911_severity_sum_day",
+    ] if c in final_911.columns]
+
+    day_unique = (
+        final_911[day_keep]
+        .groupby(["GEOID", "date"], as_index=False, observed=True)
+        .sum(numeric_only=True)
+        .sort_values(["GEOID", "date"])
+        .reset_index(drop=True)
+    )
+
+    # slot unique
     hr_keep = ["GEOID", "hr_key", "date", "911_request_count_hour_range"]
     hr_keep += [c for c in [
         "911_violent_count_hr", "911_property_count_hr", "911_weapons_count_hr", "911_severity_sum_hr"
     ] if c in final_911.columns]
-    
+
     hr_unique = (
         final_911[hr_keep]
         .groupby(["GEOID", "hr_key", "date"], as_index=False, observed=True)
-        .sum(numeric_only=True)
-        .sort_values(["GEOID", "hr_key", "date"])
-        .reset_index(drop=True)
-    )
-    day_unique = day_unique.sort_values(["GEOID", "date"]).reset_index(drop=True)
-
-    # slot unique
-    hr_cols = [c for c in final_911.columns if c.endswith("_hr")] + ["911_request_count_hour_range"]
-    hr_unique = final_911[["GEOID", "hr_key", "date"] + [c for c in hr_cols if c in final_911.columns]]
-    hr_unique = (
-        hr_unique.groupby(["GEOID", "hr_key", "date"], as_index=False, observed=True)
         .sum(numeric_only=True)
         .sort_values(["GEOID", "hr_key", "date"])
         .reset_index(drop=True)
@@ -1081,7 +1088,7 @@ def main():
     base_path = ensure_local_911_base()
     
     if base_path is not None:
-        final_911 = summary_from_local(base_path, min_date=five_years_ago)
+         summary_from_local(base_path, min_date=five_years_ago)
         safe_save_parquet(final_911, str(local_summary_parquet_path))
         log("✅ Yerel 911 summary hazırlandı (erken aşamada yalnız parquet yazıldı).")
     else:
