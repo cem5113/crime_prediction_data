@@ -438,7 +438,6 @@ def get_latest_available_date() -> Optional[datetime.date]:
             continue
     return None
 
-
 # ============================================================
 # RAW -> EVENT
 # ============================================================
@@ -666,10 +665,6 @@ def prepare_raw_crime_to_event(raw_new: pd.DataFrame, gdf_blocks: Optional[gpd.G
     return df
 
 
-# ============================================================
-# PANEL FEATURES FROM CRIME ONLY
-# ============================================================
-
 def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
     out = panel_df.copy()
 
@@ -686,7 +681,10 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
 
     if out.empty:
         for c in feature_cols:
-            out[c] = 0 if c != "last_crime_dt" else pd.NaT
+            if c == "last_crime_dt":
+                out[c] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, America/Los_Angeles]")
+            else:
+                out[c] = 0.0
         return out
 
     if "slot_start_dt" not in out.columns:
@@ -695,7 +693,10 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
     ev = event_df.copy()
     if ev.empty or ("GEOID" not in ev.columns) or ("datetime" not in ev.columns):
         for c in feature_cols:
-            out[c] = 0 if c != "last_crime_dt" else pd.NaT
+            if c == "last_crime_dt":
+                out[c] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, America/Los_Angeles]")
+            else:
+                out[c] = 0.0
         return out
 
     ev["GEOID"] = normalize_geoid_series(ev["GEOID"])
@@ -715,7 +716,10 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
     ev = ev.sort_values(["GEOID", "datetime"]).copy()
 
     for c in feature_cols:
-        out[c] = 0 if c != "last_crime_dt" else pd.NaT
+        if c == "last_crime_dt":
+            out[c] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, America/Los_Angeles]")
+        else:
+            out[c] = 0.0
 
     out["_row_id_tmp"] = np.arange(len(out))
     out = out.sort_values(["GEOID", "slot_start_dt"]).copy()
@@ -756,14 +760,15 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
         last_ns[valid] = ev_ns[pos[valid]]
 
         last_dt = pd.to_datetime(last_ns, errors="coerce", utc=True).tz_convert(SF_TZ)
-        out.loc[idx, "last_crime_dt"] = pd.Series(last_dt, index=idx)
+        out.loc[idx, "last_crime_dt"] = pd.DatetimeIndex(last_dt)
 
         hours_since = np.full(len(slot_ns), np.nan, dtype="float64")
         hours_since[valid] = (slot_ns[valid] - ev_ns[pos[valid]]) / 3_600_000_000_000
-        out.loc[idx, "hours_since_last_crime"] = hours_since
-        out.loc[idx, "days_since_last_crime"] = hours_since / 24.0
-        out.loc[idx, "exp_decay_last_crime_24h"] = np.exp(-hours_since / 24.0)
-        out.loc[idx, "exp_decay_last_crime_72h"] = np.exp(-hours_since / 72.0)
+
+        out.loc[idx, "hours_since_last_crime"] = pd.Series(hours_since, index=idx, dtype="float64")
+        out.loc[idx, "days_since_last_crime"] = pd.Series(hours_since / 24.0, index=idx, dtype="float64")
+        out.loc[idx, "exp_decay_last_crime_24h"] = pd.Series(np.exp(-hours_since / 24.0), index=idx, dtype="float64")
+        out.loc[idx, "exp_decay_last_crime_72h"] = pd.Series(np.exp(-hours_since / 72.0), index=idx, dtype="float64")
 
         for col, win_ns in windows.items():
             counts = np.zeros(len(slot_ns), dtype=np.int32)
@@ -782,7 +787,6 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
 
     out = out.sort_values("_row_id_tmp").drop(columns=["_row_id_tmp"])
     return out
-
 
 def add_cell_rolling_history(panel: pd.DataFrame) -> pd.DataFrame:
     out = panel.copy()
@@ -1087,7 +1091,17 @@ def main():
             common_cols = sorted(set(df_old.columns).union(set(df_new.columns)))
             df_old2 = df_old.reindex(columns=common_cols)
             df_new2 = df_new.reindex(columns=common_cols)
-            df_all = pd.concat([df_old2, df_new2], ignore_index=True)
+            
+            frames = []
+            if not df_old2.empty:
+                frames.append(df_old2.copy())
+            if not df_new2.empty:
+                frames.append(df_new2.copy())
+            
+            if frames:
+                df_all = pd.concat(frames, ignore_index=True)
+            else:
+                df_all = pd.DataFrame(columns=common_cols)
 
     # standard cleanup
     if "id" not in df_all.columns:
