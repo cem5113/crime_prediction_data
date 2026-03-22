@@ -288,15 +288,15 @@ def add_semantic_flags(df: pd.DataFrame) -> pd.DataFrame:
     sensitive  = df["sensitive_call"].map(clean_text) if "sensitive_call" in df.columns else pd.Series("", index=df.index)
 
     # --- semantic groups ---
-    violent_re = r"(assault|battery|fight|stabbing|shot|shooting|gun|weapon|armed|robbery|homicide|person with a gun|shots fired)"
-    property_re = r"(burglary|theft|larceny|auto burglary|vehicle theft|stolen|breaking|shoplifting|trespass)"
-    disorder_re = r"(disturbance|noise|disorderly|party|drunk|loitering|suspicious|harassment)"
-    traffic_re = r"(traffic|collision|accident|hit and run|vehicle|dui)"
-    narcotics_re = r"(drug|narcotic|overdose)"
-    mental_re = r"(mental|emotionally disturbed|5150|suicidal|crisis)"
-    weapons_re = r"(gun|weapon|knife|shots fired|armed)"
-    domestic_re = r"(domestic|family disturbance)"
-    alarm_re = r"(alarm|silent alarm|audible alarm|burglar alarm)"
+    violent_re = r"(?:assault|battery|fight|stabbing|shot|shooting|gun|weapon|armed|robbery|homicide|person with a gun|shots fired)"
+    property_re = r"(?:burglary|theft|larceny|auto burglary|vehicle theft|stolen|breaking|shoplifting|trespass)"
+    disorder_re = r"(?:disturbance|noise|disorderly|party|drunk|loitering|suspicious|harassment)"
+    traffic_re = r"(?:traffic|collision|accident|hit and run|vehicle|dui)"
+    narcotics_re = r"(?:drug|narcotic|overdose)"
+    mental_re = r"(?:mental|emotionally disturbed|5150|suicidal|crisis)"
+    weapons_re = r"(?:gun|weapon|knife|shots fired|armed)"
+    domestic_re = r"(?:domestic|family disturbance)"
+    alarm_re = r"(?:alarm|silent alarm|audible alarm|burglar alarm)"
 
     df["is_violent_911"]   = call_all.str.contains(violent_re,  case=False, regex=True).astype("int8")
     df["is_property_911"]  = call_all.str.contains(property_re, case=False, regex=True).astype("int8")
