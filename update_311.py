@@ -58,7 +58,7 @@ SOCRATA_APP_TOKEN = os.getenv("SOCS_APP_TOKEN", "").strip()
 
 PAGE_LIMIT   = int(os.getenv("SF_SODA_PAGE_LIMIT", "50000"))
 SODA_TIMEOUT = int(os.getenv("SF_SODA_TIMEOUT", "90"))
-SODA_RETRIES = int(os.getenv("SF_SODA_RETRIES", "5"))
+SODA_RETRIES = int(os.getenv("SF_SODA_RETRIES", "2"))
 SLEEP_SEC    = float(os.getenv("SF_SODA_THROTTLE_SEC", "0.25"))
 
 CHUNK_DAYS              = int(os.getenv("SF311_CHUNK_DAYS", "31"))
@@ -243,6 +243,8 @@ def socrata_get(session: requests.Session, url, params):
     for i in range(SODA_RETRIES):
         try:
             r = session.get(url, params=params, headers=headers, timeout=SODA_TIMEOUT)
+            if r.status_code in (400, 401, 403, 404):
+                r.raise_for_status()   # retry yok
             if r.status_code in (408, 429) or 500 <= r.status_code < 600:
                 raise requests.HTTPError(f"status={r.status_code}")
             r.raise_for_status()
@@ -719,11 +721,27 @@ def build_311_features_3h(df_raw: pd.DataFrame) -> pd.DataFrame:
     )
 
     slot = slot.sort_values(["GEOID", "slot_time"]).reset_index(drop=True)
-
-    # 3 saatlik tüm slot grid'i: var olan slotlar üzerinden ilerleyelim
-    # rolling için timeseries index gerekecek
+    
+    # 🔥 HIZ OPTİMİZASYONU (gereksiz kolonları düşür)
+    keep = [
+        "GEOID","date","hour_range","slot_time",
+        "slot_count","slot_open","slot_closed",
+        "slot_unique_category","slot_unique_subcategory",
+        "slot_avg_resolution_hours","slot_median_resolution_hours",
+        "grp_disorder","grp_vehicle","grp_street","grp_lighting",
+        "grp_sanitation","grp_infrastructure","grp_other",
+        "src_mobile","src_phone","src_web","src_other"
+    ]
+    slot = slot[keep].copy()
+    
+    # (opsiyonel ama önerilir)
+    for c in slot.columns:
+        if c.startswith("slot_") or c.startswith("grp_") or c.startswith("src_"):
+            slot[c] = pd.to_numeric(slot[c], errors="coerce").astype("float32")
+    
+    # 3 saatlik tüm slot grid'i
     results = []
-
+    
     for geoid, g in slot.groupby("GEOID", sort=False):
         g = g.sort_values("slot_time").copy()
 
