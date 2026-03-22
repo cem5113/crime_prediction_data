@@ -167,7 +167,7 @@ SF_APP_TOKEN    = os.getenv("SF911_API_TOKEN", "")
 AGENCY_FILTER   = os.getenv("SF911_AGENCY_FILTER", "agency like '%Police%'")
 REQUEST_TIMEOUT = int(os.getenv("SF911_REQUEST_TIMEOUT", "60"))
 CHUNK_LIMIT     = int(os.getenv("SF911_CHUNK_LIMIT", "50000"))
-MAX_RETRIES     = int(os.getenv("SF911_MAX_RETRIES", "4"))
+MAX_RETRIES     = int(os.getenv("SF911_MAX_RETRIES", "2"))
 SLEEP_BETWEEN_REQS = float(os.getenv("SF911_SLEEP", "0.2"))
 BULK_RANGE      = os.getenv("SF911_BULK_RANGE", "1").lower() in ("1", "true", "yes", "on")
 IS_V3           = "/api/v3/views/" in SF911_API_URL
@@ -420,9 +420,17 @@ def build_event_level_911(raw: pd.DataFrame) -> pd.DataFrame:
     df = add_semantic_flags(df)
     df = add_response_time_features(df)
 
-    if "GEOID" not in df.columns or df["GEOID"].isna().all():
+    if "GEOID" not in df.columns:
+        df["GEOID"] = pd.NA
+    
+    need_geoid = df["GEOID"].isna()
+    if need_geoid.any():
         try:
-            df = ensure_geoid(df)
+            filled = ensure_geoid(df.loc[need_geoid].copy())
+            keep_cols = [c for c in filled.columns if c in df.columns or c == "GEOID"]
+            df.loc[need_geoid, "GEOID"] = filled.get("GEOID")
+        except Exception as e:
+            log(f"⚠️ ensure_geoid başarısız: {e}")
         except Exception as e:
             log(f"⚠️ ensure_geoid başarısız: {e}")
             if "GEOID" not in df.columns:
@@ -837,11 +845,29 @@ ROLLING_SLOT_WINDOWS = {
 }
 
 def add_rolling_features(summary_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    final_911 = summary_df.copy()
+    need_cols = [
+        "GEOID", "date", "hour_range", "hr_key",
+        "911_request_count_hour_range",
+        "911_request_count_daily(before_24_hours)",
+        "911_violent_count_hr", "911_property_count_hr", "911_weapons_count_hr", "911_severity_sum_hr",
+        "911_violent_count_day", "911_property_count_day", "911_weapons_count_day", "911_severity_sum_day",
+    ]
+    need_cols = [c for c in need_cols if c in summary_df.columns]
+    final_911 = summary_df[need_cols].copy()
 
     # günlük unique
-    daily_cols = [c for c in final_911.columns if c.endswith("_day") or c == "911_request_count_daily(before_24_hours)"]
-    day_unique = final_911[["GEOID", "date"] + daily_cols].drop_duplicates(["GEOID", "date"]).copy()
+    hr_keep = ["GEOID", "hr_key", "date", "911_request_count_hour_range"]
+    hr_keep += [c for c in [
+        "911_violent_count_hr", "911_property_count_hr", "911_weapons_count_hr", "911_severity_sum_hr"
+    ] if c in final_911.columns]
+    
+    hr_unique = (
+        final_911[hr_keep]
+        .groupby(["GEOID", "hr_key", "date"], as_index=False, observed=True)
+        .sum(numeric_only=True)
+        .sort_values(["GEOID", "hr_key", "date"])
+        .reset_index(drop=True)
+    )
     day_unique = day_unique.sort_values(["GEOID", "date"]).reset_index(drop=True)
 
     # slot unique
@@ -1053,16 +1079,21 @@ def main():
 
     log(f"📁 Yerel 911 summary yolu: {local_summary_csv_path}")
     base_path = ensure_local_911_base()
-
+    
     if base_path is not None:
         final_911 = summary_from_local(base_path, min_date=five_years_ago)
-        safe_save_csv(final_911, str(local_summary_csv_path))
         safe_save_parquet(final_911, str(local_summary_parquet_path))
-        safe_save_csv(final_911, str(y_summary_path))
-        log(f"✅ Yerel 911 summary kaydedildi.")
+        log("✅ Yerel 911 summary hazırlandı (erken aşamada yalnız parquet yazıldı).")
     else:
-        release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
-        final_911 = summary_from_release(release_url, min_date=five_years_ago)
+        if os.getenv("ALLOW_911_RELEASE_FALLBACK", "0").strip().lower() in ("1", "true", "yes", "on"):
+            release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
+            final_911 = summary_from_release(release_url, min_date=five_years_ago)
+            safe_save_parquet(final_911, str(local_summary_parquet_path))
+            log("✅ Release fallback ile 911 summary hazırlandı (erken aşamada yalnız parquet yazıldı).")
+        else:
+            raise FileNotFoundError(
+                "❌ Yerel 911 base bulunamadı ve ALLOW_911_RELEASE_FALLBACK kapalı."
+            )
         safe_save_csv(final_911, str(local_summary_csv_path))
         safe_save_parquet(final_911, str(local_summary_parquet_path))
         safe_save_csv(final_911, str(y_summary_path))
@@ -1105,9 +1136,14 @@ def main():
 
         final_911 = final_911[final_911["date"] >= five_years_ago].copy()
 
-        safe_save_csv(final_911, str(local_summary_csv_path))
-        safe_save_parquet(final_911, str(local_summary_parquet_path))
-        safe_save_csv(final_911, str(y_summary_path))
+        # feature
+        enriched = add_rolling_features(final_911)
+        
+        # ✅ SADECE BURADA YAZ
+        safe_save_csv(enriched, str(local_summary_csv_path))
+        safe_save_parquet(enriched, str(local_summary_parquet_path))
+        safe_save_csv(enriched, str(y_summary_path))
+        
         log(f"💾 911 summary güncellendi (+{len(final_911) - before:,} satır net fark)")
     else:
         log("ℹ️ API incremental boş döndü; mevcut 911 summary korunuyor.")
