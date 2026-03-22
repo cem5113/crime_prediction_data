@@ -390,8 +390,8 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
         extra_where = f" AND ({agency_like})"
 
     cols = ",".join([
-        "service_request_id",
-        "requested_datetime",
+        "id",
+        "datetime",
         "closed_date",
         "updated_datetime",
         "status_description",
@@ -424,8 +424,8 @@ def download_by_date_chunks(start_date: datetime.date) -> pd.DataFrame:
         while True:
             params = {
                 "$select": cols,
-                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}'{extra_where}",
-                "$order": "requested_datetime ASC",
+                "$where": f"datetime between '{start_iso}' and '{end_iso}'{extra_where}",
+                "$order": "datetime ASC",
                 "$limit": PAGE_LIMIT,
                 "$offset": offset,
             }
@@ -487,12 +487,6 @@ def standardize_raw_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
-
-    rename_map = {
-        "service_request_id": "id",
-        "requested_datetime": "datetime",
-    }
-    df.rename(columns=rename_map, inplace=True)
 
     for c in [
         "id", "datetime", "closed_date", "updated_datetime", "status_description",
@@ -921,15 +915,22 @@ def main():
         df_raw = df_existing.copy()
     else:
         df_raw = pd.concat([df_existing, df_new], ignore_index=True)
-
+    
     df_raw = standardize_raw_schema(df_raw)
     df_raw = dedupe_raw(df_raw)
-
+    
+    # KRİTİK: eski veri GEOID'siz kalmışsa final ham veri üzerinde de geotag yap
     if not df_raw.empty:
-        min_date = DEFAULT_START if BACKFILL_DAYS <= 0 else (TODAY - timedelta(days=BACKFILL_DAYS))
-        df_raw = df_raw[pd.to_datetime(df_raw["sf_date"], errors="coerce") >= pd.Timestamp(min_date)].copy()
-
-    log_shape(df_raw, "311 final ham (5y pencere sonrası)")
+        geoid_rate_before = float(df_raw["GEOID"].notna().mean()) if "GEOID" in df_raw.columns else 0.0
+        log(f"🧪 Final ham GEOID doluluk oranı (önce): {geoid_rate_before:.4f}")
+    
+        if ("GEOID" not in df_raw.columns) or (geoid_rate_before == 0.0):
+            log("🧭 Final 311 ham veri GEOID'siz; toplu GEOID eşleme başlıyor...")
+            df_raw = geotag_to_geoid11(df_raw)
+            df_raw = standardize_raw_schema(df_raw)
+    
+        geoid_rate_after = float(df_raw["GEOID"].notna().mean()) if "GEOID" in df_raw.columns else 0.0
+        log(f"🧪 Final ham GEOID doluluk oranı (sonra): {geoid_rate_after:.4f}")
 
     # 6) Ham kaydet
     save_both(df_raw, raw_parquet_path, raw_csv_path)
