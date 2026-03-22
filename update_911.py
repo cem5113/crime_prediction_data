@@ -427,14 +427,13 @@ def build_event_level_911(raw: pd.DataFrame) -> pd.DataFrame:
     if need_geoid.any():
         try:
             filled = ensure_geoid(df.loc[need_geoid].copy())
-            keep_cols = [c for c in filled.columns if c in df.columns or c == "GEOID"]
-            df.loc[need_geoid, "GEOID"] = filled.get("GEOID")
+            if filled is not None and not filled.empty and "GEOID" in filled.columns:
+                df.loc[need_geoid, "GEOID"] = filled["GEOID"].values
         except Exception as e:
             log(f"⚠️ ensure_geoid başarısız: {e}")
-        except Exception as e:
-            log(f"⚠️ ensure_geoid başarısız: {e}")
-            if "GEOID" not in df.columns:
-                df["GEOID"] = pd.NA
+    
+    if "GEOID" not in df.columns:
+        df["GEOID"] = pd.NA
 
     if "GEOID" in df.columns:
         df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
@@ -1088,7 +1087,7 @@ def main():
     base_path = ensure_local_911_base()
     
     if base_path is not None:
-         summary_from_local(base_path, min_date=five_years_ago)
+        final_911 = summary_from_local(base_path, min_date=five_years_ago)
         safe_save_parquet(final_911, str(local_summary_parquet_path))
         log("✅ Yerel 911 summary hazırlandı (erken aşamada yalnız parquet yazıldı).")
     else:
@@ -1101,11 +1100,6 @@ def main():
             raise FileNotFoundError(
                 "❌ Yerel 911 base bulunamadı ve ALLOW_911_RELEASE_FALLBACK kapalı."
             )
-        safe_save_csv(final_911, str(local_summary_csv_path))
-        safe_save_parquet(final_911, str(local_summary_parquet_path))
-        safe_save_csv(final_911, str(y_summary_path))
-        log(f"✅ Release 911 summary kaydedildi.")
-
     base_max_date = to_date(final_911["date"]).max() if not final_911.empty else None
     today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
 
@@ -1144,9 +1138,7 @@ def main():
         final_911 = final_911[final_911["date"] >= five_years_ago].copy()
 
         # feature
-        enriched = add_rolling_features(final_911)
-        
-        # ✅ SADECE BURADA YAZ
+        enriched, day_unique, hr_unique = add_rolling_features(final_911)
         safe_save_csv(enriched, str(local_summary_csv_path))
         safe_save_parquet(enriched, str(local_summary_parquet_path))
         safe_save_csv(enriched, str(y_summary_path))
