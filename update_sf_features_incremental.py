@@ -34,6 +34,7 @@ CRIME_OUTPUT_PATH = f"{BASE_DIR}/sf_crime_10.parquet"
 WRITE_CSV = True
 HEADERS = {}
 GEOID_LEN = 11
+FEATURE_REFRESH_DAYS = 7
 
 try:
     import zoneinfo
@@ -104,6 +105,20 @@ def load_json(path, default=None):
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
+def file_age_days(path):
+    if not os.path.exists(path):
+        return None
+    mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    return (datetime.now(timezone.utc) - mtime).days
+    
+def should_refresh_by_age(path, max_age_days=7):
+    if not os.path.exists(path):
+        return True
+
+    mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    age = datetime.now(timezone.utc) - mtime
+    return age.days >= max_age_days
+    
 def normalize_geoid_series(s):
     return (
         s.astype(str)
@@ -163,7 +178,7 @@ def geocode_to_geoid(df, lon_col="longitude", lat_col="latitude"):
         gdf,
         gdf_blocks[["GEOID", "geometry"]],
         how="left",
-        predicate="within"
+        predicate="intersects"
     )
     joined = joined.drop(columns=["geometry", "index_right"], errors="ignore")
     joined["GEOID"] = normalize_geoid_series(joined["GEOID"])
@@ -337,7 +352,7 @@ CFG = {
         "rid": "rqzj-sfat",
         "out": BUSINESS_OUT,
         "meta": BUSINESS_META,
-        "mode": "incremental",
+        "mode": "ttl_full_refresh",
         "date_col": None,
         "select": ",".join([
             "objectid",
@@ -357,7 +372,7 @@ CFG = {
         "rid": "i98e-djp9",
         "out": BUILDING_OUT,
         "meta": BUILDING_META,
-        "mode": "incremental",
+        "mode": "ttl_incremental_refresh",
         "date_col": "issued_date",
         "select": ",".join([
             "permit_number",
@@ -380,10 +395,16 @@ CFG = {
 # =========================================================
 # FEATURE UPDATE LOGIC
 # =========================================================
-def build_incremental_where(date_col, last_max_date):
+def build_incremental_where(date_col, last_max_date, overlap_days=7):
     if not date_col or not last_max_date:
         return None
-    return f"{date_col} >= '{last_max_date}T00:00:00'"
+
+    dt = pd.to_datetime(last_max_date, errors="coerce")
+    if pd.isna(dt):
+        return None
+
+    start = (dt - pd.Timedelta(days=overlap_days)).date()
+    return f"{date_col} >= '{start}T00:00:00'"
 
 def run_dataset_incremental(name, cfg):
     rid = cfg["rid"]
@@ -398,19 +419,34 @@ def run_dataset_incremental(name, cfg):
     base_url = f"https://data.sfgov.org/resource/{rid}.json"
 
     old_df = read_table(out_path, out_path.replace(".parquet", ".csv"))
+    age = file_age_days(out_path)
+    log(f"🕒 {name} local age(days): {age}")
     meta = load_json(meta_path, default={})
-
     last_max_date = meta.get("last_max_date", None)
 
-    first_load = old_df.empty
-    if first_load:
-        log("=" * 70)
+    refresh_needed = should_refresh_by_age(out_path, FEATURE_REFRESH_DAYS)
+
+    log("=" * 70)
+
+    # local dosya var ve TTL dolmamışsa -> hiç indirme yapma
+    if (not old_df.empty) and (not refresh_needed):
+        log(f"⏭️ DATASET: {name.upper()} | local parquet güncel, refresh atlandı")
+        log(f"📦 mevcut local tablo kullanılacak: {out_path}")
+        return old_df, False
+
+    # ilk yükleme
+    if old_df.empty:
         log(f"🚀 DATASET: {name.upper()} | first full load")
         where = None
+
+    # refresh zamanı geldiyse
     else:
-        log("=" * 70)
-        log(f"🚀 DATASET: {name.upper()} | incremental update")
-        where = build_incremental_where(date_col, last_max_date)
+        if date_col:
+            log(f"🔄 DATASET: {name.upper()} | TTL doldu, incremental refresh")
+            where = build_incremental_where(date_col, last_max_date)
+        else:
+            log(f"🔄 DATASET: {name.upper()} | TTL doldu, full refresh")
+            where = None
 
     raw = socrata_download_with_retry(
         base_url,
@@ -458,7 +494,6 @@ def run_dataset_incremental(name, cfg):
 
     log(f"✅ {name}: update tamamlandı → {out_path}")
     return merged_df, True
-
 # =========================================================
 # NEW CRIME ROW DETECTION
 # =========================================================
