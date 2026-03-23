@@ -20,9 +20,6 @@ try:
 except Exception:
     SF_TZ = None
 
-def safe_div(a, b, eps=1e-6):
-    return a / (b + eps)
-    
 def log(msg: str):
     print(msg, flush=True)
 
@@ -129,8 +126,13 @@ V3_PAGE_LIMIT   = int(os.getenv("SF_V3_PAGE_LIMIT", "1000"))
 SF911_RECENT_HOURS = int(os.getenv("SF911_RECENT_HOURS", "6"))
 SF911_REINGEST_DAYS = int(os.getenv("SF911_REINGEST_DAYS", "14"))  
 
-RAW_911_URL_ENV = ""
-RAW_911_URL_CANDIDATES = []
+# Release taban URL — `_y` ÖNCELİKLİ, sonra eski ada düş
+RAW_911_URL_ENV = os.getenv("RAW_911_URL", "").strip()
+RAW_911_URL_CANDIDATES = [
+    RAW_911_URL_ENV or "",
+    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year_y.csv",
+    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
+]
 
 # Komşu ayarları
 ENABLE_NEIGHBORS  = os.getenv("ENABLE_NEIGHBORS", "1").lower() in ("1","true","yes","on")
@@ -148,6 +150,24 @@ def read_large_csv_in_chunks(path, usecols=None, chunksize=200_000):
     except ValueError:
         it = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"}, chunksize=chunksize)
         return pd.concat(it, ignore_index=True)
+
+def _pick_working_release_url(candidates: list[str]) -> str:
+    """
+    Aday release URL'lerini sırayla dener; erişilebilir ve LFS pointer olmayan ilkini döndürür.
+    """
+    for u in candidates:
+        if not u:
+            continue
+        try:
+            r = requests.get(u, timeout=20)
+            if r.ok and r.content and len(r.content) > 200 and b"git-lfs" not in r.content[:200].lower():
+                log(f"⬇️ Release kaynağı seçildi: {u}")
+                return u
+            else:
+                log(f"⚠️ Uygun değil (boş/küçük/LFS pointer olabilir): {u}")
+        except Exception as e:
+            log(f"⚠️ Ulaşılamadı: {u} ({e})")
+    raise RuntimeError("❌ Hiçbir release 911 URL’i erişilebilir değil.")
 
 # GEO / BLOCKS
 def _load_blocks() -> tuple[gpd.GeoDataFrame, int]:
@@ -235,367 +255,77 @@ def make_standard_summary(raw: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in out.columns if c not in cols_tail] + cols_tail
     return out[cols]
 
-def add_geoid_hr_history_features(summary: pd.DataFrame) -> pd.DataFrame:
-    """
-    GEOID + hour_range bazında geçmiş feature'ları üretir.
-    3 saatlik slot mantığına uygundur.
-    Boşaltıcı davranmaması için toleranslı yazılmıştır.
-    """
-    if summary is None or summary.empty:
-        return summary
-
-    df = summary.copy()
-
-    required = {"date", "hour_range", "911_request_count_hour_range"}
-    missing = required - set(df.columns)
-    if missing:
-        log(f"⚠️ history feature atlandı; eksik kolonlar: {sorted(missing)}")
-        return df
-
-    if "GEOID" not in df.columns:
-        log("⚠️ history feature atlandı; GEOID kolonu yok.")
-        return df
-
-    df["date"] = to_date(df["date"])
-    df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
-
-    hr_pat = re.compile(
-        r"^\s*(\d{1,2})(?::00|\.00)?\s*-\s*(\d{1,2})(?::00|\.00)?\s*$"
-    )
-
-    def _hr_key_from_range(hr):
-        s = str(hr).strip()
-        m = hr_pat.match(s)
-        if m:
-            return int(m.group(1)) % 24
-
-        # yedek: "03-06", "3-6", "03:00-06:00", "03.00-06.00" dışı bozuk formatlar
-        nums = re.findall(r"\d{1,2}", s)
-        if len(nums) >= 2:
-            try:
-                return int(nums[0]) % 24
-            except Exception:
-                return None
-        return None
-
-    def _fmt_hr(hr):
-        s = str(hr).strip()
-        m = hr_pat.match(s)
-        if m:
-            a = int(m.group(1)) % 24
-            b = int(m.group(2))
-            if b <= a:
-                b = min(a + 3, 24)
-            return f"{a:02d}-{b:02d}"
-
-        nums = re.findall(r"\d{1,2}", s)
-        if len(nums) >= 2:
-            try:
-                a = int(nums[0]) % 24
-                b = int(nums[1])
-                if b <= a:
-                    b = min(a + 3, 24)
-                return f"{a:02d}-{b:02d}"
-            except Exception:
-                return None
-        return None
-
-    df["hour_range"] = df["hour_range"].apply(_fmt_hr)
-    df["hr_key"] = df["hour_range"].apply(_hr_key_from_range)
-
-    df["911_request_count_hour_range"] = pd.to_numeric(
-        df["911_request_count_hour_range"], errors="coerce"
-    ).fillna(0)
-
-    before = len(df)
-    df = df.dropna(subset=["GEOID", "date", "hour_range", "hr_key"]).copy()
-    dropped = before - len(df)
-
-    if df.empty:
-        log("⚠️ add_geoid_hr_history_features: parse sonrası veri boşaldı; history eklenmeden orijinal summary döndürülüyor.")
-        out = summary.copy()
-        if "date" in out.columns:
-            out["date"] = to_date(out["date"])
-        if "GEOID" in out.columns:
-            out["GEOID"] = normalize_geoid(out["GEOID"], DEFAULT_GEOID_LEN)
-        if "911_request_count_hour_range" in out.columns:
-            out["911_request_count_hour_range"] = pd.to_numeric(
-                out["911_request_count_hour_range"], errors="coerce"
-            ).fillna(0)
-        return out
-
-    if dropped:
-        log(f"ℹ️ add_geoid_hr_history_features: parse edilemeyen {dropped:,} satır atıldı.")
-
-    df["hr_key"] = df["hr_key"].astype("int16")
-    df = df.sort_values(["GEOID", "hr_key", "date"]).reset_index(drop=True)
-
-    grp = df.groupby(["GEOID", "hr_key"], dropna=False)["911_request_count_hour_range"]
-
-    df["911_slot_prev_slot"] = grp.shift(1)
-
-    df["911_slot_last2slots"] = (
-        grp.transform(lambda s: s.shift(1).rolling(2, min_periods=1).sum())
-    )
-
-    df["911_slot_last8slots"] = (
-        grp.transform(lambda s: s.shift(1).rolling(8, min_periods=1).sum())
-    )
-
-    df["911_slot_last56slots"] = (
-        grp.transform(lambda s: s.shift(1).rolling(56, min_periods=1).sum())
-    )
-
-    df["911_slot_ewma_8"] = (
-        grp.transform(lambda s: s.shift(1).ewm(span=8, adjust=False).mean())
-    )
-
-    df["911_slot_ewma_56"] = (
-        grp.transform(lambda s: s.shift(1).ewm(span=56, adjust=False).mean())
-    )
-
-    df["911_hist_same_slot_mean_8"] = (
-        grp.transform(lambda s: s.shift(1).rolling(8, min_periods=2).mean())
-    )
-
-    df["911_hist_same_slot_std_8"] = (
-        grp.transform(lambda s: s.shift(1).rolling(8, min_periods=2).std())
-    )
-
-    df["911_hist_same_slot_z_8"] = safe_div(
-        pd.to_numeric(df["911_request_count_hour_range"], errors="coerce").fillna(0)
-        - pd.to_numeric(df["911_hist_same_slot_mean_8"], errors="coerce").fillna(0),
-        pd.to_numeric(df["911_hist_same_slot_std_8"], errors="coerce").fillna(0)
-    )
-
-    new_cols = [
-        "911_slot_prev_slot",
-        "911_slot_last2slots",
-        "911_slot_last8slots",
-        "911_slot_last56slots",
-        "911_slot_ewma_8",
-        "911_slot_ewma_56",
-        "911_hist_same_slot_mean_8",
-        "911_hist_same_slot_std_8",
-        "911_hist_same_slot_z_8",
-    ]
-
-    for c in new_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype("float32")
-
-    return df
-
 def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
     log(f"📥 Yerel 911 tabanı okunuyor: {path}")
-    df = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"})
-
-    log(f"🔎 local raw shape: {df.shape}")
-    log(f"🔎 local raw columns: {list(df.columns)}")
-
+    df = pd.read_csv(path, low_memory=False, dtype={"GEOID":"string"})
     is_already_summary = (
-        {"date", "hour_range"}.issubset(df.columns)
-        and any(c in df.columns for c in ["911_request_count_hour_range", "call_count", "count", "requests", "n"])
+        {"date","hour_range"}.issubset(df.columns) and
+        any(c in df.columns for c in ["911_request_count_hour_range","call_count","count","requests","n"])
     )
-
     if is_already_summary:
-        cnt_col = next(
-            c for c in ["911_request_count_hour_range", "call_count", "count", "requests", "n"]
-            if c in df.columns
-        )
+        cnt_col = next(c for c in ["911_request_count_hour_range","call_count","count","requests","n"] if c in df.columns)
         if cnt_col != "911_request_count_hour_range":
             df = df.rename(columns={cnt_col: "911_request_count_hour_range"})
-
         df["date"] = to_date(df["date"])
-
         if "GEOID" in df.columns:
             df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
-
-        hr_pat = re.compile(
-            r"^\s*(\d{1,2})(?::00|\.00)?\s*-\s*(\d{1,2})(?::00|\.00)?\s*$"
-        )
-
         def _fmt_hr(hr):
-            s = str(hr).strip()
-            m = hr_pat.match(s)
-            if m:
-                a = int(m.group(1)) % 24
-                b = int(m.group(2))
-                if b <= a:
-                    b = min(a + 3, 24)
-                return f"{a:02d}-{b:02d}"
-
-            nums = re.findall(r"\d{1,2}", s)
-            if len(nums) >= 2:
-                try:
-                    a = int(nums[0]) % 24
-                    b = int(nums[1])
-                    if b <= a:
-                        b = min(a + 3, 24)
-                    return f"{a:02d}-{b:02d}"
-                except Exception:
-                    return None
-            return None
-
+            m = re.match(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$", str(hr))
+            if not m: return None
+            a = int(m.group(1)) % 24; b = int(m.group(2)); b = b if b > a else min(a+3, 24)
+            return f"{a:02d}-{b:02d}"
         df["hour_range"] = df["hour_range"].apply(_fmt_hr)
-
-        df["911_request_count_hour_range"] = pd.to_numeric(
-            df["911_request_count_hour_range"], errors="coerce"
-        ).fillna(0)
-
-        # önce min_date uygula
-        if min_date is not None:
-            df = df[df["date"] >= min_date].copy()
-
-        # zorunlu alanlarda temizlik
-        keep_subset = ["date", "hour_range", "911_request_count_hour_range"]
-        if "GEOID" in df.columns:
-            keep_subset.append("GEOID")
-        df = df.dropna(subset=keep_subset).copy()
-
         if "911_request_count_daily(before_24_hours)" not in df.columns:
             keys = (["GEOID"] if "GEOID" in df.columns else []) + ["date"]
-            day = (
-                df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"]
-                .sum()
-                .reset_index(name="911_request_count_daily(before_24_hours)")
-            )
-            df = df.drop(columns=["911_request_count_daily(before_24_hours)"], errors="ignore")
+            day = df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"] \
+                    .sum().reset_index(name="911_request_count_daily(before_24_hours)")
             df = df.merge(day, on=keys, how="left")
-
-        # history feature güvenli ekle
-        tmp = add_geoid_hr_history_features(df)
-        if tmp is not None and not tmp.empty:
-            df = tmp
-        else:
-            log("⚠️ add_geoid_hr_history_features boş döndü; history feature eklenmeden devam ediliyor.")
-
-        cols_tail = [c for c in ["date", "hour_range", "GEOID"] if c in df.columns]
+        if min_date is not None:
+            df = df[df["date"] >= min_date]
+        cols_tail = [c for c in ["date","hour_range","GEOID"] if c in df.columns]
         cols = [c for c in df.columns if c not in cols_tail] + cols_tail
-
-        log(f"✅ local summary hazır: {df.shape}")
         return df[cols]
-
-    # ham veri ise özet üret
+    # değilse ham → özet
     std = make_standard_summary(df)
-
     if min_date is not None:
-        std = std[std["date"] >= min_date].copy()
-
-    tmp = add_geoid_hr_history_features(std)
-    if tmp is not None and not tmp.empty:
-        std = tmp
-    else:
-        log("⚠️ ham→özet sonrası history feature boş döndü; history olmadan devam.")
-
-    log(f"✅ local standard summary hazır: {std.shape}")
+        std = std[std["date"] >= min_date]
     return std
 
 def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
     log(f"⬇️ Release 911 özeti indiriliyor: {url}")
-    r = requests.get(url, timeout=120)
-    r.raise_for_status()
-
-    tmp_path = OUT_DIR / "_tmp_911.csv"
-    ensure_parent(str(tmp_path))
-    tmp_path.write_bytes(r.content)
-
-    df = pd.read_csv(tmp_path, low_memory=False, dtype={"GEOID": "string"})
-
-    log(f"🔎 release raw shape: {df.shape}")
-    log(f"🔎 release raw columns: {list(df.columns)}")
-
-    is_already_summary = (
-        {"date", "hour_range"}.issubset(df.columns)
-        and any(c in df.columns for c in ["911_request_count_hour_range", "call_count", "count", "requests", "n"])
-    )
-
+    r = requests.get(url, timeout=120); r.raise_for_status()
+    tmp = OUT_DIR / "_tmp_911.csv"  # OUT_DIR altına indir
+    ensure_parent(str(tmp))
+    tmp.write_bytes(r.content)
+    df = pd.read_csv(tmp, low_memory=False, dtype={"GEOID":"string"})
+    is_already_summary = ( {"date","hour_range"}.issubset(df.columns)
+                           and any(c in df.columns for c in ["911_request_count_hour_range","call_count","count","requests","n"]) )
     if is_already_summary:
-        cnt_col = next(
-            c for c in ["911_request_count_hour_range", "call_count", "count", "requests", "n"]
-            if c in df.columns
-        )
+        cnt_col = next(c for c in ["911_request_count_hour_range","call_count","count","requests","n"] if c in df.columns)
         if cnt_col != "911_request_count_hour_range":
             df = df.rename(columns={cnt_col: "911_request_count_hour_range"})
-
         df["date"] = to_date(df["date"])
-
         if "GEOID" in df.columns:
             df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
-
-        hr_pat = re.compile(
-            r"^\s*(\d{1,2})(?::00|\.00)?\s*-\s*(\d{1,2})(?::00|\.00)?\s*$"
-        )
-
         def _fmt_hr(hr):
-            s = str(hr).strip()
-            m = hr_pat.match(s)
-            if m:
-                a = int(m.group(1)) % 24
-                b = int(m.group(2))
-                if b <= a:
-                    b = min(a + 3, 24)
-                return f"{a:02d}-{b:02d}"
-
-            nums = re.findall(r"\d{1,2}", s)
-            if len(nums) >= 2:
-                try:
-                    a = int(nums[0]) % 24
-                    b = int(nums[1])
-                    if b <= a:
-                        b = min(a + 3, 24)
-                    return f"{a:02d}-{b:02d}"
-                except Exception:
-                    return None
-            return None
-
+            m = re.match(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$", str(hr))
+            if not m: return None
+            a = int(m.group(1)) % 24; b = int(m.group(2)); b = b if b > a else min(a+3, 24)
+            return f"{a:02d}-{b:02d}"
         df["hour_range"] = df["hour_range"].apply(_fmt_hr)
-
-        df["911_request_count_hour_range"] = pd.to_numeric(
-            df["911_request_count_hour_range"], errors="coerce"
-        ).fillna(0)
-
-        if min_date is not None:
-            df = df[df["date"] >= min_date].copy()
-
-        keep_subset = ["date", "hour_range", "911_request_count_hour_range"]
-        if "GEOID" in df.columns:
-            keep_subset.append("GEOID")
-        df = df.dropna(subset=keep_subset).copy()
-
         if "911_request_count_daily(before_24_hours)" not in df.columns:
             keys = (["GEOID"] if "GEOID" in df.columns else []) + ["date"]
-            day = (
-                df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"]
-                .sum()
-                .reset_index(name="911_request_count_daily(before_24_hours)")
-            )
-            df = df.drop(columns=["911_request_count_daily(before_24_hours)"], errors="ignore")
+            day = df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"].sum().reset_index(name="911_request_count_daily(before_24_hours)")
             df = df.merge(day, on=keys, how="left")
-
-        tmp = add_geoid_hr_history_features(df)
-        if tmp is not None and not tmp.empty:
-            df = tmp
-        else:
-            log("⚠️ add_geoid_hr_history_features boş döndü; history feature eklenmeden devam ediliyor.")
-
-        cols_tail = [c for c in ["date", "hour_range", "GEOID"] if c in df.columns]
+        if min_date is not None:
+            df = df[df["date"] >= min_date]
+        cols_tail = [c for c in ["date","hour_range","GEOID"] if c in df.columns]
         cols = [c for c in df.columns if c not in cols_tail] + cols_tail
-
-        log(f"✅ release summary hazır: {df.shape}")
         return df[cols]
-
+    # değilse ham → özet
     std = make_standard_summary(df)
-
     if min_date is not None:
-        std = std[std["date"] >= min_date].copy()
-
-    tmp = add_geoid_hr_history_features(std)
-    if tmp is not None and not tmp.empty:
-        std = tmp
-    else:
-        log("⚠️ ham→özet sonrası history feature boş döndü; history olmadan devam.")
-
-    log(f"✅ release standard summary hazır: {std.shape}")
+        std = std[std["date"] >= min_date]
     return std
 
 def ensure_local_911_base() -> Optional[Path]:
@@ -859,49 +589,20 @@ five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5*365)
 
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
-# 1) Önce Actions/artifact/local tabanı dene
+# 1) Önce yerel tabanı dene (artifact -> OUT_DIR öncelikli)
 base_csv_path = ensure_local_911_base()
-
 if base_csv_path is not None:
-    log(f"📦 Actions/local 911 base bulundu: {base_csv_path}")
     final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
-
-    if final_911 is None or final_911.empty:
-        raise ValueError(f"❌ Actions/local 911 base okundu ama özet boş geldi: {base_csv_path}")
-
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Yerel 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
-
 else:
-    # 2) Actions/artifact yoksa repo dosyasını zorunlu dene
-    REPO_911_CANDIDATES = [
-        Path(BASE_DIR) / "sf_911_last_5_year.csv",
-        Path(BASE_DIR) / "crime_prediction_data" / "sf_911_last_5_year.csv",
-        Path("./sf_911_last_5_year.csv"),
-        Path("./crime_prediction_data/sf_911_last_5_year.csv"),
-    ]
-
-    repo_base_csv_path = next(
-        (p for p in REPO_911_CANDIDATES if p.exists() and not is_lfs_pointer_file(p)),
-        None
-    )
-
-    if repo_base_csv_path is not None:
-        log(f"📦 Repo 911 base bulundu: {repo_base_csv_path}")
-        final_911 = summary_from_local(repo_base_csv_path, min_date=five_years_ago)
-
-        if final_911 is None or final_911.empty:
-            raise ValueError(f"❌ Repo 911 base okundu ama özet boş geldi: {repo_base_csv_path}")
-
-        safe_save_csv(final_911, str(local_summary_path))
-        safe_save_csv(final_911, str(y_summary_path))
-        log(f"✅ Repo 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
-
-    else:
-        raise FileNotFoundError(
-            "❌ 911 base bulunamadı. Önce Actions/artifact, sonra repo kontrol edildi; release fallback kapalı."
-        )
+    # 2) Release fallback (Y URL'leri öncelikli)
+    release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
+    final_911 = summary_from_release(release_url, min_date=five_years_ago)
+    safe_save_csv(final_911, str(local_summary_path))
+    safe_save_csv(final_911, str(y_summary_path))
+    log(f"✅ Release özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
 
 # 3) Max tarihten bugüne SF saatine göre artımlı aralık seç
 base_max_date = to_date(final_911["date"]).max() if not final_911.empty else None
@@ -922,66 +623,17 @@ inc = incremental_summary(fetch_start, fetch_end)
 if inc is not None and not inc.empty:
     if "GEOID" in inc.columns:
         inc["GEOID"] = normalize_geoid(inc["GEOID"], DEFAULT_GEOID_LEN)
-
     inc["date"] = to_date(inc["date"])
-
-    if "911_request_count_hour_range" in inc.columns:
-        inc["911_request_count_hour_range"] = pd.to_numeric(
-            inc["911_request_count_hour_range"], errors="coerce"
-        ).fillna(0)
-
     before = len(final_911)
-
     final_911 = pd.concat([final_911, inc], ignore_index=True)
-
-    # history kolonları concat sonrası yeniden hesaplanacağı için önce eski history kolonlarını düşür
-    history_cols = [
-        "911_slot_prev_slot",
-        "911_slot_last2slots",
-        "911_slot_last8slots",
-        "911_slot_last56slots",
-        "911_slot_ewma_8",
-        "911_slot_ewma_56",
-        "911_hist_same_slot_mean_8",
-        "911_hist_same_slot_std_8",
-        "911_hist_same_slot_z_8",
-        "hr_key",
-    ]
-    final_911 = final_911.drop(columns=[c for c in history_cols if c in final_911.columns], errors="ignore")
-
-    subset_cols = [c for c in ["GEOID", "date", "hour_range"] if c in final_911.columns]
-    final_911 = (
-        final_911.dropna(subset=["date"])
-        .sort_values(subset_cols if subset_cols else ["date"])
-        .drop_duplicates(subset=subset_cols if subset_cols else ["date"], keep="last")
-    )
-
-    final_911 = final_911[final_911["date"] >= five_years_ago].copy()
-
-    # günlük kolon eksikse tekrar kur
-    if "911_request_count_daily(before_24_hours)" not in final_911.columns:
-        keys = (["GEOID"] if "GEOID" in final_911.columns else []) + ["date"]
-        day = (
-            final_911.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"]
-            .sum()
-            .reset_index(name="911_request_count_daily(before_24_hours)")
-        )
-        final_911 = final_911.merge(day, on=keys, how="left")
-
-    # history kolonlarını yeniden üret
-    tmp = add_geoid_hr_history_features(final_911)
-    if tmp is not None and not tmp.empty:
-        final_911 = tmp
-    else:
-        log("⚠️ concat sonrası history feature boş döndü; history olmadan devam ediliyor.")
-
+    subset_cols = [c for c in ["GEOID","date","hour_range"] if c in final_911.columns]
+    final_911 = (final_911.dropna(subset=["date"])
+                             .sort_values(subset_cols if subset_cols else ["date"])
+                             .drop_duplicates(subset=subset_cols if subset_cols else ["date"], keep="last"))
+    final_911 = final_911[final_911["date"] >= five_years_ago]
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
-
-    log(
-        f"💾 911 özet GÜNCELLENDİ (base+API) → {local_summary_path} & {y_summary_path} "
-        f"(önce={before:,}, sonra={len(final_911):,})"
-    )
+    log(f"💾 911 özet GÜNCELLENDİ (base+API) → {local_summary_path} & {y_summary_path} (+{len(final_911)-before:,} satır)")
 else:
     log("ℹ️ API tarafında yeni gün yok veya boş döndü; taban veri geçerli.")
 
@@ -990,30 +642,15 @@ if final_911 is None or final_911.empty:
     raise SystemExit(0)
 
 # STANDARDIZE + DERIVED KEYS (hr_key, dow, season)
-hr_pat = re.compile(r"^\s*(\d{1,2})(?::00|\.00)?\s*-\s*(\d{1,2})(?::00|\.00)?\s*$")
-
+hr_pat = re.compile(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
 def _hr_key_from_range(hr):
-    s = str(hr).strip()
-    m = hr_pat.match(s)
-    if m:
-        return int(m.group(1)) % 24
-
-    nums = re.findall(r"\d{1,2}", s)
-    if len(nums) >= 2:
-        try:
-            return int(nums[0]) % 24
-        except Exception:
-            return None
-    return None
+    m = hr_pat.match(str(hr))
+    return int(m.group(1)) % 24 if m else None
 
 final_911 = final_911.dropna(subset=["GEOID","date","hour_range"]).copy()
 final_911["GEOID"] = normalize_geoid(final_911["GEOID"], DEFAULT_GEOID_LEN)
 final_911["date"] = to_date(final_911["date"])
-final_911["hr_key"] = pd.to_numeric(
-    final_911["hour_range"].apply(_hr_key_from_range), errors="coerce"
-)
-final_911 = final_911.dropna(subset=["hr_key"]).copy()
-final_911["hr_key"] = final_911["hr_key"].astype("int16")
+final_911["hr_key"] = final_911["hour_range"].apply(_hr_key_from_range).astype("int16")
 final_911["day_of_week"] = pd.to_datetime(final_911["date"]).dt.weekday.astype("int8")
 final_911["month"] = pd.to_datetime(final_911["date"]).dt.month.astype("int8")
 _season_map = {12:"Winter",1:"Winter",2:"Winter",3:"Spring",4:"Spring",5:"Spring",6:"Summer",7:"Summer",8:"Summer",9:"Fall",10:"Fall",11:"Fall"}
@@ -1023,27 +660,29 @@ log_shape(final_911, "911 summary (normalize)")
 log_date_range(final_911, "date", "911")
 
 # ROLLING (3g/7g) — GEOID ve GEOID×hr_key
-ROLLING_DAY_WINDOWS = {
-    "prev_day": 1,
-    "last3d": 3,
-    "last7d": 7,
-    "last14d": 14,
-}
-
 _day_unique = (final_911[["GEOID","date","911_request_count_daily(before_24_hours)"]]
                .drop_duplicates(subset=["GEOID","date"]))
 _day_unique = _day_unique.sort_values(["GEOID","date"]).rename(columns={"911_request_count_daily(before_24_hours)":"daily_cnt"}).reset_index(drop=True)
 
-for label, n_days in ROLLING_DAY_WINDOWS.items():
-    _day_unique[f"911_geo_{label}"] = (
-        _day_unique.groupby("GEOID")["daily_cnt"]
-        .transform(lambda s: s.rolling(n_days, min_periods=1).sum().shift(1))
-        .astype("float32")
-    )
-
 _hr_unique = (final_911[["GEOID","hr_key","date","911_request_count_hour_range"]]
               .groupby(["GEOID","hr_key","date"], as_index=False, observed=True)["911_request_count_hour_range"].sum())
 _hr_unique = _hr_unique.rename(columns={"911_request_count_hour_range":"hr_cnt"}).sort_values(["GEOID","hr_key","date"]).reset_index(drop=True)
+
+ROLLING_SLOT_WINDOWS = {
+    "1h": 1,
+    "3h": 1,
+    "6h": 2,
+    "24h": 8,
+    "3d": 24,
+    "7d": 56,
+}
+
+for label, n_slots in ROLLING_SLOT_WINDOWS.items():
+    _day_unique[f"911_geo_last{label}"] = (
+        _day_unique.groupby("GEOID")["daily_cnt"]
+        .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
+        .astype("float32")
+    )
 
 # KOMŞU GEOID ÖZELLİKLERİ (günlük baz)
 def build_neighbors(method: str = "touches", radius_m: float = 500.0) -> pd.DataFrame:
@@ -1077,17 +716,12 @@ if ENABLE_NEIGHBORS:
 _neighbor_roll = None
 if neighbors_df is not None and not neighbors_df.empty:
     day_nbr = neighbors_df.merge(_day_unique.rename(columns={"GEOID":"nbr"}), on="nbr", how="left")
-    day_nbr = (
-        day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"]
-        .sum()
-        .rename(columns={"daily_cnt":"nbr_daily_cnt"})
-    )
+    day_nbr = day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"].sum().rename(columns={"daily_cnt":"nbr_daily_cnt"})
     _neighbor_roll = day_nbr.sort_values(["GEOID","date"]).reset_index(drop=True)
-
-    for label, n_days in ROLLING_DAY_WINDOWS.items():
-        _neighbor_roll[f"911_neighbors_{label}"] = (
+    for label, n_slots in ROLLING_SLOT_WINDOWS.items():
+        _neighbor_roll[f"911_neighbors_last{label}"] = (
             _neighbor_roll.groupby("GEOID")["nbr_daily_cnt"]
-            .transform(lambda s: s.rolling(n_days, min_periods=1).sum().shift(1))
+            .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
             .astype("float32")
         )
 
@@ -1098,10 +732,12 @@ if _neighbor_roll is not None:
     _enriched = _enriched.merge(
         _neighbor_roll[
             ["GEOID", "date"] + [
-                "911_neighbors_prev_day",
+                "911_neighbors_last1h",
+                "911_neighbors_last3h",
+                "911_neighbors_last6h",
+                "911_neighbors_last24h",
                 "911_neighbors_last3d",
                 "911_neighbors_last7d",
-                "911_neighbors_last14d",
             ]
         ],
         on=["GEOID", "date"],
@@ -1114,29 +750,21 @@ KEEP_911_COLS = [
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
 
-    "911_geo_prev_day",
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
     "911_geo_last3d",
     "911_geo_last7d",
-    "911_geo_last14d",
-
-    # yeni slot-history feature'lar
-    "911_slot_prev_slot",
-    "911_slot_last2slots",
-    "911_slot_last8slots",
-    "911_slot_last56slots",
-    "911_slot_ewma_8",
-    "911_slot_ewma_56",
-    "911_hist_same_slot_mean_8",
-    "911_hist_same_slot_std_8",
-    "911_hist_same_slot_z_8",
 ]
-
 if _neighbor_roll is not None:
     KEEP_911_COLS += [
-        "911_neighbors_prev_day",
+        "911_neighbors_last1h",
+        "911_neighbors_last3h",
+        "911_neighbors_last6h",
+        "911_neighbors_last24h",
         "911_neighbors_last3d",
         "911_neighbors_last7d",
-        "911_neighbors_last14d",
     ]
 
 # _enriched içinde olmayanları otomatik ele
@@ -1185,12 +813,18 @@ if has_date_col:
 
     keys = ["GEOID", "date", "hour_range"]
 
-    # _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları yalnızca 1 kez düşür
+    # --- _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları düşür ---
     overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
     if overlap:
         log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
         _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
 
+    # overlap temizliği (key dışı)
+    overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
+    if overlap:
+        log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
+        _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
+    
     merged = crime.merge(_enriched, on=keys, how="left")
     log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
 
@@ -1203,27 +837,21 @@ else:
     agg_cols = [
         "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
-
-        "911_geo_prev_day",
+    
+        "911_geo_last1h",
+        "911_geo_last3h",
+        "911_geo_last6h",
+        "911_geo_last24h",
         "911_geo_last3d",
         "911_geo_last7d",
-        "911_geo_last14d",
-    
-        "911_slot_prev_slot",
-        "911_slot_last2slots",
-        "911_slot_last8slots",
-        "911_slot_last56slots",
-        "911_slot_ewma_8",
-        "911_slot_ewma_56",
-        "911_hist_same_slot_mean_8",
-        "911_hist_same_slot_std_8",
-        "911_hist_same_slot_z_8",
     ] + (
         [
-            "911_neighbors_prev_day",
+            "911_neighbors_last1h",
+            "911_neighbors_last3h",
+            "911_neighbors_last6h",
+            "911_neighbors_last24h",
             "911_neighbors_last3d",
             "911_neighbors_last7d",
-            "911_neighbors_last14d",
         ] if _neighbor_roll is not None else []
     )
     cal_agg = (_enriched.groupby(cal_keys, as_index=False, observed=True)[agg_cols]
@@ -1245,51 +873,39 @@ fill_cols = [
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
 
-    "911_geo_prev_day",
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
     "911_geo_last3d",
     "911_geo_last7d",
-    "911_geo_last14d",
-
-    "911_slot_prev_slot",
-    "911_slot_last2slots",
-    "911_slot_last8slots",
-    "911_slot_last56slots",
-    "911_slot_ewma_8",
-    "911_slot_ewma_56",
-    "911_hist_same_slot_mean_8",
-    "911_hist_same_slot_std_8",
-    "911_hist_same_slot_z_8",
 ] + (
     [
-        "911_neighbors_prev_day",
+        "911_neighbors_last1h",
+        "911_neighbors_last3h",
+        "911_neighbors_last6h",
+        "911_neighbors_last24h",
         "911_neighbors_last3d",
         "911_neighbors_last7d",
-        "911_neighbors_last14d",
     ] if _neighbor_roll is not None else []
 )
 
 FLOAT_COLS = set([
     "hr_cnt", "daily_cnt",
 
-    "911_geo_prev_day",
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
     "911_geo_last3d",
     "911_geo_last7d",
-    "911_geo_last14d",
 
-    "911_slot_prev_slot",
-    "911_slot_last2slots",
-    "911_slot_last8slots",
-    "911_slot_last56slots",
-    "911_slot_ewma_8",
-    "911_slot_ewma_56",
-    "911_hist_same_slot_mean_8",
-    "911_hist_same_slot_std_8",
-    "911_hist_same_slot_z_8",
-
-    "911_neighbors_prev_day",
+    "911_neighbors_last1h",
+    "911_neighbors_last3h",
+    "911_neighbors_last6h",
+    "911_neighbors_last24h",
     "911_neighbors_last3d",
     "911_neighbors_last7d",
-    "911_neighbors_last14d",
 ])
 
 for c in fill_cols:
@@ -1340,12 +956,6 @@ except Exception as e:
     log(f"⚠️ Normalize skip: {e}")
 
 try:
-    print("\n===== DEBUG: sf_crime_01 FILE HEAD =====")
-    debug_df = pd.read_csv(merged_output_path, nrows=5)
-    print(debug_df.to_string(index=False))
-    print("\nCOLUMNS:", debug_df.columns.tolist())
-    print("Y_label var mı? ", "Y_label" in debug_df.columns)
-    print("y_count var mı? ", "y_count" in debug_df.columns)
-    print("y_event var mı? ", "y_event" in debug_df.columns)
-except Exception as e:
-    log(f"❌ DEBUG READ ERROR: {e}")
+    print(merged.head(5).to_string(index=False))
+except Exception:
+    pass
