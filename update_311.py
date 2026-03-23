@@ -924,19 +924,17 @@ def main():
                 crime["date"] = pd.to_datetime(crime["datetime"], errors="coerce").dt.date
             else:
                 crime["date"] = pd.to_datetime(crime["date"], errors="coerce").dt.date
+
             keys = ["GEOID", "date", "hour_range"]
             _before = crime.shape
             _sum = summary[["GEOID", "date", "hour_range", "311_request_count"]].copy()
-            
+
             _overlap = (set(crime.columns) & set(_sum.columns)) - set(keys)
             if _overlap:
                 print(f"🧹 DATE-BASED merge overlap bulundu, summary'den düşürüldü: {sorted(_overlap)}")
                 _sum = _sum.drop(columns=list(_overlap), errors="ignore")
-            
+
             merged = crime.merge(_sum, on=keys, how="left")
-            log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
-            print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
-            
             log_merge_delta(_before, merged.shape, "crime ⨯ 311 (tarihli)")
             print("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
         else:
