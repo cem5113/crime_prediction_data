@@ -297,54 +297,33 @@ def add_geoid_hr_history_features(summary: pd.DataFrame) -> pd.DataFrame:
 
     df["911_slot_prev_slot"] = grp.shift(1)
 
-    df["911_slot_last2slots"] = (
-        grp.shift(1)
-           .rolling(2, min_periods=1)
-           .sum()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_slot_last2slots"] = (
+    grp.transform(lambda s: s.shift(1).rolling(2, min_periods=1).sum())
+)
 
-    df["911_slot_last8slots"] = (
-        grp.shift(1)
-           .rolling(8, min_periods=1)
-           .sum()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_slot_last8slots"] = (
+    grp.transform(lambda s: s.shift(1).rolling(8, min_periods=1).sum())
+)
 
-    df["911_slot_last56slots"] = (
-        grp.shift(1)
-           .rolling(56, min_periods=1)
-           .sum()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_slot_last56slots"] = (
+    grp.transform(lambda s: s.shift(1).rolling(56, min_periods=1).sum())
+)
 
-    df["911_slot_ewma_8"] = (
-        grp.shift(1)
-           .ewm(span=8, adjust=False)
-           .mean()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_slot_ewma_8"] = (
+    grp.transform(lambda s: s.shift(1).ewm(span=8, adjust=False).mean())
+)
 
-    df["911_slot_ewma_56"] = (
-        grp.shift(1)
-           .ewm(span=56, adjust=False)
-           .mean()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_slot_ewma_56"] = (
+    grp.transform(lambda s: s.shift(1).ewm(span=56, adjust=False).mean())
+)
 
-    df["911_hist_same_slot_mean_8"] = (
-        grp.shift(1)
-           .rolling(8, min_periods=2)
-           .mean()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_hist_same_slot_mean_8"] = (
+    grp.transform(lambda s: s.shift(1).rolling(8, min_periods=2).mean())
+)
 
-    df["911_hist_same_slot_std_8"] = (
-        grp.shift(1)
-           .rolling(8, min_periods=2)
-           .std()
-           .reset_index(level=[0, 1], drop=True)
-    )
+df["911_hist_same_slot_std_8"] = (
+    grp.transform(lambda s: s.shift(1).rolling(8, min_periods=2).std())
+)
 
     df["911_hist_same_slot_z_8"] = safe_div(
         pd.to_numeric(df["911_request_count_hour_range"], errors="coerce").fillna(0)
