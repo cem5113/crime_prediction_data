@@ -129,13 +129,8 @@ V3_PAGE_LIMIT   = int(os.getenv("SF_V3_PAGE_LIMIT", "1000"))
 SF911_RECENT_HOURS = int(os.getenv("SF911_RECENT_HOURS", "6"))
 SF911_REINGEST_DAYS = int(os.getenv("SF911_REINGEST_DAYS", "14"))  
 
-# Release taban URL — `_y` ÖNCELİKLİ, sonra eski ada düş
-RAW_911_URL_ENV = os.getenv("RAW_911_URL", "").strip()
-RAW_911_URL_CANDIDATES = [
-    RAW_911_URL_ENV or "",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year_y.csv",
-    "https://github.com/cem5113/crime_prediction_data/releases/download/v1.0.1/sf_911_last_5_year.csv",
-]
+RAW_911_URL_ENV = ""
+RAW_911_URL_CANDIDATES = []
 
 # Komşu ayarları
 ENABLE_NEIGHBORS  = os.getenv("ENABLE_NEIGHBORS", "1").lower() in ("1","true","yes","on")
@@ -153,24 +148,6 @@ def read_large_csv_in_chunks(path, usecols=None, chunksize=200_000):
     except ValueError:
         it = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"}, chunksize=chunksize)
         return pd.concat(it, ignore_index=True)
-
-def _pick_working_release_url(candidates: list[str]) -> str:
-    """
-    Aday release URL'lerini sırayla dener; erişilebilir ve LFS pointer olmayan ilkini döndürür.
-    """
-    for u in candidates:
-        if not u:
-            continue
-        try:
-            r = requests.get(u, timeout=20)
-            if r.ok and r.content and len(r.content) > 200 and b"git-lfs" not in r.content[:200].lower():
-                log(f"⬇️ Release kaynağı seçildi: {u}")
-                return u
-            else:
-                log(f"⚠️ Uygun değil (boş/küçük/LFS pointer olabilir): {u}")
-        except Exception as e:
-            log(f"⚠️ Ulaşılamadı: {u} ({e})")
-    raise RuntimeError("❌ Hiçbir release 911 URL’i erişilebilir değil.")
 
 # GEO / BLOCKS
 def _load_blocks() -> tuple[gpd.GeoDataFrame, int]:
@@ -691,20 +668,49 @@ five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5*365)
 
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
-# 1) Önce yerel tabanı dene (artifact -> OUT_DIR öncelikli)
+# 1) Önce Actions/artifact/local tabanı dene
 base_csv_path = ensure_local_911_base()
+
 if base_csv_path is not None:
+    log(f"📦 Actions/local 911 base bulundu: {base_csv_path}")
     final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
+
+    if final_911 is None or final_911.empty:
+        raise ValueError(f"❌ Actions/local 911 base okundu ama özet boş geldi: {base_csv_path}")
+
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
     log(f"✅ Yerel 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
+
 else:
-    # 2) Release fallback (Y URL'leri öncelikli)
-    release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
-    final_911 = summary_from_release(release_url, min_date=five_years_ago)
-    safe_save_csv(final_911, str(local_summary_path))
-    safe_save_csv(final_911, str(y_summary_path))
-    log(f"✅ Release özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
+    # 2) Actions/artifact yoksa repo dosyasını zorunlu dene
+    REPO_911_CANDIDATES = [
+        Path(BASE_DIR) / "sf_911_last_5_year.csv",
+        Path(BASE_DIR) / "crime_prediction_data" / "sf_911_last_5_year.csv",
+        Path("./sf_911_last_5_year.csv"),
+        Path("./crime_prediction_data/sf_911_last_5_year.csv"),
+    ]
+
+    repo_base_csv_path = next(
+        (p for p in REPO_911_CANDIDATES if p.exists() and not is_lfs_pointer_file(p)),
+        None
+    )
+
+    if repo_base_csv_path is not None:
+        log(f"📦 Repo 911 base bulundu: {repo_base_csv_path}")
+        final_911 = summary_from_local(repo_base_csv_path, min_date=five_years_ago)
+
+        if final_911 is None or final_911.empty:
+            raise ValueError(f"❌ Repo 911 base okundu ama özet boş geldi: {repo_base_csv_path}")
+
+        safe_save_csv(final_911, str(local_summary_path))
+        safe_save_csv(final_911, str(y_summary_path))
+        log(f"✅ Repo 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
+
+    else:
+        raise FileNotFoundError(
+            "❌ 911 base bulunamadı. Önce Actions/artifact, sonra repo kontrol edildi; release fallback kapalı."
+        )
 
 # 3) Max tarihten bugüne SF saatine göre artımlı aralık seç
 base_max_date = to_date(final_911["date"]).max() if not final_911.empty else None
