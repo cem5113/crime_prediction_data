@@ -67,12 +67,7 @@ def safe_save_csv(df: pd.DataFrame, path: str):
     os.replace(tmp, path)
     print(f"💾 Kaydedildi: {path}")
 
-def read_existing_output(csv_path: str) -> pd.DataFrame | None:
-    if os.path.exists(csv_path):
-        print(f"📥 Mevcut çıktı CSV bulundu: {csv_path}")
-        return pd.read_csv(csv_path, low_memory=False)
-    return None
-    
+
 def digits_only(s: pd.Series) -> pd.Series:
     return s.astype(str).str.extract(r"(\d+)", expand=False).fillna("")
 
@@ -85,21 +80,14 @@ def normalize_geoid(series: pd.Series, target_len: int = 11) -> pd.Series:
 
 
 def parse_numeric_series(s: pd.Series) -> pd.Series:
-    x = s.astype(str).str.strip().str.replace(" ", "", regex=False)
-
-    # yalnız virgül varsa: decimal virgül kabul et
-    only_comma = x.str.contains(",", regex=False) & ~x.str.contains(r"\.", regex=True)
-    x.loc[only_comma] = x.loc[only_comma].str.replace(",", ".", regex=False)
-
-    # hem nokta hem virgül varsa: noktayı binlik, virgülü decimal kabul et
-    both = x.str.contains(",", regex=False) & x.str.contains(r"\.", regex=True)
-    x.loc[both] = (
-        x.loc[both]
-         .str.replace(".", "", regex=False)
-         .str.replace(",", ".", regex=False)
+    x = (
+        s.astype(str)
+         .str.replace(".", "", regex=False)   # 757.193 gibi binlik ayracı varsa
+         .str.replace(",", ".", regex=False)  # 0,123 -> 0.123
+         .str.replace(" ", "", regex=False)
     )
-
     return pd.to_numeric(x, errors="coerce")
+
 
 def find_crime_input(base_dir: Path) -> str:
     cands = [
@@ -420,40 +408,27 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # APPEND-ONLY LOGIC
 # =============================================================================
-def split_old_and_new_rows(
-    crime_in: pd.DataFrame,
-    crime_out_csv: str
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     sf_crime_03 mevcutsa:
       - eski satırları korur
       - sf_crime_02'de olup sf_crime_03'te olmayan satırları yeni kabul eder
-    CSV de kabul edilir.
     """
-    if not APPEND_ONLY:
-        print("ℹ️ APPEND_ONLY kapalı → tüm satırlar yeni kabul edilecek.")
+    if not APPEND_ONLY or not os.path.exists(crime_out_path):
+        print("ℹ️ Append-only çıktı yok → tüm satırlar yeni kabul edilecek.")
         return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
 
-    old = read_existing_output(crime_out_csv)
-    if old is None:
-        print("ℹ️ Önceki çıktı (csv) yok → tüm satırlar yeni kabul edilecek.")
-        print("⚠️ İlk koşu: full enrich + büyük çıktı yazımı uzun sürebilir.")
-        return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
-
+    old = pd.read_csv(crime_out_path, low_memory=False)
     if "GEOID" not in old.columns:
         print("⚠️ Eski sf_crime_03 içinde GEOID yok → tüm giriş yeni kabul edilecek.")
         return old, crime_in.copy()
 
-    old = old.copy()
-    crime_in = crime_in.copy()
-
     old["GEOID"] = normalize_geoid(old["GEOID"], GEOID_LEN)
+    crime_in = crime_in.copy()
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
 
     keys = detect_panel_keys(crime_in)
-    required = {"GEOID", "date", "hour_range"}
-
-    if required.issubset(keys) and required.issubset(old.columns):
+    if set(["GEOID", "date", "hour_range"]).issubset(keys) and set(["GEOID", "date", "hour_range"]).issubset(old.columns):
         crime_in = ensure_date_col(crime_in, "date")
         old = ensure_date_col(old, "date")
 
@@ -469,12 +444,10 @@ def split_old_and_new_rows(
         log_shape(new_rows, "YENİ CRIME SATIRLARI")
         return old, new_rows
 
-    print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
-    return old, crime_in.copy()
-
     # fallback
     print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
     return old, crime_in.copy()
+
 
 def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.DataFrame:
     out = df_crime.copy()
@@ -499,24 +472,19 @@ def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.Da
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
     if "population" in out.columns:
-        out["population"] = pd.to_numeric(out["population"], errors="coerce").fillna(0).round().astype("int32")
+        out["population"] = out["population"].round().astype(int)
     if "population_total" in out.columns:
-        out["population_total"] = pd.to_numeric(out["population_total"], errors="coerce").fillna(0).round().astype("int32")
-    
-    for c in out.columns:
-        if c.startswith("pct_"):
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("float32")
-        elif c.startswith("pop_"):
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("float32")
+        out["population_total"] = out["population_total"].round().astype(int)
 
     return out
 
 
 def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     if old_df is None or len(old_df) == 0:
-        out = new_df
+        out = new_df.copy()
     else:
-        out = pd.concat([old_df, new_df], ignore_index=True, copy=False)
+        out = pd.concat([old_df, new_df], ignore_index=True)
+
     if "GEOID" in out.columns:
         out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
 
@@ -527,12 +495,11 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     out = dedupe_by_panel_keys(out, keys, keep="first")
 
     sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in out.columns]
-    if sort_cols and len(out) <= 1_000_000:
+    if sort_cols:
         out = out.sort_values(sort_cols).reset_index(drop=True)
-    else:
-        out = out.reset_index(drop=True)
 
     return out
+
 
 # =============================================================================
 # MAIN
@@ -555,32 +522,26 @@ def main():
     log_shape(crime_in, "CRIME INPUT")
 
     # -------------------------------------------------------------------------
-    # 2) Önce append-only split yap
-    #    Böylece yeni satır yoksa demographic dosyasını boşuna okumayız
-    # -------------------------------------------------------------------------
-    old_out, new_rows = split_old_and_new_rows(
-        crime_in,
-        CRIME_OUTPUT
-    )
-
-    if new_rows.empty:
-        print("✅ Yeni crime satırı yok → demographic enrich atlandı.")
-        print("✅ Eski sf_crime_03 aynen korunuyor.")
-        if os.path.exists(CRIME_OUTPUT):
-            print(f"📁 Mevcut CSV çıktı: {CRIME_OUTPUT}")
-        return
-
-    # -------------------------------------------------------------------------
-    # 3) Yalnızca gerçekten yeni satır varsa demographic oku
+    # 2) Demographic raw oku
     # -------------------------------------------------------------------------
     demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
     log_shape(demo_raw, "DEMOGRAPHIC CSV")
 
     # -------------------------------------------------------------------------
-    # 4) Feature üret
-    #    Bu feature set, SADECE yeni gelen crime satırlarına uygulanacak
+    # 3) Feature üret
     # -------------------------------------------------------------------------
     demo_feat = build_demographic_features(demo_raw)
+
+    # -------------------------------------------------------------------------
+    # 4) Append-only split
+    # -------------------------------------------------------------------------
+    old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
+
+    if new_rows.empty:
+        print("✅ Yeni crime satırı yok. Eski sf_crime_03 korunuyor.")
+        if os.path.exists(CRIME_OUTPUT):
+            print(f"📁 Mevcut çıktı: {CRIME_OUTPUT}")
+        return
 
     # -------------------------------------------------------------------------
     # 5) Sadece yeni satırları enrich et
@@ -592,8 +553,6 @@ def main():
 
     # -------------------------------------------------------------------------
     # 6) Eski + yeni birleştir
-    #    Eski satırlar eski haliyle kalır
-    #    Yeni satırlar güncel demographic snapshot ile eklenir
     # -------------------------------------------------------------------------
     final_df = finalize_output(old_out, new_rows_enriched)
     log_shape(final_df, "FINAL sf_crime_03")
@@ -630,7 +589,6 @@ def main():
     # 8) Kaydet
     # -------------------------------------------------------------------------
     safe_save_csv(final_df, CRIME_OUTPUT)
-    print(f"💾 CSV kaydedildi: {CRIME_OUTPUT}")
 
     try:
         preview_cols = [c for c in [
@@ -649,6 +607,7 @@ def main():
             print(final_df[preview_cols].tail(10).to_string(index=False))
     except Exception as e:
         print(f"ℹ️ Önizleme atlandı: {e}")
+
 
 if __name__ == "__main__":
     main()
