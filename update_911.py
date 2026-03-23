@@ -287,6 +287,15 @@ def ensure_geoid(df: pd.DataFrame) -> pd.DataFrame:
 
     df["latitude"] = pd.to_numeric(df.get("latitude"), errors="coerce")
     df["longitude"] = pd.to_numeric(df.get("longitude"), errors="coerce")
+    
+    # ============================================================
+    # 🔎 DEBUG — COORDINATE COVERAGE
+    # ============================================================
+    lat_nonnull = df["latitude"].notna().sum() if "latitude" in df.columns else 0
+    lon_nonnull = df["longitude"].notna().sum() if "longitude" in df.columns else 0
+    
+    log(f"🧪 latitude dolu: {lat_nonnull:,} / {len(df):,}")
+    log(f"🧪 longitude dolu: {lon_nonnull:,} / {len(df):,}")
 
     if "latitude" in df.columns and "longitude" in df.columns:
         min_lon, min_lat, max_lon, max_lat = SF_BBOX
@@ -314,9 +323,11 @@ def ensure_geoid(df: pd.DataFrame) -> pd.DataFrame:
 
     out["GEOID"] = normalize_geoid(out["GEOID"], tlen)
     log(f"🧪 spatial join sonrası GEOID dolu: {out['GEOID'].notna().sum():,} / {len(out):,}")
+    log(f"🧪 spatial join sonrası GEOID dolu: {out['GEOID'].notna().sum():,} / {len(out):,}")
+    
     out = out.dropna(subset=["GEOID"]).copy()
     return out
-
+    
 # =========================================================
 # 911 FEATURE ENGINEERING
 # =========================================================
@@ -501,7 +512,6 @@ def make_standard_summary(raw: pd.DataFrame) -> pd.DataFrame:
         ])
 
     df = build_event_level_911(raw)
-    log(f"🧪 latitude dolu: {df['latitude'].notna().sum():,} | longitude dolu: {df['longitude'].notna().sum():,}")
     df = df.dropna(subset=["date", "hour_range"]).copy()
 
     has_geoid = "GEOID" in df.columns and df["GEOID"].notna().any()
