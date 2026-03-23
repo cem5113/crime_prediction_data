@@ -1041,19 +1041,33 @@ panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
 # ============================================================
 panel = panel.sort_values(["GEOID", "slot_start_dt"]).copy()
 
-# 1) Son suçtan beri geçen saat
-panel["time_since_last_crime_hours"] = (
+# 1) Son suçtan beri geçen 3 saatlik slot sayısı
+delta_hours = (
     (
         pd.to_datetime(panel["slot_start_dt"], errors="coerce") -
         pd.to_datetime(panel["last_crime_dt"], errors="coerce")
     ).dt.total_seconds() / 3600.0
 )
-panel["time_since_last_crime_hours"] = (
-    panel["time_since_last_crime_hours"]
+
+panel["slots_since_last_crime"] = np.floor(delta_hours / 3.0)
+panel.loc[panel["last_crime_dt"].isna(), "slots_since_last_crime"] = np.nan
+
+panel["slots_since_last_crime"] = (
+    panel["slots_since_last_crime"]
     .replace([np.inf, -np.inf], np.nan)
-    .fillna(9999.0)
     .clip(lower=0)
     .astype("float32")
+)
+
+panel["slots_since_last_crime_range"] = pd.cut(
+    panel["slots_since_last_crime"],
+    bins=[-1, 0, 1, 3, 7, 15, np.inf],
+    labels=["0", "1", "2_3", "4_7", "8_15", "16_plus"]
+).astype("object")
+
+panel["slots_since_last_crime_range"] = (
+    panel["slots_since_last_crime_range"]
+    .fillna("no_prior")
 )
 
 # 2) Aynı GEOID için kısa dönem lag sayıları
