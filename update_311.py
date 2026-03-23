@@ -252,7 +252,6 @@ def load_sf_tracts() -> gpd.GeoDataFrame:
     log(f"✅ SF tract sayısı: {len(tracts):,}")
     return tracts
 
-
 def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -272,26 +271,44 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
         crs="EPSG:4326",
     )
 
+    tracts_use = tracts[["GEOID", "geometry"]].copy()
+
+    # 1) Önce normal polygon içinde mi?
     joined = gpd.sjoin(
         gdf_pts,
-        tracts[["GEOID", "geometry"]].copy(),
+        tracts_use,
         how="left",
         predicate="within",
     )
 
-    geoid_col = None
-    for cand in ["GEOID", "GEOID_right", "GEOID_r"]:
-        if cand in joined.columns:
-            geoid_col = cand
-            break
-
+    geoid_col = next((c for c in ["GEOID", "GEOID_right", "GEOID_r"] if c in joined.columns), None)
     if geoid_col is None:
         raise KeyError(f"GEOID join sonrası bulunamadı. Kolonlar: {list(joined.columns)}")
+
+    # 2) Eşleşmeyenlere nearest fallback
+    miss = joined[geoid_col].isna()
+    if miss.any():
+        log(f"⚠️ within ile eşleşmeyen nokta: {int(miss.sum()):,} | nearest fallback uygulanıyor")
+
+        try:
+            nearest = gpd.sjoin_nearest(
+                joined.loc[miss, gdf_pts.columns].copy(),
+                tracts_use,
+                how="left",
+                distance_col="_dist_to_tract",
+            )
+            nearest_geoid_col = next(
+                (c for c in ["GEOID", "GEOID_right", "GEOID_r"] if c in nearest.columns),
+                None
+            )
+            if nearest_geoid_col is not None:
+                joined.loc[miss, geoid_col] = nearest[nearest_geoid_col].values
+        except Exception as e:
+            log(f"⚠️ nearest fallback başarısız: {e}")
 
     df.loc[ok, "GEOID"] = joined[geoid_col].astype("string").str.zfill(11).values
     df["GEOID"] = zfill_geoid(df["GEOID"])
     return df
-
 
 # ============================================================
 # DOWNLOAD
@@ -455,21 +472,51 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
     df = df.dropna(subset=["GEOID", "datetime", "date"]).copy()
-
+    
     if "id" in df.columns:
         df = df.drop_duplicates(subset=["id"], keep="last").copy()
     else:
         df = df.drop_duplicates().copy()
-
+    
     df["event_hour"] = df["datetime"].dt.hour
     df["hour_range"] = make_hour_range(df["event_hour"])
-
+    
+    df["is_police_related_311"] = (
+        df["agency_responsible"]
+        .astype("string")
+        .str.lower()
+        .str.contains("police|pd|sheriff|public safety", na=False)
+        .astype(np.int8)
+    )
+    
     slot_cur = (
         df.groupby(["GEOID", "date", "hour_range"], dropna=False)
         .agg(
             request_count_311=("id", "count"),
             unique_category_311=("category", "nunique"),
             unique_subcategory_311=("subcategory", "nunique"),
+            unique_agency_311=("agency_responsible", "nunique"),
+            police_related_311_count=("is_police_related_311", "sum"),
+        )
+        .reset_index()
+    )
+    
+    df["is_police_related_311"] = (
+        df["agency_responsible"]
+        .astype("string")
+        .str.lower()
+        .str.contains("police|pd|sheriff|public safety", na=False)
+        .astype(np.int8)
+    )
+    
+    slot_cur = (
+        df.groupby(["GEOID", "date", "hour_range"], dropna=False)
+        .agg(
+            request_count_311=("id", "count"),
+            unique_category_311=("category", "nunique"),
+            unique_subcategory_311=("subcategory", "nunique"),
+            unique_agency_311=("agency_responsible", "nunique"),
+            police_related_311_count=("is_police_related_311", "sum"),
         )
         .reset_index()
     )
@@ -533,6 +580,11 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         daily_full["request_count_311_prev_1d"]
         / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
     )
+    
+    daily_full["request_count_311_ratio_3d_7d"] = (
+        (daily_full["request_count_311_prev_3d"] / 3.0)
+        / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
+    )
 
     daily_full["request_count_311_zscore_7d"] = (
         (
@@ -555,6 +607,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
             "request_count_311_prev_3d",
             "request_count_311_prev_7d",
             "request_count_311_ratio_1d_7d",
+            "request_count_311_ratio_3d_7d",
             "request_count_311_zscore_7d",
             "request_count_311_spike_flag",
         ]
@@ -568,7 +621,12 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
 
     slot_full = slot_full.merge(slot_cur, on=["GEOID", "date", "hour_range"], how="left")
 
-    for c in ["request_count_311", "unique_category_311", "unique_subcategory_311"]:
+    for c in [
+        "request_count_311",
+        "unique_category_311",
+        "unique_subcategory_311",
+        "unique_agency_311",
+    ]:
         slot_full[c] = slot_full[c].fillna(0).astype(np.int32)
 
     slot_full = slot_full.merge(daily_feats, on=["GEOID", "date"], how="left")
@@ -608,6 +666,11 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         .transform(lambda s: s.shift(1).rolling(7, min_periods=1).mean())
         .fillna(0)
     )
+    
+    slot_full["request_count_311_same_slot_ratio"] = (
+        slot_full["request_count_311_same_slot_prev_day"]
+        / (slot_full["request_count_311_same_slot_roll7_mean"] + EPS)
+    )
 
     # --------------------------------------------------------
     # FINAL
@@ -621,6 +684,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "request_count_311",
         "unique_category_311",
         "unique_subcategory_311",
+        "unique_agency_311",
         "request_count_311_prev_slot",
         "request_count_311_prev_1d",
         "request_count_311_prev_3d",
@@ -628,17 +692,19 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "request_count_311_same_slot_prev_day",
         "request_count_311_same_slot_prev_week",
         "request_count_311_same_slot_roll7_mean",
+        "request_count_311_same_slot_ratio",
         "request_count_311_ratio_1d_7d",
+        "request_count_311_ratio_3d_7d",
         "request_count_311_zscore_7d",
         "request_count_311_spike_flag",
     ]
-
     out = slot_full[keep_cols].copy()
 
     int_like_cols = [
         "request_count_311",
         "unique_category_311",
         "unique_subcategory_311",
+        "unique_agency_311",
         "request_count_311_prev_1d",
         "request_count_311_prev_3d",
         "request_count_311_prev_7d",
@@ -646,13 +712,15 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     ]
     for c in int_like_cols:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
-
+    
     float_like_cols = [
         "request_count_311_prev_slot",
         "request_count_311_same_slot_prev_day",
         "request_count_311_same_slot_prev_week",
         "request_count_311_same_slot_roll7_mean",
+        "request_count_311_same_slot_ratio",
         "request_count_311_ratio_1d_7d",
+        "request_count_311_ratio_3d_7d",
         "request_count_311_zscore_7d",
     ]
     for c in float_like_cols:
@@ -726,11 +794,14 @@ def main():
         fixed = attach_geoid(final_raw.loc[need_geoid].copy(), tracts)
         final_raw.loc[need_geoid, "GEOID"] = fixed["GEOID"].values
 
-    final_raw["GEOID"] = zfill_geoid(final_raw["GEOID"])
-
+    final_raw["GEOID"] = zfill_geoid(final_raw["GEOID"])İ
+    
+    missing_geoid = final_raw["GEOID"].isna().sum()
+    log(f"📊 Final raw GEOID eksik: {missing_geoid:,} / {len(final_raw):,}")
+    
     if KEEP_RAW:
         save_raw(final_raw, RAW_OUT)
-
+    
     agg = build_model_ready_agg(final_raw, tracts)
     save_agg(agg, AGG_OUT)
 
