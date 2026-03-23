@@ -279,9 +279,13 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
     if miss.any():
         log(f"⚠️ within ile eşleşmeyen nokta: {int(miss.sum()):,} | nearest fallback uygulanıyor")
         try:
+            pts_miss = joined.loc[miss, gdf_pts.columns].copy()
+            pts_miss = gpd.GeoDataFrame(pts_miss, geometry="geometry", crs="EPSG:4326").to_crs(epsg=26910)
+            tracts_proj = tracts_use.to_crs(epsg=26910)
+
             nearest = gpd.sjoin_nearest(
-                joined.loc[miss, gdf_pts.columns].copy(),
-                tracts_use,
+                pts_miss,
+                tracts_proj,
                 how="left",
                 distance_col="_dist_to_tract",
             )
@@ -290,7 +294,7 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
                 None,
             )
             if nearest_geoid_col is not None:
-                joined.loc[miss, geoid_col] = nearest[nearest_geoid_col].values
+                joined.loc[miss, geoid_col] = nearest[nearest_geoid_col].astype("string").values
         except Exception as e:
             log(f"⚠️ nearest fallback başarısız: {e}")
 
@@ -422,6 +426,14 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
+    missing_before_drop = (
+        df["GEOID"].isna() |
+        df["datetime"].isna() |
+        df["date"].isna()
+    ).sum()
+    if missing_before_drop > 0:
+        log(f"⚠️ GEOID/date/datetime eksik olduğu için düşülecek satır: {int(missing_before_drop):,}")
+
     df = df.dropna(subset=["GEOID", "datetime", "date"]).copy()
 
     if "id" in df.columns:
@@ -515,10 +527,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         / (daily_full["request_count_311_daily_roll7_std"].fillna(0) + EPS)
     )
 
-    daily_full["request_count_311_spike_flag"] = (
-        daily_full["request_count_311_prev_1d"] > (1.5 * (daily_full["request_count_311_prev_7d"] / 7.0))
-    ).astype(np.int8)
-
     daily_feats = daily_full[
         [
             "GEOID",
@@ -529,7 +537,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
             "request_count_311_ratio_1d_7d",
             "request_count_311_ratio_3d_7d",
             "request_count_311_zscore_7d",
-            "request_count_311_spike_flag",
         ]
     ].copy()
 
@@ -600,7 +607,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "request_count_311_ratio_1d_7d",
         "request_count_311_ratio_3d_7d",
         "request_count_311_zscore_7d",
-        "request_count_311_spike_flag",
     ]
     out = slot_full[keep_cols].copy()
 
@@ -613,7 +619,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "request_count_311_prev_1d",
         "request_count_311_prev_3d",
         "request_count_311_prev_7d",
-        "request_count_311_spike_flag",
     ]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
@@ -629,6 +634,32 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     ]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
+    int_cols = [
+        "request_count_311",
+        "unique_category_311",
+        "unique_subcategory_311",
+        "unique_agency_311",
+        "police_related_311_count",
+        "request_count_311_prev_slot",
+        "request_count_311_prev_1d",
+        "request_count_311_prev_3d",
+        "request_count_311_prev_7d",
+        "request_count_311_same_slot_prev_day",
+        "request_count_311_same_slot_prev_week",
+    ]
+    for c in int_cols:
+        out[c] = out[c].round().astype(np.int32)
+
+    float_cols = [
+        "request_count_311_same_slot_roll7_mean",
+        "request_count_311_same_slot_ratio",
+        "request_count_311_ratio_1d_7d",
+        "request_count_311_ratio_3d_7d",
+        "request_count_311_zscore_7d",
+    ]
+    for c in float_cols:
+        out[c] = out[c].astype(np.float32)
+
     return out
 
 
@@ -642,6 +673,12 @@ def merge_existing_and_new_agg(existing_agg: pd.DataFrame, new_agg: pd.DataFrame
     else:
         old = existing_agg.copy()
         new = new_agg.copy()
+
+        keep_cols = list(new.columns)
+        for c in keep_cols:
+            if c not in old.columns:
+                old[c] = pd.NA
+        old = old[keep_cols].copy()
 
         for c in AGG_KEYS:
             if c not in old.columns:
@@ -717,6 +754,8 @@ def main():
 
     missing_geoid = inc_raw["GEOID"].isna().sum()
     log(f"📊 Incremental raw GEOID eksik: {missing_geoid:,} / {len(inc_raw):,}")
+    if missing_geoid > 0:
+        log("⚠️ GEOID atanamayan kayıtlar aggregate aşamasında dışarıda kalacak.")
 
     new_agg = build_model_ready_agg(inc_raw, tracts)
     final_agg = merge_existing_and_new_agg(existing_agg, new_agg)
