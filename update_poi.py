@@ -667,18 +667,14 @@ def main():
     if not os.path.exists(CRIME_IN):
         # fallback
         for cand in [
-            os.path.join(BASE_DIR, "sf_crime_05.parquet"),
             os.path.join(BASE_DIR, "sf_crime_05.csv"),
-            os.path.join(BASE_DIR, "sf_crime_03.parquet"),
-            os.path.join(BASE_DIR, "sf_crime_03.csv"),
-            os.path.join(BASE_DIR, "sf_crime.csv"),
         ]:
-            if os.path.exists(cand):
-                global CRIME_IN
-                CRIME_IN = cand
-                break
-
-    df_crime = read_table(CRIME_IN)
+             if os.path.exists(cand):
+                        crime_in_path = cand
+                        break
+            
+    df_crime = read_table(crime_in_path)
+    
     if "GEOID" not in df_crime.columns:
         raise KeyError("Crime input içinde GEOID yok")
     if "date" not in df_crime.columns:
