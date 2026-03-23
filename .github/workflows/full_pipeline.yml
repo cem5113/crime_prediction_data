@@ -26,7 +26,6 @@ concurrency:
   group: full-pipeline-${{ github.ref }}
   cancel-in-progress: true
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CRIME_DATA_DIR: ${{ github.workspace }}
   GEOID_LEN: "11"
   ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
@@ -56,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with LFS)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           lfs: true
 
@@ -77,10 +76,11 @@ jobs:
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" || true
 
+      # --- SF 07:00 kapısı (TZ ayarla + saat kontrolü) ---
       - name: Set runner timezone to America/Los_Angeles
-        run: |
-          sudo timedatectl set-timezone America/Los_Angeles
-          date
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "America/Los_Angeles"
 
       - name: Gate by local SF time == 07 (bypassable)
         id: gate
@@ -151,7 +151,7 @@ jobs:
 
       - name: Set up Python 3.11
         if: ${{ steps.gate.outputs.proceed == 'true' }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -910,38 +910,8 @@ jobs:
           print('✅ wrote', parp, 'shape=', df.shape)
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
-
-      - name: 10.10) Business + Building enrich → sf_crime_10.parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GEOID_LEN: "11"
-        run: |
-          set -euo pipefail
-
-          echo "=== BEFORE sf_crime_10: files in CRIME_DATA_DIR ==="
-          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,240p' || true
-
-          # Gerekli giriş dosyaları kontrol
-          [ -f "${CRIME_DATA_DIR}/sf_crime_09.parquet" ] || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
-          [ -f "${CRIME_DATA_DIR}/sf_census_blocks.geojson" ] || { echo "❌ sf_census_blocks.geojson yok"; exit 2; }
-
-          # Script seç
-          if [ -f scripts/make_sf_crime_10.py ]; then
-            PY="scripts/make_sf_crime_10.py"
-          elif [ -f make_sf_crime_10.py ]; then
-            PY="make_sf_crime_10.py"
-          else
-            echo "❌ sf_crime_10 enrich script bulunamadı"; exit 2
-          fi
-
-          echo "✅ Using PY=$PY"
-          python -u "$PY"
-
-          [ -f "${CRIME_DATA_DIR}/sf_crime_10.parquet" ] || { echo "❌ sf_crime_10.parquet oluşmadı"; exit 3; }
-          ls -lh "${CRIME_DATA_DIR}/sf_crime_10.parquet" || true
-
-      - name: 10.9) Quick verify (after neighbors + sf_crime_10)
+          
+      - name: 10.9) Quick verify (after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
           set -euo pipefail
@@ -954,8 +924,7 @@ jobs:
             sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
             sf_911_last_5_year.csv sf_311_last_5_years.csv \
             sf_crime_grid_full_labeled.csv \
-            neighbors.csv \
-            sf_crime_10.parquet
+            neighbors.csv
           do
             p="${CRIME_DATA_DIR}/$f"
             if [ -f "$p" ]; then
@@ -965,8 +934,8 @@ jobs:
               echo "⚠️ missing: $f"
             fi
           done
-          
-      - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core, sf_crime_10 ayrı üretilir)
+
+      - name: 11) Convert sf_crime_*.csv to parquet cache (01-09 + core)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -1026,7 +995,7 @@ jobs:
           echo "=== Parquet outputs (crime dir) ==="
           ls -lah "${CRIME_DATA_DIR}" | grep -E "\.parquet$" || true
           
-      - name: Upload artifact (sf_crime_10.parquet + sf_crime_x.parquet)
+      - name: Upload artifact (datasets only, after neighbors)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -1035,10 +1004,48 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
           path: |
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_10.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_population.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_01.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
+            ${{ env.CRIME_DATA_DIR }}/neighbors.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_bus_stops_with_geoid.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_train_stops_with_geoid.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_pois_cleaned_with_geoid.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years_y.csv
+            ${{ env.CRIME_DATA_DIR }}/week.csv
+            ${{ env.CRIME_DATA_DIR }}/*.geojson
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
+            ${{ env.CRIME_DATA_DIR }}/week.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
-            
-      - name: Upload selected outputs to Google Drive (overwrite)
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_y.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_01.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.parquet
+            ${{ env.CRIME_DATA_DIR }}/week.parquet
+      - name:  (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           RCLONE_GDRIVE_TOKEN: ${{ secrets.RCLONE_GDRIVE_TOKEN }}
@@ -1049,7 +1056,7 @@ jobs:
       
           echo "Files check:"
           ls -lah "${CRIME_DATA_DIR}/week.csv"
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.parquet"
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet"
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.csv" || true
       
           # Convert sf_crime_x.csv to sf_crime_x.parquet
@@ -1109,12 +1116,11 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/week.csv"     "${DEST}/week.csv"     || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet" "${DEST}/week.parquet" || true
           
+          # sf_crime series 01..09 (CSV + PARQUET)
           for i in 01 02 03 04 05 06 07 08 09; do
             rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.csv"     "${DEST}/sf_crime_${i}.csv"     || true
             rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.parquet" "${DEST}/sf_crime_${i}.parquet" || true
           done
-
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_10.parquet" "${DEST}/sf_crime_10.parquet" || true
           
           # x/y
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"      "${DEST}/sf_crime_x.csv"      || true
