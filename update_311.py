@@ -371,9 +371,65 @@ def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
                 return df_seed
 
     # 3) hiçbir şey yok
-    print("ℹ️ Ham 311 bulunamadı; boş seed ile başlanıyor.")
+        print("ℹ️ Ham 311 bulunamadı; raw seed yok. Gerekirse özet dosyadan başlangıç tarihi alınacak.")
     return pd.DataFrame()
 
+def load_existing_agg_for_start() -> pd.DataFrame:
+    """
+    Ham _y yoksa, sadece başlangıç tarihi belirlemek için
+    mevcut 3h özet dosyasını okur.
+    """
+    agg_candidates = [
+        os.path.join(SAVE_DIR, "sf_311_last_5_years.csv"),
+        os.path.join(SAVE_DIR, "sf_311_last_5_years_3h.csv"),
+        os.path.join(SAVE_DIR, AGG_BASENAME),
+        os.path.join(SAVE_DIR, AGG_ALIAS),
+        os.path.join(SAVE_DIR, LEGACY_311),
+    ]
+
+    seen = set()
+    for cand in agg_candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+
+        if not os.path.exists(cand):
+            continue
+
+        try:
+            df = pd.read_csv(cand, dtype={"GEOID": str}, low_memory=False)
+            df.columns = (
+                df.columns.astype(str)
+                .str.replace("\ufeff", "", regex=False)
+                .str.strip()
+            )
+
+            if "date" not in df.columns:
+                continue
+
+            # Bu dosya gerçekten özet mi?
+            lc = {c.lower() for c in df.columns}
+            if "311_request_count" not in lc and "request_count_311" not in lc:
+                continue
+
+            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+            df = df.dropna(subset=["date"]).copy()
+            if df.empty:
+                continue
+
+            # decide_start_date mevcut mantığı datetime üzerinden çalıştığı için
+            # geçici datetime kolonu üret
+            df["datetime"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
+
+            mx = pd.to_datetime(df["datetime"], errors="coerce").max()
+            print(f"📁 Mevcut 311 özet bulundu: {cand} | satır={len(df):,} | max date={mx.date() if pd.notna(mx) else 'NA'}")
+            return df[["date", "datetime"]].copy()
+
+        except Exception as e:
+            print(f"⚠️ Özet başlangıç dosyası okunamadı ({cand}): {e}")
+
+    return pd.DataFrame()
+    
 def decide_start_date(df_existing):
     # 1) Backfill override
     if BACKFILL_DAYS > 0:
@@ -493,9 +549,15 @@ def main():
     df_raw = load_existing_raw_or_seed(raw_path)
 
     # 2) Başlangıç tarihi
-    start_date, _mode = decide_start_date(
-        load_existing_raw(raw_path) if os.path.exists(raw_path) else df_raw
-    )
+    if raw_path and os.path.exists(raw_path):
+        start_basis = load_existing_raw(raw_path)
+    elif df_raw is not None and not df_raw.empty:
+        start_basis = df_raw
+    else:
+        # ham yoksa özetten son tarihi al
+        start_basis = load_existing_agg_for_start()
+
+    start_date, _mode = decide_start_date(start_basis)
 
     # 3) Yeni veriyi indir (tarih-chunk)
     df_new = download_by_date_chunks(start_date)
