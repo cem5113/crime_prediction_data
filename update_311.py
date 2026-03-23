@@ -794,7 +794,7 @@ def main():
         fixed = attach_geoid(final_raw.loc[need_geoid].copy(), tracts)
         final_raw.loc[need_geoid, "GEOID"] = fixed["GEOID"].values
 
-    final_raw["GEOID"] = zfill_geoid(final_raw["GEOID"])İ
+    final_raw["GEOID"] = zfill_geoid(final_raw["GEOID"])
     
     missing_geoid = final_raw["GEOID"].isna().sum()
     log(f"📊 Final raw GEOID eksik: {missing_geoid:,} / {len(final_raw):,}")
