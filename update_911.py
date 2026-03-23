@@ -18,6 +18,8 @@ import os
 import re
 import io
 import time
+import json
+import ast
 import requests
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -214,39 +216,77 @@ def _load_blocks() -> tuple[gpd.GeoDataFrame, int]:
     return gdf_blocks, tlen
 
 def ensure_geoid(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
     if "GEOID" in df.columns and df["GEOID"].notna().any():
         return df
 
+    def _parse_intersection_point(x):
+        """
+        Desteklenen formatlar:
+        1) dict: {'coordinates': [lon, lat], 'type': 'Point'}
+        2) string-dict: "{'coordinates': [-122.49, 37.78], 'type': 'Point'}"
+        3) json-string: '{"coordinates": [-122.49, 37.78], "type": "Point"}'
+        4) fallback regex
+        """
+        if pd.isna(x):
+            return (None, None)
+
+        # dict ise direkt
+        if isinstance(x, dict):
+            coords = x.get("coordinates")
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                return (coords[1], coords[0])  # lat, lon
+            return (None, None)
+
+        # string ise önce literal_eval, sonra json, en son regex
+        if isinstance(x, str):
+            s = x.strip()
+
+            # 1) ast.literal_eval -> tek tırnaklı dict için en güvenlisi
+            try:
+                obj = ast.literal_eval(s)
+                if isinstance(obj, dict) and "coordinates" in obj:
+                    coords = obj.get("coordinates")
+                    if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                        return (coords[1], coords[0])  # lat, lon
+            except Exception:
+                pass
+
+            # 2) json.loads -> çift tırnaklı json için
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict) and "coordinates" in obj:
+                    coords = obj.get("coordinates")
+                    if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                        return (coords[1], coords[0])  # lat, lon
+            except Exception:
+                pass
+
+            # 3) çok kaba fallback regex
+            nums = re.findall(r"-?\d+(?:\.\d+)?", s)
+            if len(nums) >= 2:
+                lon, lat = float(nums[0]), float(nums[1])
+                return (lat, lon)
+
+        return (None, None)
+
     if "latitude" not in df.columns or "longitude" not in df.columns:
         if "intersection_point" in df.columns:
-            def _lon(x):
-                if isinstance(x, dict) and "coordinates" in x:
-                    return x["coordinates"][0]
-                if isinstance(x, str):
-                    m = re.search(r"[-\d\.]+,\s*[-\d\.]+", x)
-                    if m:
-                        lo, la = m.group(0).split(",")
-                        return float(lo)
-                return None
-
-            def _lat(x):
-                if isinstance(x, dict) and "coordinates" in x:
-                    return x["coordinates"][1]
-                if isinstance(x, str):
-                    m = re.search(r"[-\d\.]+,\s*[-\d\.]+", x)
-                    if m:
-                        lo, la = m.group(0).split(",")
-                        return float(la)
-                return None
-
-            df["longitude"] = df["intersection_point"].apply(_lon)
-            df["latitude"]  = df["intersection_point"].apply(_lat)
+            parsed = df["intersection_point"].apply(_parse_intersection_point)
+            df["latitude"] = [p[0] for p in parsed]
+            df["longitude"] = [p[1] for p in parsed]
 
         for a, b in [("lat", "long"), ("y", "x")]:
-            if a in df.columns and b in df.columns and "latitude" not in df.columns:
+            if a in df.columns and b in df.columns and (
+                "latitude" not in df.columns or "longitude" not in df.columns
+            ):
                 df["latitude"]  = pd.to_numeric(df[a], errors="coerce")
                 df["longitude"] = pd.to_numeric(df[b], errors="coerce")
                 break
+
+    df["latitude"] = pd.to_numeric(df.get("latitude"), errors="coerce")
+    df["longitude"] = pd.to_numeric(df.get("longitude"), errors="coerce")
 
     if "latitude" in df.columns and "longitude" in df.columns:
         min_lon, min_lat, max_lon, max_lat = SF_BBOX
@@ -267,7 +307,13 @@ def ensure_geoid(df: pd.DataFrame) -> pd.DataFrame:
     )
     gdf = gpd.sjoin(gdf, gdf_blocks[["GEOID", "geometry"]], how="left", predicate="within")
     out = pd.DataFrame(gdf.drop(columns=["geometry", "index_right"], errors="ignore"))
+
+    if "GEOID" not in out.columns:
+        out["GEOID"] = pd.NA
+        return out
+
     out["GEOID"] = normalize_geoid(out["GEOID"], tlen)
+    log(f"🧪 spatial join sonrası GEOID dolu: {out['GEOID'].notna().sum():,} / {len(out):,}")
     out = out.dropna(subset=["GEOID"]).copy()
     return out
 
@@ -422,16 +468,22 @@ def build_event_level_911(raw: pd.DataFrame) -> pd.DataFrame:
 
     if "GEOID" not in df.columns:
         df["GEOID"] = pd.NA
-    
+
     need_geoid = df["GEOID"].isna()
     if need_geoid.any():
         try:
-            filled = ensure_geoid(df.loc[need_geoid].copy())
+            missing_idx = df.index[need_geoid]
+            subset = df.loc[missing_idx].copy()
+
+            filled = ensure_geoid(subset)
+
             if filled is not None and not filled.empty and "GEOID" in filled.columns:
-                df.loc[need_geoid, "GEOID"] = filled["GEOID"].values
+                # index hizalı güvenli atama
+                common_idx = filled.index.intersection(df.index)
+                df.loc[common_idx, "GEOID"] = filled.loc[common_idx, "GEOID"]
         except Exception as e:
             log(f"⚠️ ensure_geoid başarısız: {e}")
-    
+
     if "GEOID" not in df.columns:
         df["GEOID"] = pd.NA
 
@@ -449,6 +501,7 @@ def make_standard_summary(raw: pd.DataFrame) -> pd.DataFrame:
         ])
 
     df = build_event_level_911(raw)
+    log(f"🧪 latitude dolu: {df['latitude'].notna().sum():,} | longitude dolu: {df['longitude'].notna().sum():,}")
     df = df.dropna(subset=["date", "hour_range"]).copy()
 
     has_geoid = "GEOID" in df.columns and df["GEOID"].notna().any()
@@ -1268,6 +1321,36 @@ def main():
     log_shape(merged, "CRIME × 911")
     log(f"✅ sf_crime_01 tamamlandı → {merged_output_path}")
 
+    # ============================================================
+    # 🔎 DEBUG — 911 FEATURE DOLULUK KONTROLÜ
+    # ============================================================
+    try:
+        cols_911 = [c for c in final_df.columns if "911_" in c]
+    
+        if cols_911:
+            nan_stats = final_df[cols_911].isna().mean().sort_values(ascending=False)
+    
+            # 🚨 BURAYA EKLE
+            if nan_stats.mean() > 0.9:
+                raise ValueError("❌ 911 feature tamamen boş → pipeline durduruldu")
+    
+            log("🔎 911 NaN oranı (top 10):")
+            log(nan_stats.head(10).to_string())
+    
+            log(f"📊 Ortalama NaN oranı: {nan_stats.mean():.4f}")
+    
+            if nan_stats.mean() > 0.5:
+                log("🚨 UYARI: 911 feature'ların çoğu boş! (GEOID / merge sorunu olabilir)")
+    
+        if "GEOID" in final_df.columns:
+            geoid_nan = final_df["GEOID"].isna().mean()
+            log(f"📊 GEOID NaN oranı: {geoid_nan:.4f}")
+    
+    except Exception as e:
+        log(f"⚠️ 911 debug başarısız: {e}")
+    
+    log(f"✅ sf_crime_01 tamamlandı → {merged_output_path}")
+    
     try:
         print(merged.head(5).to_string(index=False))
     except Exception:
