@@ -1085,6 +1085,12 @@ except Exception as e:
     log(f"⚠️ Normalize skip: {e}")
 
 try:
-    print(merged.head(5).to_string(index=False))
-except Exception:
-    pass
+    print("\n===== DEBUG: sf_crime_01 FILE HEAD =====")
+    debug_df = pd.read_csv(merged_output_path, nrows=5)
+    print(debug_df.to_string(index=False))
+    print("\nCOLUMNS:", debug_df.columns.tolist())
+    print("Y_label var mı? ", "Y_label" in debug_df.columns)
+    print("y_count var mı? ", "y_count" in debug_df.columns)
+    print("y_event var mı? ", "y_event" in debug_df.columns)
+except Exception as e:
+    log(f"❌ DEBUG READ ERROR: {e}")
