@@ -20,6 +20,9 @@ try:
 except Exception:
     SF_TZ = None
 
+def safe_div(a, b, eps=1e-6):
+    return a / (b + eps)
+    
 def log(msg: str):
     print(msg, flush=True)
 
@@ -255,6 +258,117 @@ def make_standard_summary(raw: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in out.columns if c not in cols_tail] + cols_tail
     return out[cols]
 
+def add_geoid_hr_history_features(summary: pd.DataFrame) -> pd.DataFrame:
+    """
+    GEOID + hour_range bazında geçmiş feature'ları üretir.
+    3 saatlik slot mantığına uygundur.
+    """
+    if summary is None or summary.empty:
+        return summary
+
+    df = summary.copy()
+
+    required = {"date", "hour_range", "911_request_count_hour_range"}
+    missing = required - set(df.columns)
+    if missing:
+        return df
+
+    if "GEOID" not in df.columns:
+        return df
+
+    df["date"] = to_date(df["date"])
+    df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
+
+    hr_pat = re.compile(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$")
+    def _hr_key_from_range(hr):
+        m = hr_pat.match(str(hr))
+        return int(m.group(1)) % 24 if m else None
+
+    df["hr_key"] = df["hour_range"].apply(_hr_key_from_range)
+    df["911_request_count_hour_range"] = pd.to_numeric(
+        df["911_request_count_hour_range"], errors="coerce"
+    ).fillna(0)
+
+    df = df.dropna(subset=["GEOID", "date", "hour_range", "hr_key"]).copy()
+    df["hr_key"] = df["hr_key"].astype("int16")
+
+    df = df.sort_values(["GEOID", "hr_key", "date"]).reset_index(drop=True)
+    grp = df.groupby(["GEOID", "hr_key"], dropna=False)["911_request_count_hour_range"]
+
+    df["911_slot_prev_slot"] = grp.shift(1)
+
+    df["911_slot_last2slots"] = (
+        grp.shift(1)
+           .rolling(2, min_periods=1)
+           .sum()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_slot_last8slots"] = (
+        grp.shift(1)
+           .rolling(8, min_periods=1)
+           .sum()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_slot_last56slots"] = (
+        grp.shift(1)
+           .rolling(56, min_periods=1)
+           .sum()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_slot_ewma_8"] = (
+        grp.shift(1)
+           .ewm(span=8, adjust=False)
+           .mean()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_slot_ewma_56"] = (
+        grp.shift(1)
+           .ewm(span=56, adjust=False)
+           .mean()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_hist_same_slot_mean_8"] = (
+        grp.shift(1)
+           .rolling(8, min_periods=2)
+           .mean()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_hist_same_slot_std_8"] = (
+        grp.shift(1)
+           .rolling(8, min_periods=2)
+           .std()
+           .reset_index(level=[0, 1], drop=True)
+    )
+
+    df["911_hist_same_slot_z_8"] = safe_div(
+        pd.to_numeric(df["911_request_count_hour_range"], errors="coerce").fillna(0)
+        - pd.to_numeric(df["911_hist_same_slot_mean_8"], errors="coerce").fillna(0),
+        pd.to_numeric(df["911_hist_same_slot_std_8"], errors="coerce").fillna(0)
+    )
+
+    new_cols = [
+        "911_slot_prev_slot",
+        "911_slot_last2slots",
+        "911_slot_last8slots",
+        "911_slot_last56slots",
+        "911_slot_ewma_8",
+        "911_slot_ewma_56",
+        "911_hist_same_slot_mean_8",
+        "911_hist_same_slot_std_8",
+        "911_hist_same_slot_z_8",
+    ]
+
+    for c in new_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype("float32")
+
+    return df
+
 def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
     log(f"📥 Yerel 911 tabanı okunuyor: {path}")
     df = pd.read_csv(path, low_memory=False, dtype={"GEOID":"string"})
@@ -280,13 +394,18 @@ def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
             day = df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"] \
                     .sum().reset_index(name="911_request_count_daily(before_24_hours)")
             df = df.merge(day, on=keys, how="left")
+            
+        df = add_geoid_hr_history_features(df)
+
         if min_date is not None:
             df = df[df["date"] >= min_date]
         cols_tail = [c for c in ["date","hour_range","GEOID"] if c in df.columns]
         cols = [c for c in df.columns if c not in cols_tail] + cols_tail
         return df[cols]
+        
     # değilse ham → özet
     std = make_standard_summary(df)
+    std = add_geoid_hr_history_features(std)
     if min_date is not None:
         std = std[std["date"] >= min_date]
     return std
@@ -317,13 +436,17 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
             keys = (["GEOID"] if "GEOID" in df.columns else []) + ["date"]
             day = df.groupby(keys, dropna=False, observed=True)["911_request_count_hour_range"].sum().reset_index(name="911_request_count_daily(before_24_hours)")
             df = df.merge(day, on=keys, how="left")
+
+        df = add_geoid_hr_history_features(df)
         if min_date is not None:
             df = df[df["date"] >= min_date]
         cols_tail = [c for c in ["date","hour_range","GEOID"] if c in df.columns]
         cols = [c for c in df.columns if c not in cols_tail] + cols_tail
         return df[cols]
+        
     # değilse ham → özet
     std = make_standard_summary(df)
+    std = add_geoid_hr_history_features(std)
     if min_date is not None:
         std = std[std["date"] >= min_date]
     return std
@@ -660,29 +783,27 @@ log_shape(final_911, "911 summary (normalize)")
 log_date_range(final_911, "date", "911")
 
 # ROLLING (3g/7g) — GEOID ve GEOID×hr_key
+ROLLING_DAY_WINDOWS = {
+    "prev_day": 1,
+    "last3d": 3,
+    "last7d": 7,
+    "last14d": 14,
+}
+
 _day_unique = (final_911[["GEOID","date","911_request_count_daily(before_24_hours)"]]
                .drop_duplicates(subset=["GEOID","date"]))
 _day_unique = _day_unique.sort_values(["GEOID","date"]).rename(columns={"911_request_count_daily(before_24_hours)":"daily_cnt"}).reset_index(drop=True)
 
+for label, n_days in ROLLING_DAY_WINDOWS.items():
+    _day_unique[f"911_geo_{label}"] = (
+        _day_unique.groupby("GEOID")["daily_cnt"]
+        .transform(lambda s: s.rolling(n_days, min_periods=1).sum().shift(1))
+        .astype("float32")
+    )
+
 _hr_unique = (final_911[["GEOID","hr_key","date","911_request_count_hour_range"]]
               .groupby(["GEOID","hr_key","date"], as_index=False, observed=True)["911_request_count_hour_range"].sum())
 _hr_unique = _hr_unique.rename(columns={"911_request_count_hour_range":"hr_cnt"}).sort_values(["GEOID","hr_key","date"]).reset_index(drop=True)
-
-ROLLING_SLOT_WINDOWS = {
-    "1h": 1,
-    "3h": 1,
-    "6h": 2,
-    "24h": 8,
-    "3d": 24,
-    "7d": 56,
-}
-
-for label, n_slots in ROLLING_SLOT_WINDOWS.items():
-    _day_unique[f"911_geo_last{label}"] = (
-        _day_unique.groupby("GEOID")["daily_cnt"]
-        .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
-        .astype("float32")
-    )
 
 # KOMŞU GEOID ÖZELLİKLERİ (günlük baz)
 def build_neighbors(method: str = "touches", radius_m: float = 500.0) -> pd.DataFrame:
@@ -716,12 +837,17 @@ if ENABLE_NEIGHBORS:
 _neighbor_roll = None
 if neighbors_df is not None and not neighbors_df.empty:
     day_nbr = neighbors_df.merge(_day_unique.rename(columns={"GEOID":"nbr"}), on="nbr", how="left")
-    day_nbr = day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"].sum().rename(columns={"daily_cnt":"nbr_daily_cnt"})
+    day_nbr = (
+        day_nbr.groupby(["GEOID","date"], as_index=False, observed=True)["daily_cnt"]
+        .sum()
+        .rename(columns={"daily_cnt":"nbr_daily_cnt"})
+    )
     _neighbor_roll = day_nbr.sort_values(["GEOID","date"]).reset_index(drop=True)
-    for label, n_slots in ROLLING_SLOT_WINDOWS.items():
-        _neighbor_roll[f"911_neighbors_last{label}"] = (
+
+    for label, n_days in ROLLING_DAY_WINDOWS.items():
+        _neighbor_roll[f"911_neighbors_{label}"] = (
             _neighbor_roll.groupby("GEOID")["nbr_daily_cnt"]
-            .transform(lambda s: s.rolling(n_slots, min_periods=1).sum().shift(1))
+            .transform(lambda s: s.rolling(n_days, min_periods=1).sum().shift(1))
             .astype("float32")
         )
 
@@ -732,12 +858,10 @@ if _neighbor_roll is not None:
     _enriched = _enriched.merge(
         _neighbor_roll[
             ["GEOID", "date"] + [
-                "911_neighbors_last1h",
-                "911_neighbors_last3h",
-                "911_neighbors_last6h",
-                "911_neighbors_last24h",
+                "911_neighbors_prev_day",
                 "911_neighbors_last3d",
                 "911_neighbors_last7d",
+                "911_neighbors_last14d",
             ]
         ],
         on=["GEOID", "date"],
@@ -750,21 +874,29 @@ KEEP_911_COLS = [
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
 
-    "911_geo_last1h",
-    "911_geo_last3h",
-    "911_geo_last6h",
-    "911_geo_last24h",
+    "911_geo_prev_day",
     "911_geo_last3d",
     "911_geo_last7d",
+    "911_geo_last14d",
+
+    # yeni slot-history feature'lar
+    "911_slot_prev_slot",
+    "911_slot_last2slots",
+    "911_slot_last8slots",
+    "911_slot_last56slots",
+    "911_slot_ewma_8",
+    "911_slot_ewma_56",
+    "911_hist_same_slot_mean_8",
+    "911_hist_same_slot_std_8",
+    "911_hist_same_slot_z_8",
 ]
+
 if _neighbor_roll is not None:
     KEEP_911_COLS += [
-        "911_neighbors_last1h",
-        "911_neighbors_last3h",
-        "911_neighbors_last6h",
-        "911_neighbors_last24h",
+        "911_neighbors_prev_day",
         "911_neighbors_last3d",
         "911_neighbors_last7d",
+        "911_neighbors_last14d",
     ]
 
 # _enriched içinde olmayanları otomatik ele
@@ -837,21 +969,27 @@ else:
     agg_cols = [
         "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
-    
-        "911_geo_last1h",
-        "911_geo_last3h",
-        "911_geo_last6h",
-        "911_geo_last24h",
+
+        "911_geo_prev_day",
         "911_geo_last3d",
         "911_geo_last7d",
+        "911_geo_last14d",
+    
+        "911_slot_prev_slot",
+        "911_slot_last2slots",
+        "911_slot_last8slots",
+        "911_slot_last56slots",
+        "911_slot_ewma_8",
+        "911_slot_ewma_56",
+        "911_hist_same_slot_mean_8",
+        "911_hist_same_slot_std_8",
+        "911_hist_same_slot_z_8",
     ] + (
         [
-            "911_neighbors_last1h",
-            "911_neighbors_last3h",
-            "911_neighbors_last6h",
-            "911_neighbors_last24h",
+            "911_neighbors_prev_day",
             "911_neighbors_last3d",
             "911_neighbors_last7d",
+            "911_neighbors_last14d",
         ] if _neighbor_roll is not None else []
     )
     cal_agg = (_enriched.groupby(cal_keys, as_index=False, observed=True)[agg_cols]
@@ -873,39 +1011,51 @@ fill_cols = [
     "911_request_count_daily(before_24_hours)",
     "hr_cnt", "daily_cnt",
 
-    "911_geo_last1h",
-    "911_geo_last3h",
-    "911_geo_last6h",
-    "911_geo_last24h",
+    "911_geo_prev_day",
     "911_geo_last3d",
     "911_geo_last7d",
+    "911_geo_last14d",
+
+    "911_slot_prev_slot",
+    "911_slot_last2slots",
+    "911_slot_last8slots",
+    "911_slot_last56slots",
+    "911_slot_ewma_8",
+    "911_slot_ewma_56",
+    "911_hist_same_slot_mean_8",
+    "911_hist_same_slot_std_8",
+    "911_hist_same_slot_z_8",
 ] + (
     [
-        "911_neighbors_last1h",
-        "911_neighbors_last3h",
-        "911_neighbors_last6h",
-        "911_neighbors_last24h",
+        "911_neighbors_prev_day",
         "911_neighbors_last3d",
         "911_neighbors_last7d",
+        "911_neighbors_last14d",
     ] if _neighbor_roll is not None else []
 )
 
 FLOAT_COLS = set([
     "hr_cnt", "daily_cnt",
 
-    "911_geo_last1h",
-    "911_geo_last3h",
-    "911_geo_last6h",
-    "911_geo_last24h",
+    "911_geo_prev_day",
     "911_geo_last3d",
     "911_geo_last7d",
+    "911_geo_last14d",
 
-    "911_neighbors_last1h",
-    "911_neighbors_last3h",
-    "911_neighbors_last6h",
-    "911_neighbors_last24h",
+    "911_slot_prev_slot",
+    "911_slot_last2slots",
+    "911_slot_last8slots",
+    "911_slot_last56slots",
+    "911_slot_ewma_8",
+    "911_slot_ewma_56",
+    "911_hist_same_slot_mean_8",
+    "911_hist_same_slot_std_8",
+    "911_hist_same_slot_z_8",
+
+    "911_neighbors_prev_day",
     "911_neighbors_last3d",
     "911_neighbors_last7d",
+    "911_neighbors_last14d",
 ])
 
 for c in fill_cols:
