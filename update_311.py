@@ -651,45 +651,177 @@ def main():
     # 5) 3 SAATLİK ÖZET (sf_311_last_5_years.csv + alias)
     if not df_raw.empty:
         df_ok = df_raw.dropna(subset=["date"]).copy()
-    
+
         # GEOID yoksa özet üretilemez; uyarı ver, boş şemalı özet yaz
         if "GEOID" not in df_ok.columns or df_ok["GEOID"].isna().all():
             print("⚠️ GEOID üretilemedi; özet boş yazılacak.")
-            grouped = pd.DataFrame(columns=["GEOID","date","hour_range","311_request_count"])
+            slot_cur = pd.DataFrame(columns=[
+                "GEOID", "date", "hour_range", "311_request_count",
+                "request_count_311_lag1",
+                "request_count_311_prev_2slot",
+                "request_count_311_prev_8slot",
+                "request_count_311_prev_56slot",
+                "request_count_311_roll3",
+                "request_count_311_roll8",
+                "request_count_311_roll56",
+                "request_count_311_delta_prev_slot",
+                "request_count_311_delta_prev_1d",
+                "request_count_311_ratio_prev_1d",
+                "request_count_311_ratio_roll7",
+                "zscore_311_7d",
+                "slot_mean_311_geoid",
+                "slot_deviation_311",
+                "day_of_week",
+                "same_dow_same_slot_mean_311",
+                "relative_to_expected_311",
+            ])
         else:
             h = pd.to_datetime(df_ok["datetime"], errors="coerce", utc=True).dt.hour.fillna(0).astype(int)
             start_h = (h // 3) * 3
             end_h = start_h + 3
             end_h = end_h.where(end_h < 24, 24)  # 21-24 fix
-    
+
             df_ok["hour_range"] = (
                 start_h.astype(int).astype(str).str.zfill(2) + "-" +
                 end_h.astype(int).astype(str).str.zfill(2)
             )
-    
+
             grouped = (
                 df_ok.dropna(subset=["GEOID"])
-                     .groupby(["GEOID","date","hour_range"])
+                     .groupby(["GEOID", "date", "hour_range"])
                      .size()
                      .reset_index(name="311_request_count")
             )
             grouped["GEOID"] = normalize_geoid(grouped["GEOID"], DEFAULT_GEOID_LEN)
-    
+
+            # ===============================
+            # 311 FEATURE ENGINEERING (3H SLOT)
+            # ===============================
+            slot_cur = grouped.copy()
+            slot_cur["date"] = pd.to_datetime(slot_cur["date"], errors="coerce")
+
+            # sıralama çok önemli
+            slot_cur = slot_cur.sort_values(["GEOID", "date", "hour_range"]).reset_index(drop=True)
+            grp = slot_cur.groupby("GEOID", group_keys=False)
+
+            # -------------------------------
+            # LAG FEATURES
+            # -------------------------------
+            slot_cur["request_count_311_lag1"] = grp["311_request_count"].shift(1)
+            slot_cur["request_count_311_prev_2slot"] = grp["311_request_count"].shift(2)
+            slot_cur["request_count_311_prev_8slot"] = grp["311_request_count"].shift(8)    # 24 saat
+            slot_cur["request_count_311_prev_56slot"] = grp["311_request_count"].shift(56)  # 7 gün
+
+            # -------------------------------
+            # ROLLING FEATURES (PAST ONLY)
+            # -------------------------------
+            slot_cur["request_count_311_roll3"] = grp["311_request_count"].shift(1).rolling(3).mean()
+            slot_cur["request_count_311_roll8"] = grp["311_request_count"].shift(1).rolling(8).mean()
+            slot_cur["request_count_311_roll56"] = grp["311_request_count"].shift(1).rolling(56).mean()
+
+            # -------------------------------
+            # DELTA FEATURES
+            # -------------------------------
+            slot_cur["request_count_311_delta_prev_slot"] = (
+                slot_cur["311_request_count"] - slot_cur["request_count_311_lag1"]
+            )
+
+            slot_cur["request_count_311_delta_prev_1d"] = (
+                slot_cur["311_request_count"] - slot_cur["request_count_311_prev_8slot"]
+            )
+
+            # -------------------------------
+            # RATIO FEATURES
+            # -------------------------------
+            slot_cur["request_count_311_ratio_prev_1d"] = (
+                slot_cur["311_request_count"] /
+                (slot_cur["request_count_311_prev_8slot"] + 1)
+            )
+
+            slot_cur["request_count_311_ratio_roll7"] = (
+                slot_cur["311_request_count"] /
+                (slot_cur["request_count_311_roll56"] + 1)
+            )
+
+            # -------------------------------
+            # Z-SCORE (ANOMALY)
+            # -------------------------------
+            roll_mean = grp["311_request_count"].shift(1).rolling(56).mean()
+            roll_std = grp["311_request_count"].shift(1).rolling(56).std()
+
+            slot_cur["zscore_311_7d"] = (
+                (slot_cur["311_request_count"] - roll_mean) /
+                (roll_std + 1e-6)
+            )
+
+            # -------------------------------
+            # SLOT BASELINE
+            # -------------------------------
+            slot_cur["slot_mean_311_geoid"] = (
+                slot_cur.groupby(["GEOID", "hour_range"])["311_request_count"]
+                .transform("mean")
+            )
+
+            slot_cur["slot_deviation_311"] = (
+                slot_cur["311_request_count"] - slot_cur["slot_mean_311_geoid"]
+            )
+
+            # -------------------------------
+            # DOW + SLOT BASELINE
+            # -------------------------------
+            slot_cur["day_of_week"] = slot_cur["date"].dt.dayofweek
+
+            slot_cur["same_dow_same_slot_mean_311"] = (
+                slot_cur.groupby(["GEOID", "day_of_week", "hour_range"])["311_request_count"]
+                .transform("mean")
+            )
+
+            slot_cur["relative_to_expected_311"] = (
+                slot_cur["311_request_count"] /
+                (slot_cur["same_dow_same_slot_mean_311"] + 1)
+            )
+
+            # -------------------------------
+            # NAN TEMİZLİK
+            # -------------------------------
+            fill_cols = [
+                "request_count_311_lag1",
+                "request_count_311_prev_2slot",
+                "request_count_311_prev_8slot",
+                "request_count_311_prev_56slot",
+                "request_count_311_roll3",
+                "request_count_311_roll8",
+                "request_count_311_roll56",
+                "request_count_311_delta_prev_slot",
+                "request_count_311_delta_prev_1d",
+                "request_count_311_ratio_prev_1d",
+                "request_count_311_ratio_roll7",
+                "zscore_311_7d",
+                "slot_mean_311_geoid",
+                "slot_deviation_311",
+                "same_dow_same_slot_mean_311",
+                "relative_to_expected_311",
+            ]
+            slot_cur[fill_cols] = slot_cur[fill_cols].fillna(0)
+
+            # date tekrar csv için sade format
+            slot_cur["date"] = slot_cur["date"].dt.date
+
         # 1) artifact/prev klasörüne (raw_path ile aynı yere)
-        save_atomic(grouped, agg_path)
-    
+        save_atomic(slot_cur, agg_path)
+
         # 2) repo root SAVE_DIR'e (merge burada arıyor)
-        save_atomic(grouped, os.path.join(SAVE_DIR, AGG_BASENAME))
-    
+        save_atomic(slot_cur, os.path.join(SAVE_DIR, AGG_BASENAME))
+
         # 3) alias (opsiyonel) — sadece SAVE_DIR'e yazmak yeter
         if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
-            save_atomic(grouped, os.path.join(SAVE_DIR, AGG_ALIAS))
-    
+            save_atomic(slot_cur, os.path.join(SAVE_DIR, AGG_ALIAS))
+
         print(f"📁 Özet yazıldı (artifact): {os.path.abspath(agg_path)}")
         print(f"📁 Özet yazıldı (SAVE_DIR): {os.path.join(SAVE_DIR, AGG_BASENAME)}")
-    
+
         try:
-            print(grouped.head(5).to_string(index=False))
+            print(slot_cur.head(5).to_string(index=False))
         except Exception:
             pass
     else:
