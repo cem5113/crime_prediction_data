@@ -1115,21 +1115,12 @@ jobs:
           # week
           rclone copyto "${CRIME_DATA_DIR}/week.csv"     "${DEST}/week.csv"     || true
           rclone copyto "${CRIME_DATA_DIR}/week.parquet" "${DEST}/week.parquet" || true
-          
-          # sf_crime series 01..09 (CSV + PARQUET)
-          for i in 01 02 03 04 05 06 07 08 09; do
-            rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.csv"     "${DEST}/sf_crime_${i}.csv"     || true
-            rclone copyto "${CRIME_DATA_DIR}/sf_crime_${i}.parquet" "${DEST}/sf_crime_${i}.parquet" || true
-          done
-          
-          # x/y
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"      "${DEST}/sf_crime_x.csv"      || true
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"  "${DEST}/sf_crime_x.parquet"  || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet" "${DEST}/sf_crime_x.parquet" || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv" "${DEST}/sf_crime_x.csv" || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet" || true
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.csv" "${DEST}/sf_crime_09.csv" || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.csv"      "${DEST}/sf_crime_y.csv"      || true
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_y.parquet"  "${DEST}/sf_crime_y.parquet"  || true
-          
-          # diğer kritikler (istersen)
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime.csv"  "${DEST}/sf_crime.csv"  || true
           rclone copyto "${CRIME_DATA_DIR}/neighbors.csv" "${DEST}/neighbors.csv" || true
           
           echo "✅ Upload complete → ${DEST}"
