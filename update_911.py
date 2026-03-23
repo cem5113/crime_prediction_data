@@ -765,7 +765,145 @@ if _neighbor_roll is not None:
         "911_neighbors_last24h",
         "911_neighbors_last3d",
         "911_neighbors_last7d",
+        "911_pressure_ratio_24h_7d",
+        "911_pressure_ratio_3d_7d",
+        "911_neighbor_pressure_ratio_24h",
+        "911_neighbor_pressure_ratio_7d",
+        "911_delta_24h_3d",
+        "911_delta_3d_7d",
+        "log_911_request_count_hour_range",
+        "log_911_request_count_daily(before_24_hours)",
+        "log_911_geo_last24h",
+        "log_911_geo_last7d",
+        "log_911_neighbors_last24h",
+        "log_911_neighbors_last7d",
+        "911_slot_baseline_28d",
+        "911_slot_anom_ratio",
+        "911_slot_anom_diff",
+        "911_same_dow_slot_mean_8w",
+        "911_same_dow_slot_ratio",
     ]
+
+# ============================================================
+# ✅ 911 DERIVED PRESSURE / ANOMALY FEATURES
+# ============================================================
+
+# Sayısal güvenlik
+for c in [
+    "911_request_count_hour_range",
+    "911_request_count_daily(before_24_hours)",
+    "911_geo_last1h",
+    "911_geo_last3h",
+    "911_geo_last6h",
+    "911_geo_last24h",
+    "911_geo_last3d",
+    "911_geo_last7d",
+    "911_neighbors_last1h",
+    "911_neighbors_last3h",
+    "911_neighbors_last6h",
+    "911_neighbors_last24h",
+    "911_neighbors_last3d",
+    "911_neighbors_last7d",
+]:
+    if c in _enriched.columns:
+        _enriched[c] = pd.to_numeric(_enriched[c], errors="coerce").fillna(0).astype("float32")
+
+# 1) Kısa / uzun dönem baskı oranları
+if {"911_geo_last24h", "911_geo_last7d"}.issubset(_enriched.columns):
+    _enriched["911_pressure_ratio_24h_7d"] = (
+        (_enriched["911_geo_last24h"] + 1.0) /
+        ((_enriched["911_geo_last7d"] / 7.0) + 1.0)
+    ).astype("float32")
+
+if {"911_geo_last3d", "911_geo_last7d"}.issubset(_enriched.columns):
+    _enriched["911_pressure_ratio_3d_7d"] = (
+        ((_enriched["911_geo_last3d"] / 3.0) + 1.0) /
+        ((_enriched["911_geo_last7d"] / 7.0) + 1.0)
+    ).astype("float32")
+
+# 2) Komşu / merkez baskı oranı
+if {"911_neighbors_last24h", "911_geo_last24h"}.issubset(_enriched.columns):
+    _enriched["911_neighbor_pressure_ratio_24h"] = (
+        (_enriched["911_neighbors_last24h"] + 1.0) /
+        (_enriched["911_geo_last24h"] + 1.0)
+    ).astype("float32")
+
+if {"911_neighbors_last7d", "911_geo_last7d"}.issubset(_enriched.columns):
+    _enriched["911_neighbor_pressure_ratio_7d"] = (
+        (_enriched["911_neighbors_last7d"] + 1.0) /
+        (_enriched["911_geo_last7d"] + 1.0)
+    ).astype("float32")
+
+# 3) Kısa dönem - uzun dönem farkları
+if {"911_geo_last24h", "911_geo_last3d"}.issubset(_enriched.columns):
+    _enriched["911_delta_24h_3d"] = (
+        _enriched["911_geo_last24h"] -
+        (_enriched["911_geo_last3d"] / 3.0)
+    ).astype("float32")
+
+if {"911_geo_last3d", "911_geo_last7d"}.issubset(_enriched.columns):
+    _enriched["911_delta_3d_7d"] = (
+        (_enriched["911_geo_last3d"] / 3.0) -
+        (_enriched["911_geo_last7d"] / 7.0)
+    ).astype("float32")
+
+# 4) Log dönüşümler
+for c in [
+    "911_request_count_hour_range",
+    "911_request_count_daily(before_24_hours)",
+    "911_geo_last24h",
+    "911_geo_last7d",
+    "911_neighbors_last24h",
+    "911_neighbors_last7d",
+]:
+    if c in _enriched.columns:
+        _enriched[f"log_{c}"] = np.log1p(_enriched[c]).astype("float32")
+
+# 5) Slot bazlı anomali (aynı GEOID + aynı hour_range için geçmiş normal)
+if {"GEOID", "date", "hour_range", "911_request_count_hour_range"}.issubset(_enriched.columns):
+    _enriched = _enriched.sort_values(["GEOID", "hour_range", "date"]).copy()
+
+    _enriched["911_slot_baseline_28d"] = (
+        _enriched.groupby(["GEOID", "hour_range"], observed=True)["911_request_count_hour_range"]
+        .rolling(28, min_periods=3)
+        .mean()
+        .shift(1)
+        .reset_index(level=[0, 1], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+
+    _enriched["911_slot_anom_ratio"] = (
+        (_enriched["911_request_count_hour_range"] + 1.0) /
+        (_enriched["911_slot_baseline_28d"] + 1.0)
+    ).astype("float32")
+
+    _enriched["911_slot_anom_diff"] = (
+        _enriched["911_request_count_hour_range"] -
+        _enriched["911_slot_baseline_28d"]
+    ).astype("float32")
+
+# 6) Aynı hafta günü + aynı slot normali
+if {"GEOID", "date", "hour_range", "911_request_count_hour_range"}.issubset(_enriched.columns):
+    _enriched["date"] = pd.to_datetime(_enriched["date"], errors="coerce")
+    _enriched["day_of_week"] = _enriched["date"].dt.weekday.astype("int8")
+
+    _enriched = _enriched.sort_values(["GEOID", "day_of_week", "hour_range", "date"]).copy()
+
+    _enriched["911_same_dow_slot_mean_8w"] = (
+        _enriched.groupby(["GEOID", "day_of_week", "hour_range"], observed=True)["911_request_count_hour_range"]
+        .rolling(8, min_periods=2)
+        .mean()
+        .shift(1)
+        .reset_index(level=[0, 1, 2], drop=True)
+        .fillna(0)
+        .astype("float32")
+    )
+
+    _enriched["911_same_dow_slot_ratio"] = (
+        (_enriched["911_request_count_hour_range"] + 1.0) /
+        (_enriched["911_same_dow_slot_mean_8w"] + 1.0)
+    ).astype("float32")
 
 # _enriched içinde olmayanları otomatik ele
 KEEP_911_COLS = [c for c in KEEP_911_COLS if c in _enriched.columns]
