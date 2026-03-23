@@ -853,7 +853,11 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
     out["crime_count_last_1d_from_last_crime"] = 0
     out["crime_count_last_3d_from_last_crime"] = 0
     out["crime_count_last_7d_from_last_crime"] = 0
-    out["last_crime_dt"] = pd.NaT
+    out["last_crime_dt"] = pd.Series(
+        pd.NaT,
+        index=out.index,
+        dtype=f"datetime64[ns, {SF_TZ_NAME}]"
+    )
 
     out["_row_id_tmp"] = np.arange(len(out))
     out = out.sort_values(["GEOID", "slot_start_dt"]).copy()
@@ -1031,6 +1035,109 @@ panel["Y_label"] = panel["Y_label"].fillna(0).astype("int8")
 panel["day_of_week"] = pd.to_datetime(panel["date"]).dt.weekday.astype("int8")
 panel["month"] = pd.to_datetime(panel["date"]).dt.month.astype("int8")
 panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
+
+# ============================================================
+# ✅ CRIME-ONLY TEMPORAL / SURGE FEATURES
+# ============================================================
+panel = panel.sort_values(["GEOID", "slot_start_dt"]).copy()
+
+# 1) Son suçtan beri geçen saat
+panel["time_since_last_crime_hours"] = (
+    (
+        pd.to_datetime(panel["slot_start_dt"], errors="coerce") -
+        pd.to_datetime(panel["last_crime_dt"], errors="coerce")
+    ).dt.total_seconds() / 3600.0
+)
+panel["time_since_last_crime_hours"] = (
+    panel["time_since_last_crime_hours"]
+    .replace([np.inf, -np.inf], np.nan)
+    .fillna(9999.0)
+    .clip(lower=0)
+    .astype("float32")
+)
+
+# 2) Aynı GEOID için kısa dönem lag sayıları
+panel["crime_count_prev_slot"] = (
+    panel.groupby("GEOID", observed=True)["y_count"]
+         .shift(1)
+         .fillna(0)
+         .astype("float32")
+)
+
+panel["crime_count_prev_2slots"] = (
+    panel.groupby("GEOID", observed=True)["y_count"]
+         .rolling(2, min_periods=1)
+         .sum()
+         .shift(1)
+         .reset_index(level=0, drop=True)
+         .fillna(0)
+         .astype("float32")
+)
+
+panel["crime_count_prev_8slots"] = (
+    panel.groupby("GEOID", observed=True)["y_count"]
+         .rolling(8, min_periods=1)
+         .sum()
+         .shift(1)
+         .reset_index(level=0, drop=True)
+         .fillna(0)
+         .astype("float32")
+)
+
+# 3) Ani artış / surge oranları
+# Mevcut anchor feature'larını kullanıyoruz
+panel["surge_ratio_1d_7d"] = (
+    (panel["crime_count_last_1d_from_last_crime"].astype("float32") + 1.0) /
+    ((panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0) + 1.0)
+).astype("float32")
+
+panel["surge_ratio_3d_7d"] = (
+    ((panel["crime_count_last_3d_from_last_crime"].astype("float32") / 3.0) + 1.0) /
+    ((panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0) + 1.0)
+).astype("float32")
+
+panel["surge_diff_1d_7d"] = (
+    panel["crime_count_last_1d_from_last_crime"].astype("float32") -
+    (panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0)
+).astype("float32")
+
+# 4) Aynı GEOID + aynı slot için tarihsel ortalama
+panel["slot_roll_mean_7d"] = (
+    panel.groupby(["GEOID", "hour_range"], observed=True)["y_count"]
+         .rolling(7, min_periods=1)
+         .mean()
+         .shift(1)
+         .reset_index(level=[0, 1], drop=True)
+         .fillna(0)
+         .astype("float32")
+)
+
+panel["slot_roll_mean_28d"] = (
+    panel.groupby(["GEOID", "hour_range"], observed=True)["y_count"]
+         .rolling(28, min_periods=1)
+         .mean()
+         .shift(1)
+         .reset_index(level=[0, 1], drop=True)
+         .fillna(0)
+         .astype("float32")
+)
+
+# 5) Aynı hafta günü + aynı slot pattern'i
+panel["same_dow_slot_rate_8w"] = (
+    panel.groupby(["GEOID", "day_of_week", "hour_range"], observed=True)["y_event"]
+         .rolling(8, min_periods=1)
+         .mean()
+         .shift(1)
+         .reset_index(level=[0, 1, 2], drop=True)
+         .fillna(0)
+         .astype("float32")
+)
+
+# 6) Log dönüşümlü varyantlar
+panel["log_prev_8slots"] = np.log1p(panel["crime_count_prev_8slots"]).astype("float32")
+panel["log_last_7d_from_last_crime"] = np.log1p(
+    panel["crime_count_last_7d_from_last_crime"].astype("float32")
+).astype("float32")
 
 season_map = {12:"Winter",1:"Winter",2:"Winter",3:"Spring",4:"Spring",5:"Spring",6:"Summer",7:"Summer",8:"Summer",9:"Fall",10:"Fall",11:"Fall"}
 panel["season"] = panel["month"].map(season_map).astype("category")
