@@ -836,7 +836,17 @@ def main():
 
         print("🔗 sf_crime_01 ile birleştiriliyor...")
         crime = pd.read_csv(crime_01_path, dtype={"GEOID": str}, low_memory=False)
-
+        
+        print("\n===== DEBUG: sf_crime_01 FILE HEAD =====")
+        try:
+            print(crime.head(5).to_string(index=False))
+            print("\nCOLUMNS:", crime.columns.tolist())
+            print("Y_label var mı? ", "Y_label" in crime.columns)
+            print("y_count var mı? ", "y_count" in crime.columns)
+            print("y_event var mı? ", "y_event" in crime.columns)
+        except Exception as e:
+            print(f"❌ sf_crime_01 debug hatası: {e}")
+        
         # Özet dosyası adayları
         summary_path = None
         for name in (AGG_BASENAME, AGG_ALIAS, "sf_311_last_5_years_3h.csv", "sf_311_last_5_years.csv"):
