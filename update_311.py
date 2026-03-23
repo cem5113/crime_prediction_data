@@ -5,7 +5,6 @@ import os
 import re
 import json
 import time
-import math
 import requests
 import numpy as np
 import pandas as pd
@@ -21,7 +20,6 @@ from datetime import datetime, timedelta, timezone
 BASE_DIR = Path(os.getenv("CRIME_DATA_DIR", "crime_prediction_data")).resolve()
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-RAW_OUT = BASE_DIR / "sf_311_last_5_years_raw.csv"
 AGG_OUT = BASE_DIR / "sf_311_last_5_years.csv"
 
 DATASET_URL = os.getenv("SF_311_DATASET_URL", "https://data.sfgov.org/resource/vw6y-z8j6.json")
@@ -38,7 +36,6 @@ TIMEOUT = int(os.getenv("SF311_TIMEOUT", "90"))
 RETRIES = int(os.getenv("SF311_RETRIES", "5"))
 SLEEP_SEC = float(os.getenv("SF311_SLEEP_SEC", "0.25"))
 OVERLAP_DAYS = int(os.getenv("SF311_OVERLAP_DAYS", "14"))
-KEEP_RAW = os.getenv("SF311_KEEP_RAW", "1") == "1"
 
 SF_TZ = "America/Los_Angeles"
 EPS = 1e-6
@@ -81,6 +78,8 @@ SLOT_START_MAP = {
     "21-24": 21,
 }
 
+AGG_KEYS = ["GEOID", "date", "hour_range"]
+
 # ============================================================
 # YARDIMCI FONKSİYONLAR
 # ============================================================
@@ -104,11 +103,7 @@ def zfill_geoid(series: pd.Series) -> pd.Series:
 def make_hour_range(hour_series: pd.Series) -> pd.Series:
     start_h = ((hour_series // 3) * 3).astype("Int64")
     end_h = start_h + 3
-    return (
-        start_h.astype(str).str.zfill(2)
-        + "-"
-        + end_h.astype(str).str.zfill(2)
-    )
+    return start_h.astype(str).str.zfill(2) + "-" + end_h.astype(str).str.zfill(2)
 
 
 def extract_latlon_from_point(val):
@@ -252,6 +247,7 @@ def load_sf_tracts() -> gpd.GeoDataFrame:
     log(f"✅ SF tract sayısı: {len(tracts):,}")
     return tracts
 
+
 def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -273,23 +269,15 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
 
     tracts_use = tracts[["GEOID", "geometry"]].copy()
 
-    # 1) Önce normal polygon içinde mi?
-    joined = gpd.sjoin(
-        gdf_pts,
-        tracts_use,
-        how="left",
-        predicate="within",
-    )
+    joined = gpd.sjoin(gdf_pts, tracts_use, how="left", predicate="within")
 
     geoid_col = next((c for c in ["GEOID", "GEOID_right", "GEOID_r"] if c in joined.columns), None)
     if geoid_col is None:
         raise KeyError(f"GEOID join sonrası bulunamadı. Kolonlar: {list(joined.columns)}")
 
-    # 2) Eşleşmeyenlere nearest fallback
     miss = joined[geoid_col].isna()
     if miss.any():
         log(f"⚠️ within ile eşleşmeyen nokta: {int(miss.sum()):,} | nearest fallback uygulanıyor")
-
         try:
             nearest = gpd.sjoin_nearest(
                 joined.loc[miss, gdf_pts.columns].copy(),
@@ -299,7 +287,7 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
             )
             nearest_geoid_col = next(
                 (c for c in ["GEOID", "GEOID_right", "GEOID_r"] if c in nearest.columns),
-                None
+                None,
             )
             if nearest_geoid_col is not None:
                 joined.loc[miss, geoid_col] = nearest[nearest_geoid_col].values
@@ -310,37 +298,36 @@ def attach_geoid(df: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.DataFrame:
     df["GEOID"] = zfill_geoid(df["GEOID"])
     return df
 
+
 # ============================================================
 # DOWNLOAD
 # ============================================================
 
-def detect_incremental_start(existing_raw: pd.DataFrame) -> datetime.date:
+def detect_incremental_start_from_agg(existing_agg: pd.DataFrame) -> datetime.date:
     today_utc = datetime.now(timezone.utc).date()
     five_years_ago = today_utc - timedelta(days=5 * 365)
 
-    if existing_raw is None or existing_raw.empty or "datetime" not in existing_raw.columns:
+    if existing_agg is None or existing_agg.empty or "date" not in existing_agg.columns:
         log(f"📌 Mod: full | start={five_years_ago}")
         return five_years_ago
 
-    existing_dt = pd.to_datetime(existing_raw["datetime"], errors="coerce")
-    existing_dt = existing_dt.dropna()
-
-    if existing_dt.empty:
+    dt = pd.to_datetime(existing_agg["date"], errors="coerce").dropna()
+    if dt.empty:
         log(f"📌 Mod: full | start={five_years_ago}")
         return five_years_ago
 
-    last_dt = existing_dt.max()
-    start_date = last_dt.date() - timedelta(days=OVERLAP_DAYS)
+    last_date = dt.max().date()
+    start_date = last_date - timedelta(days=OVERLAP_DAYS)
     if start_date < five_years_ago:
         start_date = five_years_ago
 
-    log(f"📌 Mod: incremental(raw)+overlap | start={start_date} | last={last_dt}")
+    log(f"📌 Mod: incremental(agg)+overlap | start={start_date} | last={last_date}")
     return start_date
 
 
-def fetch_incremental_data(existing_raw: pd.DataFrame) -> pd.DataFrame:
+def fetch_incremental_data(existing_agg: pd.DataFrame) -> pd.DataFrame:
     today_utc = datetime.now(timezone.utc).date()
-    start_date = detect_incremental_start(existing_raw)
+    start_date = detect_incremental_start_from_agg(existing_agg)
 
     session = requests.Session()
     all_parts = []
@@ -400,55 +387,19 @@ def fetch_incremental_data(existing_raw: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# MERGE RAW
-# ============================================================
-
-def merge_existing_and_incremental(existing_raw: pd.DataFrame, inc_raw: pd.DataFrame) -> pd.DataFrame:
-    frames = []
-
-    if existing_raw is not None and not existing_raw.empty:
-        frames.append(existing_raw.copy())
-
-    if inc_raw is not None and not inc_raw.empty:
-        frames.append(inc_raw.copy())
-
-    if not frames:
-        return pd.DataFrame()
-
-    df = pd.concat(frames, ignore_index=True)
-    df = standardize_raw_columns(df)
-
-    if "id" in df.columns:
-        df = df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
-    else:
-        df = df.drop_duplicates().reset_index(drop=True)
-
-    today_utc = datetime.now(timezone.utc).date()
-    five_years_ago = today_utc - timedelta(days=5 * 365)
-
-    dt_local = pd.to_datetime(df["datetime"], errors="coerce")
-    keep = dt_local.notna() & (dt_local.dt.date >= five_years_ago)
-    df = df.loc[keep].copy()
-
-    return df
-
-
-# ============================================================
 # GRID HELPERS
 # ============================================================
 
 def build_full_daily_grid(geoids: pd.Series, date_min: pd.Timestamp, date_max: pd.Timestamp) -> pd.DataFrame:
     all_dates = pd.date_range(date_min, date_max, freq="D")
     idx = pd.MultiIndex.from_product([geoids.tolist(), all_dates], names=["GEOID", "date"])
-    out = idx.to_frame(index=False)
-    return out
+    return idx.to_frame(index=False)
 
 
 def build_full_slot_grid(geoids: pd.Series, date_min: pd.Timestamp, date_max: pd.Timestamp) -> pd.DataFrame:
     all_dates = pd.date_range(date_min, date_max, freq="D")
     idx = pd.MultiIndex.from_product([geoids.tolist(), all_dates, SLOT_ORDER], names=["GEOID", "date", "hour_range"])
-    out = idx.to_frame(index=False)
-    return out
+    return idx.to_frame(index=False)
 
 
 # ============================================================
@@ -472,15 +423,15 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
     df = df.dropna(subset=["GEOID", "datetime", "date"]).copy()
-    
+
     if "id" in df.columns:
         df = df.drop_duplicates(subset=["id"], keep="last").copy()
     else:
         df = df.drop_duplicates().copy()
-    
+
     df["event_hour"] = df["datetime"].dt.hour
     df["hour_range"] = make_hour_range(df["event_hour"])
-    
+
     df["is_police_related_311"] = (
         df["agency_responsible"]
         .astype("string")
@@ -488,27 +439,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         .str.contains("police|pd|sheriff|public safety", na=False)
         .astype(np.int8)
     )
-    
-    slot_cur = (
-        df.groupby(["GEOID", "date", "hour_range"], dropna=False)
-        .agg(
-            request_count_311=("id", "count"),
-            unique_category_311=("category", "nunique"),
-            unique_subcategory_311=("subcategory", "nunique"),
-            unique_agency_311=("agency_responsible", "nunique"),
-            police_related_311_count=("is_police_related_311", "sum"),
-        )
-        .reset_index()
-    )
-    
-    df["is_police_related_311"] = (
-        df["agency_responsible"]
-        .astype("string")
-        .str.lower()
-        .str.contains("police|pd|sheriff|public safety", na=False)
-        .astype(np.int8)
-    )
-    
+
     slot_cur = (
         df.groupby(["GEOID", "date", "hour_range"], dropna=False)
         .agg(
@@ -537,9 +468,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
 
     geoids = tracts["GEOID"].astype("string").str.zfill(11).sort_values().drop_duplicates()
 
-    # --------------------------------------------------------
-    # DAILY FULL GRID
-    # --------------------------------------------------------
     daily_full = build_full_daily_grid(geoids, date_min, date_max)
     daily_full["date"] = pd.to_datetime(daily_full["date"], errors="coerce")
 
@@ -549,9 +477,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     daily_full = daily_full.sort_values(["GEOID", "date"]).reset_index(drop=True)
 
     daily_full["request_count_311_prev_1d"] = (
-        daily_full.groupby("GEOID")["request_count_311_daily"]
-        .shift(1)
-        .fillna(0)
+        daily_full.groupby("GEOID")["request_count_311_daily"].shift(1).fillna(0)
     )
 
     daily_full["request_count_311_prev_3d"] = (
@@ -577,26 +503,20 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     )
 
     daily_full["request_count_311_ratio_1d_7d"] = (
-        daily_full["request_count_311_prev_1d"]
-        / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
+        daily_full["request_count_311_prev_1d"] / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
     )
-    
+
     daily_full["request_count_311_ratio_3d_7d"] = (
-        (daily_full["request_count_311_prev_3d"] / 3.0)
-        / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
+        (daily_full["request_count_311_prev_3d"] / 3.0) / ((daily_full["request_count_311_prev_7d"] / 7.0) + EPS)
     )
 
     daily_full["request_count_311_zscore_7d"] = (
-        (
-            daily_full["request_count_311_prev_1d"]
-            - daily_full["request_count_311_daily_roll7_mean"].fillna(0)
-        )
+        (daily_full["request_count_311_prev_1d"] - daily_full["request_count_311_daily_roll7_mean"].fillna(0))
         / (daily_full["request_count_311_daily_roll7_std"].fillna(0) + EPS)
     )
 
     daily_full["request_count_311_spike_flag"] = (
-        daily_full["request_count_311_prev_1d"]
-        > (1.5 * (daily_full["request_count_311_prev_7d"] / 7.0))
+        daily_full["request_count_311_prev_1d"] > (1.5 * (daily_full["request_count_311_prev_7d"] / 7.0))
     ).astype(np.int8)
 
     daily_feats = daily_full[
@@ -613,9 +533,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         ]
     ].copy()
 
-    # --------------------------------------------------------
-    # SLOT FULL GRID
-    # --------------------------------------------------------
     slot_full = build_full_slot_grid(geoids, date_min, date_max)
     slot_full["date"] = pd.to_datetime(slot_full["date"], errors="coerce")
 
@@ -626,6 +543,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "unique_category_311",
         "unique_subcategory_311",
         "unique_agency_311",
+        "police_related_311_count",
     ]:
         slot_full[c] = slot_full[c].fillna(0).astype(np.int32)
 
@@ -634,31 +552,19 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     slot_full["slot_start_hour"] = slot_full["hour_range"].map(SLOT_START_MAP).astype(np.int16)
     slot_full["slot_dt"] = slot_full["date"] + pd.to_timedelta(slot_full["slot_start_hour"], unit="h")
 
-    # --------------------------------------------------------
-    # PREV SLOT
-    # --------------------------------------------------------
     slot_full = slot_full.sort_values(["GEOID", "slot_dt"]).reset_index(drop=True)
     slot_full["request_count_311_prev_slot"] = (
-        slot_full.groupby("GEOID")["request_count_311"]
-        .shift(1)
-        .fillna(0)
+        slot_full.groupby("GEOID")["request_count_311"].shift(1).fillna(0)
     )
 
-    # --------------------------------------------------------
-    # SAME SLOT FEATURES
-    # --------------------------------------------------------
     slot_full = slot_full.sort_values(["GEOID", "hour_range", "date"]).reset_index(drop=True)
 
     slot_full["request_count_311_same_slot_prev_day"] = (
-        slot_full.groupby(["GEOID", "hour_range"])["request_count_311"]
-        .shift(1)
-        .fillna(0)
+        slot_full.groupby(["GEOID", "hour_range"])["request_count_311"].shift(1).fillna(0)
     )
 
     slot_full["request_count_311_same_slot_prev_week"] = (
-        slot_full.groupby(["GEOID", "hour_range"])["request_count_311"]
-        .shift(7)
-        .fillna(0)
+        slot_full.groupby(["GEOID", "hour_range"])["request_count_311"].shift(7).fillna(0)
     )
 
     slot_full["request_count_311_same_slot_roll7_mean"] = (
@@ -666,15 +572,12 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         .transform(lambda s: s.shift(1).rolling(7, min_periods=1).mean())
         .fillna(0)
     )
-    
+
     slot_full["request_count_311_same_slot_ratio"] = (
         slot_full["request_count_311_same_slot_prev_day"]
         / (slot_full["request_count_311_same_slot_roll7_mean"] + EPS)
     )
 
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
     slot_full["date"] = slot_full["date"].dt.strftime("%Y-%m-%d")
 
     keep_cols = [
@@ -685,6 +588,7 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "unique_category_311",
         "unique_subcategory_311",
         "unique_agency_311",
+        "police_related_311_count",
         "request_count_311_prev_slot",
         "request_count_311_prev_1d",
         "request_count_311_prev_3d",
@@ -700,20 +604,20 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
     ]
     out = slot_full[keep_cols].copy()
 
-    int_like_cols = [
+    for c in [
         "request_count_311",
         "unique_category_311",
         "unique_subcategory_311",
         "unique_agency_311",
+        "police_related_311_count",
         "request_count_311_prev_1d",
         "request_count_311_prev_3d",
         "request_count_311_prev_7d",
         "request_count_311_spike_flag",
-    ]
-    for c in int_like_cols:
+    ]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
-    
-    float_like_cols = [
+
+    for c in [
         "request_count_311_prev_slot",
         "request_count_311_same_slot_prev_day",
         "request_count_311_same_slot_prev_week",
@@ -722,9 +626,48 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
         "request_count_311_ratio_1d_7d",
         "request_count_311_ratio_3d_7d",
         "request_count_311_zscore_7d",
-    ]
-    for c in float_like_cols:
+    ]:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+
+    return out
+
+
+# ============================================================
+# AGG MERGE
+# ============================================================
+
+def merge_existing_and_new_agg(existing_agg: pd.DataFrame, new_agg: pd.DataFrame) -> pd.DataFrame:
+    if existing_agg is None or existing_agg.empty:
+        out = new_agg.copy()
+    else:
+        old = existing_agg.copy()
+        new = new_agg.copy()
+
+        for c in AGG_KEYS:
+            if c not in old.columns:
+                old[c] = pd.NA
+            if c not in new.columns:
+                new[c] = pd.NA
+
+        old["GEOID"] = zfill_geoid(old["GEOID"])
+        new["GEOID"] = zfill_geoid(new["GEOID"])
+        old["date"] = pd.to_datetime(old["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        new["date"] = pd.to_datetime(new["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+        min_new_date = pd.to_datetime(new["date"], errors="coerce").min()
+        if pd.isna(min_new_date):
+            return old.sort_values(AGG_KEYS).reset_index(drop=True)
+
+        old_keep = old[pd.to_datetime(old["date"], errors="coerce") < min_new_date].copy()
+        out = pd.concat([old_keep, new], ignore_index=True)
+
+    out = out.drop_duplicates(subset=AGG_KEYS, keep="last")
+    out = out.sort_values(AGG_KEYS).reset_index(drop=True)
+
+    today_utc = datetime.now(timezone.utc).date()
+    five_years_ago = today_utc - timedelta(days=5 * 365)
+    keep = pd.to_datetime(out["date"], errors="coerce").dt.date >= five_years_ago
+    out = out.loc[keep].copy()
 
     return out
 
@@ -732,34 +675,6 @@ def build_model_ready_agg(df_raw: pd.DataFrame, tracts: gpd.GeoDataFrame) -> pd.
 # ============================================================
 # SAVE
 # ============================================================
-
-def save_raw(df: pd.DataFrame, path: Path) -> None:
-    raw_cols = [
-        "id",
-        "datetime",
-        "date",
-        "time",
-        "lat",
-        "long",
-        "category",
-        "subcategory",
-        "agency_responsible",
-        "latitude",
-        "longitude",
-        "GEOID",
-    ]
-
-    out = df.copy()
-    for c in raw_cols:
-        if c not in out.columns:
-            out[c] = pd.NA
-
-    out = out[raw_cols].copy()
-    out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    out.to_csv(path, index=False, encoding="utf-8-sig")
-    log(f"💾 RAW kaydedildi: {path} | shape={out.shape}")
-
 
 def save_agg(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -774,40 +689,43 @@ def main():
     log(f"🔎 CWD: {Path.cwd()}")
     log(f"🔎 SAVE_DIR: {BASE_DIR}")
 
-    existing_raw = read_csv_if_exists(RAW_OUT)
-    inc_raw = fetch_incremental_data(existing_raw)
-    final_raw = merge_existing_and_incremental(existing_raw, inc_raw)
+    existing_agg = read_csv_if_exists(AGG_OUT)
+    inc_raw = fetch_incremental_data(existing_agg)
 
-    if final_raw.empty:
+    if inc_raw.empty:
+        if existing_agg is not None and not existing_agg.empty:
+            log("ℹ️ Yeni 311 kaydı yok, mevcut aggregate korunuyor.")
+            log("✅ update_311.py tamamlandı")
+            print(existing_agg.head(), flush=True)
+            return
         raise RuntimeError("311 verisi üretilemedi.")
 
-    log(f"📦 Final raw satır: {len(final_raw):,}")
+    inc_raw = standardize_raw_columns(inc_raw)
 
     tracts = load_sf_tracts()
 
-    if "GEOID" not in final_raw.columns:
-        final_raw["GEOID"] = pd.NA
+    if "GEOID" not in inc_raw.columns:
+        inc_raw["GEOID"] = pd.NA
 
-    need_geoid = final_raw["GEOID"].isna()
+    need_geoid = inc_raw["GEOID"].isna()
     if need_geoid.any():
-        log(f"🧭 Ana akışta GEOID atanacak satır: {int(need_geoid.sum()):,}")
-        fixed = attach_geoid(final_raw.loc[need_geoid].copy(), tracts)
-        final_raw.loc[need_geoid, "GEOID"] = fixed["GEOID"].values
+        log(f"🧭 Incremental parçada GEOID atanacak satır: {int(need_geoid.sum()):,}")
+        fixed = attach_geoid(inc_raw.loc[need_geoid].copy(), tracts)
+        inc_raw.loc[need_geoid, "GEOID"] = fixed["GEOID"].values
 
-    final_raw["GEOID"] = zfill_geoid(final_raw["GEOID"])
-    
-    missing_geoid = final_raw["GEOID"].isna().sum()
-    log(f"📊 Final raw GEOID eksik: {missing_geoid:,} / {len(final_raw):,}")
-    
-    if KEEP_RAW:
-        save_raw(final_raw, RAW_OUT)
-    
-    agg = build_model_ready_agg(final_raw, tracts)
-    save_agg(agg, AGG_OUT)
+    inc_raw["GEOID"] = zfill_geoid(inc_raw["GEOID"])
+
+    missing_geoid = inc_raw["GEOID"].isna().sum()
+    log(f"📊 Incremental raw GEOID eksik: {missing_geoid:,} / {len(inc_raw):,}")
+
+    new_agg = build_model_ready_agg(inc_raw, tracts)
+    final_agg = merge_existing_and_new_agg(existing_agg, new_agg)
+
+    save_agg(final_agg, AGG_OUT)
 
     log("✅ update_311.py tamamlandı")
     log("İlk 5 satır:")
-    print(agg.head(), flush=True)
+    print(final_agg.head(), flush=True)
 
 
 if __name__ == "__main__":
