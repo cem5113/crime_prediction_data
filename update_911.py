@@ -924,18 +924,12 @@ if has_date_col:
 
     keys = ["GEOID", "date", "hour_range"]
 
-    # --- _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları düşür ---
+    # _x/_y oluşmasını engelle: iki tabloda ortak ama key olmayan kolonları yalnızca 1 kez düşür
     overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
     if overlap:
         log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
         _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
 
-    # overlap temizliği (key dışı)
-    overlap = (set(crime.columns) & set(_enriched.columns)) - set(keys)
-    if overlap:
-        log(f"🧹 Merge overlap (key dışı) bulundu, _enriched'ten düşürüldü: {sorted(overlap)}")
-        _enriched = _enriched.drop(columns=list(overlap), errors="ignore")
-    
     merged = crime.merge(_enriched, on=keys, how="left")
     log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
 
