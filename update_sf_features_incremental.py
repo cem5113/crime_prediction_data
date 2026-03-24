@@ -6,8 +6,6 @@
 # street    -> ÇIKARILDI
 # =========================================================
 
-!pip -q install geopandas pyarrow requests shapely fiona
-
 import os
 import re
 import json
