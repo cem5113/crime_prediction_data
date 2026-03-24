@@ -1030,7 +1030,29 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
     for c in fill_cols:
         if c in merged.columns:
             merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0)
-            
+    
+    # -------------------------------------------------
+    # EK: slot_index + last_crime feature temizliği
+    # -------------------------------------------------
+    
+    # 1. slot_index kaldır (gereksiz / 911 kaynaklı)
+    if "slot_index" in merged.columns:
+        merged = merged.drop(columns=["slot_index"])
+    
+    # 2. slots_since_last_crime → model-ready hale getir
+    if "slots_since_last_crime" in merged.columns:
+        merged["has_past_crime"] = merged["slots_since_last_crime"].notna().astype("int8")
+        merged["slots_since_last_crime"] = merged["slots_since_last_crime"].fillna(9999)
+    
+    # 3. last_crime_dt → modelde kullanma (isteğe bağlı drop)
+    if "last_crime_dt" in merged.columns:
+        # sadece debug için tutmak istersen bırak
+        # modelde kullanmayacaksan drop et:
+        # merged = merged.drop(columns=["last_crime_dt"])
+        pass
+    
+    # -------------------------------------------------
+    
     log_merge_quality(crime_before, merged)
     return merged
 
