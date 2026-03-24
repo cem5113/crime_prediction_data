@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: full-pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CRIME_DATA_DIR: ${{ github.workspace }}
@@ -77,14 +77,10 @@ jobs:
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" || true
 
-      # --- SF 07:00 kapısı (TZ ayarla + saat kontrolü) ---
-      - name: Set runner timezone to America/Los_Angeles
-        uses: szenius/set-timezone@v2.0
-        with:
-          timezoneLinux: "America/Los_Angeles"
-
       - name: Gate by local SF time == 07 (bypassable)
         id: gate
+        env:
+          TZ: America/Los_Angeles
         run: |
           set -euo pipefail
       
@@ -92,15 +88,12 @@ jobs:
           echo "Runner local time: $now"
           echo "RUN_LOCAL_TIME=$now" >> $GITHUB_ENV
       
-          # schedule ise her zaman çalış
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "proceed=true" >> $GITHUB_OUTPUT
           else
-            # Manuel + force=true ise geç
             if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force }}" = "true" ]; then
               echo "proceed=true" >> $GITHUB_OUTPUT
             else
-              # Diğer durumda 07:00 kontrolü
               if [ "$(date +%H)" = "07" ]; then
                 echo "proceed=true" >> $GITHUB_OUTPUT
               else
@@ -109,7 +102,7 @@ jobs:
             fi
           fi
 
-          DOW="$(date +%u)"  # 4 = Thursday
+          DOW="$(date +%u)"
           echo "DOW=$DOW"
           if [ "$DOW" -eq 4 ]; then
             echo "is_thursday=1" >> $GITHUB_OUTPUT
