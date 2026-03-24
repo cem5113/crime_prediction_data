@@ -37,6 +37,40 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 def log(msg: str):
     print(msg, flush=True)
 
+def load_neighbor_file() -> Optional[Path]:
+    for p in NEIGHBOR_CANDIDATES:
+        if p.exists() and p.is_file() and p.stat().st_size > 50:
+            log(f"🧭 Neighbor file bulundu: {p}")
+            return p
+    log("ℹ️ neighbors.csv bulunamadı. Neighbor feature'lar fallback ile üretilecek.")
+    return None
+
+def add_neighbor_features_fallback(summary: pd.DataFrame) -> pd.DataFrame:
+    summary = summary.copy()
+    summary["date"] = pd.to_datetime(summary["date"], errors="coerce").dt.date
+    log("ℹ️ Neighbor fallback: aynı date-hour_range'te diğer GEOID ortalaması kullanılacak.")
+
+    base_cols = [
+        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
+        "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
+    ]
+
+    grp = summary.groupby(["date", "hour_range"], observed=True)
+
+    for c in base_cols:
+        if c not in summary.columns:
+            summary[c] = 0.0
+
+        total = grp[c].transform("sum")
+        cnt = grp[c].transform("count")
+        neigh = np.where(cnt > 1, (total - summary[c]) / (cnt - 1), 0)
+
+        summary[c.replace("911_geo_", "911_neighbors_")] = (
+            pd.Series(neigh, index=summary.index).fillna(0).astype("float32")
+        )
+
+    return summary
+    
 def ensure_parent(path: str | Path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -185,12 +219,11 @@ for p in LOCAL_911_CANDIDATES:
     exists = "✅" if p.exists() else "❌"
     log(f"   {exists} {p}")
 
-# optional spatial file for neighbor adjacency
-CENSUS_CANDIDATES = [
-    SCRIPT_DIR / "sf_census_blocks.geojson",
-    OUT_DIR / "sf_census_blocks.geojson",
-    Path(BASE_DIR) / "sf_census_blocks.geojson",
-    Path("./sf_census_blocks.geojson"),
+NEIGHBOR_CANDIDATES = [
+    SCRIPT_DIR / "neighbors.csv",
+    OUT_DIR / "neighbors.csv",
+    Path(BASE_DIR) / "neighbors.csv",
+    Path("./neighbors.csv"),
 ]
 
 # optional release/raw URL
@@ -688,88 +721,68 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------
 # OPTIONAL NEIGHBOR FEATURES
 # ---------------------------------------------------------
-def load_spatial_geo_file() -> Optional[Path]:
-    for p in CENSUS_CANDIDATES:
-        if p.exists() and p.is_file() and p.stat().st_size > 200:
-            log(f"🗺️ Spatial file bulundu: {p}")
-            return p
-    log("ℹ️ Spatial file bulunamadı. Neighbor feature'lar fallback ile üretilecek.")
-    return None
-
 def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
     """
-    Önce gerçek komşuluk dosyası varsa touch-based GEOID adjacency kur.
-    Yoksa date-hour_range ortalama fallback kullan.
+    Önce neighbors.csv kullan.
+    Dosya yoksa veya bozuksa fallback olarak
+    aynı date-hour_range'te diğer GEOID ortalamasını kullan.
     """
     summary = summary.copy()
-    spatial_path = load_spatial_geo_file()
+    summary["date"] = pd.to_datetime(summary["date"], errors="coerce").dt.date
 
-    needed = ["GEOID", "date", "hour_range", "911_geo_last1h", "911_geo_last3h",
-              "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"]
+    neighbor_path = load_neighbor_file()
 
+    needed = [
+        "GEOID", "date", "hour_range",
+        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
+        "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
+    ]
     for c in needed:
         if c not in summary.columns:
             summary[c] = 0.0
 
-    if spatial_path is None:
-        log("ℹ️ Neighbor fallback: aynı date-hour_range'te diğer GEOID ortalaması kullanılacak.")
-        base_cols = ["911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"]
-        grp = summary.groupby(["date", "hour_range"], observed=True)
-
-        for c in base_cols:
-            total = grp[c].transform("sum")
-            cnt = grp[c].transform("count")
-            # kendi değeri hariç ortalama
-            neigh = np.where(cnt > 1, (total - summary[c]) / (cnt - 1), 0)
-            summary[c.replace("911_geo_", "911_neighbors_")] = pd.Series(neigh, index=summary.index).fillna(0).astype("float32")
-        return summary
+    if neighbor_path is None:
+        return add_neighbor_features_fallback(summary)
 
     try:
-        import geopandas as gpd
-    except Exception as e:
-        log(f"⚠️ geopandas import edilemedi, fallback neighbor kullanılacak: {e}")
-        return add_neighbor_features(summary)
+        adj = pd.read_csv(neighbor_path, low_memory=False)
 
-    try:
-        g = gpd.read_file(spatial_path)
-        if "GEOID" not in g.columns:
-            raise ValueError("Spatial file içinde GEOID yok.")
-        g["GEOID"] = normalize_geoid(g["GEOID"], DEFAULT_GEOID_LEN)
-        g = g[g["GEOID"].notna()].copy()
-
-        # aynı GEOID birden fazla geometri varsa dissolve
-        g = g[["GEOID", "geometry"]].dissolve(by="GEOID", as_index=False)
-        g = g.reset_index(drop=True)
-
-        # adjacency cache
-        cache_path = OUT_DIR / "_911_neighbor_map.parquet"
-        if cache_path.exists():
-            adj = pd.read_parquet(cache_path)
-            log(f"♻️ Neighbor map cache yüklendi: {cache_path}")
+        cols_lower = {c.lower(): c for c in adj.columns}
+        if "geoid" in cols_lower and "neighbor" in cols_lower:
+            adj = adj.rename(columns={
+                cols_lower["geoid"]: "GEOID",
+                cols_lower["neighbor"]: "neighbor_GEOID",
+            })
+        elif "GEOID" in adj.columns and "neighbor_GEOID" in adj.columns:
+            pass
         else:
-            log("🧩 GEOID komşuluk haritası oluşturuluyor...")
-            sindex = g.sindex
-            pairs = []
-            for i, row in g.iterrows():
-                geom = row.geometry
-                geoid = row.GEOID
-                cand_idx = list(sindex.intersection(geom.bounds))
-                cand = g.iloc[cand_idx]
-                cand = cand[cand["GEOID"] != geoid]
-                cand = cand[cand.geometry.touches(geom)]
-                for ngh in cand["GEOID"].tolist():
-                    pairs.append((geoid, ngh))
-            adj = pd.DataFrame(pairs, columns=["GEOID", "neighbor_GEOID"]).drop_duplicates()
-            safe_save_parquet(adj, cache_path)
-            log(f"💾 Neighbor map cache kaydedildi: {cache_path}")
+            raise ValueError(
+                f"neighbors.csv beklenen kolonları taşımıyor. Bulunan kolonlar: {adj.columns.tolist()}"
+            )
+
+        adj["GEOID"] = normalize_geoid(adj["GEOID"], DEFAULT_GEOID_LEN)
+        adj["neighbor_GEOID"] = normalize_geoid(adj["neighbor_GEOID"], DEFAULT_GEOID_LEN)
+        adj = adj.dropna(subset=["GEOID", "neighbor_GEOID"]).drop_duplicates().copy()
+
+        log(f"🧭 Neighbor pair sayısı         : {len(adj):,}")
+        log(f"🧭 Unique GEOID sayısı         : {adj['GEOID'].nunique():,}")
+        log(f"🧭 Unique neighbor_GEOID sayısı: {adj['neighbor_GEOID'].nunique():,}")
 
         if adj.empty:
-            log("⚠️ Neighbor map boş. Fallback neighbor kullanılacak.")
-            return add_neighbor_features(summary.assign(_force_fallback=1).drop(columns=["_force_fallback"]))
+            log("⚠️ neighbors.csv boş/temizleme sonrası boş. Fallback neighbor kullanılacak.")
+            return add_neighbor_features_fallback(summary)
 
-        base = summary[["GEOID", "date", "hour_range",
-                        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
-                        "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"]].copy()
+        base = summary[[
+            "GEOID", "date", "hour_range",
+            "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
+            "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
+        ]].copy()
+
+        base = base.groupby(
+            ["GEOID", "date", "hour_range"],
+            as_index=False,
+            observed=True
+        ).mean(numeric_only=True)
 
         merged = adj.merge(
             base.rename(columns={"GEOID": "neighbor_GEOID"}),
@@ -789,23 +802,19 @@ def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
         ).reset_index()
 
         summary = summary.merge(agg, on=["GEOID", "date", "hour_range"], how="left")
-        for c in ["911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h",
-                  "911_neighbors_last24h", "911_neighbors_last3d", "911_neighbors_last7d"]:
+
+        for c in [
+            "911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h",
+            "911_neighbors_last24h", "911_neighbors_last3d", "911_neighbors_last7d"
+        ]:
             if c in summary.columns:
                 summary[c] = summary[c].fillna(0).astype("float32")
 
         return summary
 
     except Exception as e:
-        log(f"⚠️ Neighbor feature hesaplanamadı, fallback kullanılacak: {e}")
-        base_cols = ["911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"]
-        grp = summary.groupby(["date", "hour_range"], observed=True)
-        for c in base_cols:
-            total = grp[c].transform("sum")
-            cnt = grp[c].transform("count")
-            neigh = np.where(cnt > 1, (total - summary[c]) / (cnt - 1), 0)
-            summary[c.replace("911_geo_", "911_neighbors_")] = pd.Series(neigh, index=summary.index).fillna(0).astype("float32")
-        return summary
+        log(f"⚠️ neighbors.csv okunamadı / işlenemedi, fallback kullanılacak: {e}")
+        return add_neighbor_features_fallback(summary)
 
 # ---------------------------------------------------------
 # LOCAL / RELEASE LOADER
@@ -943,7 +952,8 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
     for c in fill_cols:
         if c in merged.columns:
             merged[c] = merged[c].fillna(0)
-
+            
+    log_merge_quality(crime_before, merged)
     return merged
 
 # ---------------------------------------------------------
@@ -951,9 +961,6 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------
 def main():
     local_base = ensure_local_911_base()
-    if local_base is None:
-        raise FileNotFoundError("❌ sf_911_last_5_year.parquet bulunamadı. Release/fallback kapalı.")
-
     final_911 = summary_from_local(local_base)
 
     # neighbor features
@@ -979,6 +986,7 @@ def main():
 
     merged = merge_with_crime(crime_input, final_911)
     
+    log_merge_quality(read_table_auto(crime_input), merged)
     log_shape(merged, "CRIME⨯911 merged")
     log_nan_report(merged, "sf_crime_01", top_n=25)
     
