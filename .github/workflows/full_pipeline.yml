@@ -23,7 +23,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: full-pipeline-${{ github.ref }}
+  group: full-pipeline
   cancel-in-progress: false
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -73,9 +73,22 @@ jobs:
 
       - name: Echo paths
         run: |
+          set -euo pipefail
           pwd
           echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
           ls -lah "${CRIME_DATA_DIR}" || true
+
+      - name: DEBUG search old workflow settings
+        run: |
+          set -euo pipefail
+          echo "=== searching szenius/set-timezone ==="
+          grep -R "szenius/set-timezone" .github/workflows || true
+
+          echo "=== searching cancel-in-progress ==="
+          grep -R "cancel-in-progress" .github/workflows || true
+
+          echo "=== workflow files ==="
+          find .github/workflows -maxdepth 1 -type f | sort
 
       - name: Gate by local SF time == 07 (bypassable)
         id: gate
@@ -462,9 +475,7 @@ jobs:
           else
             echo "POI adımı bulunamadı"; exit 2
           fi
-            
-          python -u update_poi.py
-      
+                      
           # ============================================================
           # Weekly POI refresh — THURSDAY
           # (UTC: 4 = Thursday)
@@ -479,14 +490,6 @@ jobs:
           fi
       
           echo "FORCE_POI_REFRESH=${FORCE_POI_REFRESH}"
-      
-          if [ -f update_poi.py ]; then
-            python -u update_poi.py
-          elif [ -f pipeline_make_sf_crime_06.py ]; then
-            python -u pipeline_make_sf_crime_06.py
-          else
-            echo "POI adımı bulunamadı"; exit 2
-          fi
 
       - name: 07.9) Assert sf_crime_06 presence (before police/gov)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
