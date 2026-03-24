@@ -26,6 +26,7 @@ concurrency:
   group: full-pipeline-${{ github.ref }}
   cancel-in-progress: true
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CRIME_DATA_DIR: ${{ github.workspace }}
   GEOID_LEN: "11"
   ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
@@ -55,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with LFS)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           lfs: true
 
@@ -151,7 +152,7 @@ jobs:
 
       - name: Set up Python 3.11
         if: ${{ steps.gate.outputs.proceed == 'true' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
