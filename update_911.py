@@ -234,6 +234,29 @@ CRIME_IN_ENV = os.getenv("CRIME_IN", "").strip()
 CRIME_INPUT_CANDIDATES = [
     Path(CRIME_IN_ENV) if CRIME_IN_ENV else None,
 
+    # 1) Öncelik: tam panel / ana crime input
+    SCRIPT_DIR / "sf_crime_y.parquet",
+    SCRIPT_DIR / "sf_crime_y.csv",
+    OUT_DIR / "sf_crime_y.parquet",
+    OUT_DIR / "sf_crime_y.csv",
+    Path(BASE_DIR) / "sf_crime_y.parquet",
+    Path(BASE_DIR) / "sf_crime_y.csv",
+
+    SCRIPT_DIR / "sf_crime_10.parquet",
+    SCRIPT_DIR / "sf_crime_10.csv",
+    OUT_DIR / "sf_crime_10.parquet",
+    OUT_DIR / "sf_crime_10.csv",
+    Path(BASE_DIR) / "sf_crime_10.parquet",
+    Path(BASE_DIR) / "sf_crime_10.csv",
+
+    SCRIPT_DIR / "sf_crime_09.parquet",
+    SCRIPT_DIR / "sf_crime_09.csv",
+    OUT_DIR / "sf_crime_09.parquet",
+    OUT_DIR / "sf_crime_09.csv",
+    Path(BASE_DIR) / "sf_crime_09.parquet",
+    Path(BASE_DIR) / "sf_crime_09.csv",
+
+    # 2) Bunlar ancak fallback olsun
     SCRIPT_DIR / "sf_crime_grid_full_labeled.parquet",
     SCRIPT_DIR / "sf_crime_grid_full_labeled.csv",
     OUT_DIR / "sf_crime_grid_full_labeled.parquet",
@@ -280,10 +303,24 @@ def ensure_local_911_base() -> Optional[Path]:
     return None
 
 def ensure_crime_input() -> Optional[Path]:
+    priority_names = {
+        "sf_crime_y.parquet", "sf_crime_y.csv",
+        "sf_crime_10.parquet", "sf_crime_10.csv",
+        "sf_crime_09.parquet", "sf_crime_09.csv",
+    }
+
+    # önce sadece öncelikli ana panelleri ara
+    for p in CRIME_INPUT_CANDIDATES:
+        if p.name in priority_names and p.exists() and p.is_file() and p.stat().st_size > 200:
+            log(f"✅ Ana crime input bulundu: {p}")
+            return p
+
+    # sonra fallback
     for p in CRIME_INPUT_CANDIDATES:
         if p.exists() and p.is_file() and p.stat().st_size > 200:
-            log(f"📦 Crime input bulundu: {p}")
+            log(f"⚠️ Fallback crime input bulundu: {p}")
             return p
+
     log("ℹ️ Crime input bulunamadı. 911 summary yine üretilecek.")
     return None
 
@@ -961,6 +998,9 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------
 def main():
     local_base = ensure_local_911_base()
+    if local_base is None:
+        raise FileNotFoundError("sf_911_last_5_year.parquet bulunamadı.")
+
     final_911 = summary_from_local(local_base)
 
     # neighbor features
