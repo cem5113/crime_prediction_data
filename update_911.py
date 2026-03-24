@@ -965,30 +965,71 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
         merged = crime.merge(cal_agg, on=cal_keys, how="left")
         log("🔗 Join modu: CALENDAR-BASED (GEOID, hr_key, day_of_week, season)")
 
+    # 911 merge flag: fillna(0)'dan ÖNCE üret
+    probe_cols = [
+        c for c in [
+            "911_request_count_hour_range",
+            "call_count",
+            "police_calls",
+            "unique_call_type",
+            "priority_A_calls"
+        ] if c in merged.columns
+    ]
+    if probe_cols:
+        merged["has_911_match"] = merged[probe_cols].notna().any(axis=1).astype("int8")
+    else:
+        merged["has_911_match"] = 0
+
     fill_cols = [
+        # ana 911 yoğunlukları
         "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
         "hr_cnt", "daily_cnt",
+        "call_count",
+
+        # unique / agency / flag count'ları
+        "unique_call_type", "unique_call_desc", "unique_priority", "unique_disposition",
+        "police_calls", "mta_calls", "sheriff_calls",
+        "sensitive_calls", "onview_calls", "hsoc_calls",
+
+        # priority / disposition count'ları
+        "priority_A_calls", "priority_B_calls", "priority_C_calls",
+        "disp_han_count", "disp_utl_count", "disp_adv_count", "disp_arr_count",
+
+        # call type count'ları
+        "type_traffic_count", "type_assault_count", "type_theft_count", "type_fraud_count",
+        "type_disturbance_count", "type_domestic_count", "type_mental_health_count", "type_weapon_count",
+
+        # geo / neighbor lag'leri
         "911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d",
-        "911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h", "911_neighbors_last24h", "911_neighbors_last3d", "911_neighbors_last7d",
+        "911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h", "911_neighbors_last24h",
+        "911_neighbors_last3d", "911_neighbors_last7d",
+
+        # temporal 911 feature'ları
         "911_prev_slot", "911_prev_2slot", "911_prev_8slot", "911_prev_16slot",
         "911_roll_1d", "911_roll_3d", "911_roll_7d",
         "911_unique_call_type_roll_1d",
         "911_growth_prev_slot", "911_zscore_1d", "911_spike_flag_1d",
         "911_same_slot_prev_1d", "911_same_slot_prev_3d", "911_same_slot_prev_7d", "911_same_slot_roll_4",
+
+        # oranlar
         "police_ratio", "mta_ratio", "sheriff_ratio", "sensitive_ratio", "onview_ratio", "hsoc_ratio",
         "priority_A_ratio", "priority_B_ratio", "priority_C_ratio",
         "disp_han_ratio", "disp_utl_ratio", "disp_adv_ratio", "disp_arr_ratio",
         "type_traffic_ratio", "type_assault_ratio", "type_theft_ratio", "type_fraud_ratio",
         "type_disturbance_ratio", "type_domestic_ratio", "type_mental_health_ratio", "type_weapon_ratio",
+
+        # response-time
         "sec_entry_to_dispatch_mean", "sec_dispatch_to_enroute_mean", "sec_dispatch_to_onscene_mean",
         "sec_enroute_to_onscene_mean", "sec_onscene_to_close_mean", "sec_dispatch_to_close_mean",
         "sec_entry_to_dispatch_median", "sec_dispatch_to_onscene_median", "sec_dispatch_to_close_median",
     ] + [c for c in merged.columns if c.endswith("_prev_slot") or c.endswith("_roll_1d")]
 
+    fill_cols = list(dict.fromkeys(fill_cols))
+
     for c in fill_cols:
         if c in merged.columns:
-            merged[c] = merged[c].fillna(0)
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0)
             
     log_merge_quality(crime_before, merged)
     return merged
