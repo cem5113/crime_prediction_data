@@ -75,43 +75,93 @@ def is_lfs_pointer_file(p: Path) -> bool:
     except Exception:
         return False
 
+# =========================================================
 # CONFIG & PATHS
+# =========================================================
 
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 
-# BASE_DIR (sadece okuma adayları için kullanıyoruz)
+# Script dizini: öncelikli arama noktası
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# BASE_DIR (okuma adayları için; Actions uyumlu normalize)
 _raw_base = os.getenv("CRIME_DATA_DIR", "crime_prediction_data").strip().strip("/\\")
 repo_leaf = Path.cwd().name  # Actions: /work/<repo>/<repo>
+
 if not os.path.isabs(_raw_base) and Path(_raw_base).name == repo_leaf:
     _raw_base = "."
+
 BASE_DIR = str(Path(_raw_base).resolve()) if _raw_base != "." else "."
 Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
 log(f"📂 BASE_DIR = {Path(BASE_DIR).resolve()}")
 
-# OUT_DIR (ARTIFACT KÖKÜ): TÜM ÇIKTILAR BURAYA
+# OUT_DIR (artifact / yazma kökü)
 OUT_DIR = Path(os.getenv("CRIME_DATA_DIR", str(Path(BASE_DIR)))).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+log(f"📂 OUT_DIR = {OUT_DIR}")
 
-# 911 summary dosya adları (OUT_DIR altında)
+# SCRIPT_DIR log
+log(f"📂 SCRIPT_DIR = {SCRIPT_DIR}")
+
+# 911 summary dosya adları
 LOCAL_NAME = "sf_911_last_5_year.csv"
-local_summary_path = OUT_DIR / LOCAL_NAME
 Y_NAME = "sf_911_last_5_year_y.csv"
-y_summary_path     = OUT_DIR / Y_NAME
 
-# sf_crime_01.csv (OUT_DIR altında)
+# OUT_DIR altındaki hedef yazma yolları
+local_summary_path = OUT_DIR / LOCAL_NAME
+y_summary_path = OUT_DIR / Y_NAME
+
+# 911 local base adayları (öncelik sırasına göre)
+# 1) script yanı
+# 2) OUT_DIR
+# 3) BASE_DIR
+
+LOCAL_911_CANDIDATES = []
+_seen = set()
+
+for p in [
+    SCRIPT_DIR / Y_NAME,
+    SCRIPT_DIR / LOCAL_NAME,
+    OUT_DIR / Y_NAME,
+    OUT_DIR / LOCAL_NAME,
+    Path(BASE_DIR) / Y_NAME,
+    Path(BASE_DIR) / LOCAL_NAME,
+]:
+    p = p.resolve()
+    if p not in _seen:
+        LOCAL_911_CANDIDATES.append(p)
+        _seen.add(p)
+
+# sf_crime_01.csv (OUT_DIR altında yazılacak)
 merged_output_path = Path(os.getenv("DAILY_OUT", str(OUT_DIR / "sf_crime_01.csv")))
 if not merged_output_path.is_absolute():
     merged_output_path = OUT_DIR / merged_output_path.name
+
 log(f"🧾 DAILY_OUT seen as: {os.getenv('DAILY_OUT', '(unset)')}")
 log(f"📝 Writing sf_crime_01 → {merged_output_path}")
 
-# Census blocks (komşu/ensure_geoid için) — OUT_DIR öncelikli
+# kritik dizinler
+log(f"📂 SCRIPT_DIR = {SCRIPT_DIR}")
+log(f"📂 OUT_DIR    = {OUT_DIR}")
+log(f"📂 BASE_DIR   = {BASE_DIR}")
+
+# 911 hedef yazma yolları
+log(f"📁 911 summary target  → {local_summary_path}")
+log(f"📁 911 y-summary target → {y_summary_path}")
+
+# 911 aday dosyalar (debug için çok önemli)
+log("🔎 911 local candidate search order:")
+for p in LOCAL_911_CANDIDATES:
+    exists = "✅" if p.exists() else "❌"
+    log(f"   {exists} {p}")
+
+# Census blocks (komşu / ensure_geoid için) — öncelik script yanı, sonra OUT_DIR, sonra BASE_DIR
 CENSUS_CANDIDATES = [
+    SCRIPT_DIR / "sf_census_blocks.geojson",
     OUT_DIR / "sf_census_blocks.geojson",
     Path(BASE_DIR) / "sf_census_blocks.geojson",
     Path("./sf_census_blocks.geojson"),
 ]
-
 # API / kaynak
 SF911_API_URL   = os.getenv("SF911_API_URL", "https://data.sfgov.org/resource/2zdj-bwza.json")
 SF_APP_TOKEN    = os.getenv("SF911_API_TOKEN", "")
@@ -328,32 +378,56 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
         std = std[std["date"] >= min_date]
     return std
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 def ensure_local_911_base() -> Optional[Path]:
     """
-    911 taban CSV'yi (önce _y) yerelden bulmaya çalışır.
-    Actions/artifact path farklılıklarına dayanıklı olması için:
-    - OUT_DIR / BASE_DIR / CWD altında recursive arar
-    - ARTIFACT_NAME ve sf-crime-pipeline-output* klasörlerini glob ile tarar
+    Öncelik sırası:
+    1) update_911.py ile aynı klasördeki dosya
+    2) OUT_DIR altındaki dosya
+    3) BASE_DIR altındaki dosya
+    4) yoksa None -> sonra fallback mekanizması çalışır
     """
-    ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
-
-    # --- crime_grid_dir bul (varsa artifact içini yakalamak için iyi ipucu) ---
-    crime_grid_candidates = [
-        OUT_DIR / "sf_crime_y.csv",
-        Path(BASE_DIR) / "sf_crime_y.csv",
-        Path("./sf_crime_y.csv"),
-        Path("crime_prediction_data/sf_crime_y.csv"),
-        OUT_DIR / "crime_prediction_data/sf_crime_y.csv",
-        Path(BASE_DIR) / "crime_prediction_data/sf_crime_y.csv",
-        Path(ARTIFACT_NAME) / "sf_crime_y.csv",
-        Path(ARTIFACT_NAME) / "crime_prediction_data/sf_crime_y.csv",
+    prefer_names = [
+        "sf_911_last_5_year_y.csv",
+        "sf_911_last_5_year.csv",
     ]
-    crime_grid_path = next(
-        (p for p in crime_grid_candidates if p.exists() and not is_lfs_pointer_file(p)),
-        None
-    )
-    crime_grid_dir = crime_grid_path.parent if crime_grid_path else None
+
+    def _ok(p: Path) -> bool:
+        try:
+            return (
+                p.exists()
+                and p.is_file()
+                and p.suffix.lower() == ".csv"
+                and not is_lfs_pointer_file(p)
+                and p.stat().st_size > 200
+            )
+        except Exception:
+            return False
+
+    # 1) Önce script ile aynı klasör
+    for name in prefer_names:
+        p = SCRIPT_DIR / name
+        if _ok(p):
+            log(f"📦 911 base bulundu (script yanı): {p}")
+            return p
+
+    # 2) Sonra OUT_DIR
+    for name in prefer_names:
+        p = OUT_DIR / name
+        if _ok(p):
+            log(f"📦 911 base bulundu (OUT_DIR): {p}")
+            return p
+
+    # 3) Sonra BASE_DIR
+    for name in prefer_names:
+        p = Path(BASE_DIR) / name
+        if _ok(p):
+            log(f"📦 911 base bulundu (BASE_DIR): {p}")
+            return p
+
+    log("ℹ️ Yerel 911 base bulunamadı; fallback kullanılacak.")
+    return None
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
