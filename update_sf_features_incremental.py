@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 # =========================================================
 # CONFIG
 # =========================================================
-BASE_DIR = "/content/crime_prediction_data"
+BASE_DIR = os.getenv("CRIME_DATA_DIR", ".")
+BASE_DIR = os.path.abspath(BASE_DIR)
 os.makedirs(BASE_DIR, exist_ok=True)
 
 CENSUS_PATH = f"{BASE_DIR}/sf_census_blocks.geojson"
