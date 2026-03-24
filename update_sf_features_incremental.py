@@ -150,6 +150,12 @@ def to_sf_hour_range(series):
     st = (h // 3) * 3
     return st.map(lambda x: f"{x:02d}-{min(x+3,24):02d}")
 
+def find_existing_path(candidates):
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+    
 def read_table(preferred_parquet, fallback_csv=None):
     if os.path.exists(preferred_parquet):
         return pd.read_parquet(preferred_parquet)
@@ -340,10 +346,31 @@ def prep_building(raw):
 # =========================================================
 # PATHS / META
 # =========================================================
-BUSINESS_OUT = f"{BASE_DIR}/sf_business_landuse.parquet"
-BUSINESS_META = f"{BASE_DIR}/sf_business_landuse.meta.json"
+BUSINESS_CANDIDATES = [
+    f"{BASE_DIR}/sf_business_landuse.parquet",
+    f"{BASE_DIR}/sf_business_landuse.csv",
+    f"{BASE_DIR}/scripts/sf_business_landuse.parquet",
+    f"{BASE_DIR}/scripts/sf_business_landuse.csv",
+    f"{BASE_DIR}/data/sf_business_landuse.parquet",
+    f"{BASE_DIR}/data/sf_business_landuse.csv",
+]
 
+BUILDING_CANDIDATES = [
+    f"{BASE_DIR}/sf_building_permits_vacancy.parquet",
+    f"{BASE_DIR}/sf_building_permits_vacancy.csv",
+    f"{BASE_DIR}/scripts/sf_building_permits_vacancy.parquet",
+    f"{BASE_DIR}/scripts/sf_building_permits_vacancy.csv",
+    f"{BASE_DIR}/data/sf_building_permits_vacancy.parquet",
+    f"{BASE_DIR}/data/sf_building_permits_vacancy.csv",
+]
+
+BUSINESS_IN = find_existing_path(BUSINESS_CANDIDATES)
+BUILDING_IN = find_existing_path(BUILDING_CANDIDATES)
+
+BUSINESS_OUT = f"{BASE_DIR}/sf_business_landuse.parquet"
 BUILDING_OUT = f"{BASE_DIR}/sf_building_permits_vacancy.parquet"
+
+BUSINESS_META = f"{BASE_DIR}/sf_business_landuse.meta.json"
 BUILDING_META = f"{BASE_DIR}/sf_building_permits_vacancy.meta.json"
 
 CFG = {
@@ -351,6 +378,7 @@ CFG = {
         "rid": "rqzj-sfat",
         "out": BUSINESS_OUT,
         "meta": BUSINESS_META,
+        "input_path": BUSINESS_IN,
         "mode": "ttl_full_refresh",
         "date_col": None,
         "select": ",".join([
@@ -371,6 +399,7 @@ CFG = {
         "rid": "i98e-djp9",
         "out": BUILDING_OUT,
         "meta": BUILDING_META,
+        "input_path": BUILDING_IN,
         "mode": "ttl_incremental_refresh",
         "date_col": "issued_date",
         "select": ",".join([
@@ -415,9 +444,22 @@ def run_dataset_incremental(name, cfg):
     dedup_keys = cfg["dedup_keys"]
     sort_cols = cfg["sort_cols"]
 
+    input_path = cfg.get("input_path", None)
+    
+    log(f"📥 {name} input_path: {input_path}")
+    log(f"📤 {name} out_path  : {out_path}")
+
     base_url = f"https://data.sfgov.org/resource/{rid}.json"
 
-    old_df = read_table(out_path, out_path.replace(".parquet", ".csv"))
+    input_path = cfg.get("input_path", None)
+    
+    if input_path and os.path.exists(input_path):
+        if str(input_path).lower().endswith(".parquet"):
+            old_df = pd.read_parquet(input_path)
+        else:
+            old_df = pd.read_csv(input_path, low_memory=False)
+    else:
+        old_df = read_table(out_path, out_path.replace(".parquet", ".csv"))
     age = file_age_days(out_path)
     log(f"🕒 {name} local age(days): {age}")
     meta = load_json(meta_path, default={})
