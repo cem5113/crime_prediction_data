@@ -272,6 +272,8 @@ def load_existing_summary() -> pd.DataFrame:
 def download_recent_raw(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
     log(f"🌐 API'den indiriliyor: {start_date.date()} -> {end_date.date()}")
 
+    from urllib.parse import urlencode
+
     where_clause = (
         f"received_datetime >= '{start_date.strftime('%Y-%m-%dT00:00:00')}' "
         f"AND received_datetime <= '{end_date.strftime('%Y-%m-%dT23:59:59')}'"
@@ -292,16 +294,7 @@ def download_recent_raw(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.
         if APP_TOKEN:
             params["$$app_token"] = APP_TOKEN
 
-        query_parts = []
-        for k, v in params.items():
-            v_str = str(v)
-            v_str = v_str.replace(" ", "%20")
-            v_str = v_str.replace(":", "%3A")
-            v_str = v_str.replace(",", "%2C")
-            v_str = v_str.replace("'", "%27")
-            
-            query_parts.append(f"{k}={v_str}")
-        url = SF911_API_URL + "?" + "&".join(query_parts)
+        url = SF911_API_URL + "?" + urlencode(params)
 
         chunk = pd.read_json(url)
 
@@ -322,14 +315,17 @@ def download_recent_raw(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.
     raw = pd.concat(dfs, ignore_index=True)
     raw = raw[[c for c in KEEP_RAW_COLS if c in raw.columns]].copy()
 
-    dedup_keys = [c for c in ["cad_number", "received_datetime", "call_type_final", "call_type_final_desc"] if c in raw.columns]
+    dedup_keys = [
+        c for c in
+        ["cad_number", "received_datetime", "call_type_final", "call_type_final_desc"]
+        if c in raw.columns
+    ]
     if dedup_keys:
         before = len(raw)
         raw = raw.drop_duplicates(subset=dedup_keys, keep="last").copy()
         log(f"🧹 raw duplicate temizliği: {before:,} -> {len(raw):,}")
 
     return raw
-
 
 # =========================================================
 # 3) RAW -> GEOID -> SUMMARY PATCH
