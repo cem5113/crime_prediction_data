@@ -12,7 +12,6 @@ import pandas as pd
 
 pd.options.mode.copy_on_write = True
 
-
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -142,13 +141,7 @@ FINAL_DEMOGRAPHIC_COLS = [
     "population",
     "pct_age_18_34",
     "pct_age_65_plus",
-    "pct_hispanic",
-    "pct_nh_white",
-    "pct_nh_black",
-    "pct_nh_asian",
-    "pct_nh_multiracial",
 ]
-
 
 # =============================================================================
 # DEMOGRAPHIC FEATURE EXTRACTION
@@ -377,7 +370,6 @@ def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple
     print("⚠️ Panel anahtarları eksik → tüm sf_crime_02 yeni kabul ediliyor.")
     return old, crime_in
 
-
 def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.DataFrame:
     out = df_crime.copy()
     out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
@@ -392,14 +384,31 @@ def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.Da
     log_delta(before, out.shape, "CRIME ⨯ DEMOGRAPHIC")
 
     if "population" in out.columns:
-        out["population"] = pd.to_numeric(out["population"], errors="coerce").fillna(0).round().astype("int32")
+        out["population"] = (
+            pd.to_numeric(out["population"], errors="coerce")
+            .fillna(0)
+            .round()
+            .astype("int32")
+        )
 
     pct_cols = [c for c in out.columns if c.startswith("pct_")]
     for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype("float32")
+        out[c] = (
+            pd.to_numeric(out[c], errors="coerce")
+            .fillna(0.0)
+            .astype("float32")
+        )
+
+    # NEW FEATURE
+    if ("pct_age_18_34" in out.columns) and ("population" in out.columns):
+        out["young_pop_pressure"] = (
+            pd.to_numeric(out["pct_age_18_34"], errors="coerce").fillna(0.0) *
+            pd.to_numeric(out["population"], errors="coerce").fillna(0.0)
+        ).astype("float32")
+    else:
+        out["young_pop_pressure"] = np.float32(0.0)
 
     return out
-
 
 def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     if old_df is None or len(old_df) == 0:
