@@ -885,36 +885,7 @@ jobs:
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
 
-      - name: 10) Incremental feature update → sf_crime_10.csv
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GEOID_LEN: "11"
-        run: |
-          set -euo pipefail
-
-          echo "=== BEFORE incremental feature update ==="
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.csv" || { echo "❌ sf_crime_09.csv yok"; exit 2; }
-          ls -lah "${CRIME_DATA_DIR}/sf_census_blocks.geojson" || { echo "❌ sf_census_blocks.geojson yok"; exit 2; }
-
-          if [ -f scripts/update_sf_features_incremental.py ]; then
-            PY="scripts/update_sf_features_incremental.py"
-          elif [ -f update_sf_features_incremental.py ]; then
-            PY="update_sf_features_incremental.py"
-          else
-            echo "❌ update_sf_features_incremental.py bulunamadı"; exit 2
-          fi
-
-          echo "✅ Using PY=$PY"
-
-          python -u "$PY"
-
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.csv" || { echo "❌ sf_crime_10.csv oluşmadı"; exit 4; }
-
-          echo "sf_crime_10.csv (head):"
-          head -n 5 "${CRIME_DATA_DIR}/sf_crime_10.csv" || true
-
-      - name: Convert sf_crime_10.csv to sf_crime_10.parquet
+      - name: Convert sf_crime_09.csv to sf_crime_09.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -926,8 +897,8 @@ jobs:
           D = os.environ['CRIME_DATA_DIR']
           GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 
-          csvp = os.path.join(D, 'sf_crime_10.csv')
-          parp = os.path.join(D, 'sf_crime_10.parquet')
+          csvp = os.path.join(D, 'sf_crime_09.csv')
+          parp = os.path.join(D, 'sf_crime_09.parquet')
 
           df = pd.read_csv(csvp, low_memory=False)
 
@@ -943,19 +914,19 @@ jobs:
           print('✅ wrote', parp, 'shape=', df.shape)
           PY
 
-          ls -lh "${CRIME_DATA_DIR}/sf_crime_10.csv" "${CRIME_DATA_DIR}/sf_crime_10.parquet" || true
+          ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
       - name: 10.9) Quick verify (after incremental features)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
           set -euo pipefail
-          echo "=== AFTER sf_crime_10: files in CRIME_DATA_DIR ==="
+          echo "=== AFTER sf_crime_09: files in CRIME_DATA_DIR ==="
           ls -lah "${CRIME_DATA_DIR}" | sed -n '1,220p' || true
 
           for f in \
             sf_crime.csv \
             sf_crime_y.csv \
-            sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv sf_crime_10.csv \
+            sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
             sf_911_last_5_year.csv sf_311_last_5_years.csv \
             sf_crime_grid_full_labeled.csv \
             neighbors.csv
@@ -970,9 +941,8 @@ jobs:
           done
 
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.parquet" || true
 
-      - name: Upload artifact (datasets only, after sf_crime_10)
+      - name: Upload artifact (datasets only, after sf_crime_09)
         if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -992,8 +962,8 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_10.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_10.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
             ${{ env.CRIME_DATA_DIR }}/neighbors.csv
             ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.csv
@@ -1019,7 +989,7 @@ jobs:
 
           echo "Files check:"
           ls -lah "${CRIME_DATA_DIR}/week.csv" || { echo "❌ week.csv yok"; exit 2; }
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.parquet" || { echo "❌ sf_crime_10.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.csv" || { echo "❌ sf_crime_x.csv yok"; exit 2; }
 
           if ! command -v rclone >/dev/null; then
@@ -1038,7 +1008,7 @@ jobs:
 
           echo "Uploading files to Google Drive..."
           rclone copyto "${CRIME_DATA_DIR}/week.csv"            "${DEST}/week.csv"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_10.parquet" "${DEST}/sf_crime_10.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"      "${DEST}/sf_crime_x.csv"
 
           echo "✅ Upload complete → ${DEST}"
