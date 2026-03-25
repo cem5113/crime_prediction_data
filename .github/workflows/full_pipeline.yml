@@ -885,7 +885,36 @@ jobs:
                   print(f"- {c}: notna_cov={cov:.3%} | nan={nan} | zero={zero} ({zero/len(df):.3%})")
           PY
 
-      - name: Convert sf_crime_09.csv to sf_crime_09.parquet
+      - name: 10) Incremental feature update → sf_crime_10.csv
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          GEOID_LEN: "11"
+        run: |
+          set -euo pipefail
+
+          echo "=== BEFORE incremental feature update ==="
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.csv" || { echo "❌ sf_crime_09.csv yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_census_blocks.geojson" || { echo "❌ sf_census_blocks.geojson yok"; exit 2; }
+
+          if [ -f scripts/update_sf_features_incremental.py ]; then
+            PY="scripts/update_sf_features_incremental.py"
+          elif [ -f update_sf_features_incremental.py ]; then
+            PY="update_sf_features_incremental.py"
+          else
+            echo "❌ update_sf_features_incremental.py bulunamadı"; exit 2
+          fi
+
+          echo "✅ Using PY=$PY"
+
+          python -u "$PY"
+
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.csv" || { echo "❌ sf_crime_10.csv oluşmadı"; exit 4; }
+
+          echo "sf_crime_10.csv (head):"
+          head -n 5 "${CRIME_DATA_DIR}/sf_crime_10.csv" || true
+
+      - name: Convert sf_crime_10.csv to sf_crime_10.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
@@ -897,8 +926,8 @@ jobs:
           D = os.environ['CRIME_DATA_DIR']
           GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
 
-          csvp = os.path.join(D, 'sf_crime_09.csv')
-          parp = os.path.join(D, 'sf_crime_09.parquet')
+          csvp = os.path.join(D, 'sf_crime_10.csv')
+          parp = os.path.join(D, 'sf_crime_10.parquet')
 
           df = pd.read_csv(csvp, low_memory=False)
 
@@ -914,38 +943,8 @@ jobs:
           print('✅ wrote', parp, 'shape=', df.shape)
           PY
 
-          ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
+          ls -lh "${CRIME_DATA_DIR}/sf_crime_10.csv" "${CRIME_DATA_DIR}/sf_crime_10.parquet" || true
 
-      - name: 10) Incremental feature update → sf_crime_10.csv + sf_crime_10.parquet
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        env:
-          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
-          GEOID_LEN: "11"
-        run: |
-          set -euo pipefail
-
-          echo "=== BEFORE incremental feature update ==="
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
-          ls -lah "${CRIME_DATA_DIR}/sf_census_blocks.geojson" || { echo "❌ sf_census_blocks.geojson yok"; exit 2; }
-
-          if [ -f scripts/update_sf_features_incremental.py ]; then
-            PY="scripts/update_sf_features_incremental.py"
-          elif [ -f update_sf_features_incremental.py ]; then
-            PY="update_sf_features_incremental.py"
-          else
-            echo "❌ update_sf_features_incremental.py bulunamadı"; exit 2
-          fi
-
-          echo "✅ Using PY=$PY"
-
-          python -u "$PY"
-
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.parquet" || { echo "❌ sf_crime_10.parquet oluşmadı"; exit 3; }
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_10.csv" || { echo "❌ sf_crime_10.csv oluşmadı"; exit 4; }
-
-          echo "sf_crime_10.csv (head):"
-          head -n 5 "${CRIME_DATA_DIR}/sf_crime_10.csv" || true
-          
       - name: 10.9) Quick verify (after incremental features)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
