@@ -370,12 +370,6 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
         if "slot_index" not in df.columns:
             df["slot_index"] = df["hour_range"].map(hour_map)
     
-        # legacy uyumluluk: geri üret
-        if "911_request_count_hour_range" not in df.columns:
-            df["911_request_count_hour_range"] = pd.to_numeric(
-                df["call_count"], errors="coerce"
-            ).fillna(0)
-    
         if "hr_cnt" not in df.columns:
             df["hr_cnt"] = pd.to_numeric(df["call_count"], errors="coerce").fillna(0)
     
