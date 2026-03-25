@@ -583,10 +583,11 @@ def build_compact_311_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
     slot_cur["request_count_311_prev_8slot"] = grp["311_request_count"].shift(8)
 
     slot_cur["request_count_311_roll8"] = (
-        grp["311_request_count"].shift(1).rolling(8).mean()
+        grp["311_request_count"].transform(lambda s: s.shift(1).rolling(8, min_periods=1).mean())
     )
+    
     slot_cur["request_count_311_roll56"] = (
-        grp["311_request_count"].shift(1).rolling(56).mean()
+        grp["311_request_count"].transform(lambda s: s.shift(1).rolling(56, min_periods=1).mean())
     )
 
     slot_cur["request_count_311_delta_prev_slot"] = (
@@ -597,8 +598,13 @@ def build_compact_311_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
         slot_cur["311_request_count"] / (slot_cur["request_count_311_prev_8slot"] + 1)
     )
 
-    roll_mean = grp["311_request_count"].shift(1).rolling(56).mean()
-    roll_std = grp["311_request_count"].shift(1).rolling(56).std()
+    roll_mean = grp["311_request_count"].transform(
+        lambda s: s.shift(1).rolling(56, min_periods=1).mean()
+    )
+    roll_std = grp["311_request_count"].transform(
+        lambda s: s.shift(1).rolling(56, min_periods=1).std()
+    )
+    
     slot_cur["zscore_311_7d"] = (
         (slot_cur["311_request_count"] - roll_mean) / (roll_std + 1e-6)
     )
