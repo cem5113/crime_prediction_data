@@ -27,12 +27,8 @@ CRIME_IN_CANDIDATES = [
 ]
 
 RAW_911_CANDIDATES = [
-    BASE_DIR / "sf_911_last_5_year_y.parquet",
-    BASE_DIR / "sf_911_last_5_year_y.csv",
-    BASE_DIR / "sf_911_full_raw.parquet",
-    BASE_DIR / "sf_911_full_raw.csv",
+    # BASE_DIR / "sf_911_last_5_year_y.parquet",
     BASE_DIR / "sf_911_last_5_year.parquet",
-    BASE_DIR / "sf_911_last_5_year.csv",
 ]
 
 SUMMARY_OUT_PARQUET = OUT_DIR / "sf_911_last_5_year.parquet"
