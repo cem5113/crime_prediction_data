@@ -1,13 +1,35 @@
 # update_911.py
-# -*- coding: utf-8 -*-
+# =========================================================
+# SAN FRANCISCO 911 -> DAILY UPDATE (INCREMENTAL / PATCHED)
+# ---------------------------------------------------------
+# GEREKLİ ÖN KOŞUL
+#   initial_build_911.py en az 1 kez çalışmış olmalı.
+#
+# YAPTIĞI İŞ
+#   1) Mevcut sf_911_last_5_year.* dosyasını okur
+#   2) Son tarihi bulur
+#   3) API'den sadece son kısmı tekrar indirir
+#   4) GEOID üretir
+#   5) Güncellenen pencere için summary patch üretir
+#   6) Summary dosyasını patch eder
+#   7) Past-only y feature dosyasını yeniden üretir
+#   8) Crime ile GEOID + date + hour_range bazında birleştirir
+#
+# ÇIKTILAR
+#   - sf_911_last_5_year.parquet / csv
+#   - sf_911_last_5_year_y.parquet / csv
+#   - sf_crime_01.parquet / csv
+# =========================================================
 
-import os
-import re
+from __future__ import annotations
+
+import ast
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 
 
 # =========================================================
@@ -15,7 +37,7 @@ import pandas as pd
 # =========================================================
 DEFAULT_GEOID_LEN = 11
 
-BASE_DIR = Path(os.getenv("CRIME_DATA_DIR", ".")).resolve()
+BASE_DIR = Path(".").resolve()
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUT_DIR = BASE_DIR
 
@@ -26,9 +48,14 @@ CRIME_IN_CANDIDATES = [
     BASE_DIR / "sf_crime.parquet",
 ]
 
-RAW_911_CANDIDATES = [
-    # BASE_DIR / "sf_911_last_5_year_y.parquet",
+SUMMARY_IN_CANDIDATES = [
     BASE_DIR / "sf_911_last_5_year.parquet",
+    BASE_DIR / "sf_911_last_5_year.csv",
+]
+
+SUMMARY_Y_IN_CANDIDATES = [
+    BASE_DIR / "sf_911_last_5_year_y.parquet",
+    BASE_DIR / "sf_911_last_5_year_y.csv",
 ]
 
 SUMMARY_OUT_PARQUET = OUT_DIR / "sf_911_last_5_year.parquet"
@@ -39,10 +66,21 @@ SUMMARY_Y_OUT_CSV = OUT_DIR / "sf_911_last_5_year_y.csv"
 CRIME_OUT_CSV = OUT_DIR / "sf_crime_01.csv"
 CRIME_OUT_PARQUET = OUT_DIR / "sf_crime_01.parquet"
 
-NEIGHBOR_CANDIDATES = [
-    BASE_DIR / "neighbors.csv",
-    SCRIPT_DIR / "neighbors.csv",
-]
+SF911_API_URL = "https://data.sfgov.org/resource/2zdj-bwza.json"
+TRACT_SHP_URL = "https://www2.census.gov/geo/tiger/TIGER2023/TRACT/tl_2023_06_tract.zip"
+
+APP_TOKEN = None
+COUNTYFP_SF = "075"
+
+# 5 yıllık pencere
+TODAY = pd.Timestamp.today().normalize()
+WINDOW_START = TODAY - pd.DateOffset(days=1825)
+
+# update mantığı
+REDOWNLOAD_BUFFER_DAYS = 14   # geç gelen / düzeltilen kayıtlar için
+FEATURE_BUFFER_DAYS = 7       # lag/rolling/same-slot yeniden hesap için
+API_LIMIT = 50000
+MAX_RT_SECONDS = 60 * 60 * 24 * 3  # 3 gün üstü response time NaN
 
 HOUR_ORDER = [
     "00-03", "03-06", "06-09", "09-12",
@@ -50,12 +88,44 @@ HOUR_ORDER = [
 ]
 HOUR_TO_SLOT = {h: i for i, h in enumerate(HOUR_ORDER)}
 
+KEEP_RAW_COLS = [
+    "cad_number",
+    "received_datetime",
+    "entry_datetime",
+    "dispatch_datetime",
+    "enroute_datetime",
+    "onscene_datetime",
+    "close_datetime",
+    "call_type_final",
+    "call_type_final_desc",
+    "priority_final",
+    "priority_original",
+    "agency",
+    "disposition",
+    "onview_flag",
+    "sensitive_call",
+    "intersection_point",
+    "data_as_of",
+    "data_updated_at",
+    "data_loaded_at",
+]
+
 
 # =========================================================
-# UTILS
+# HELPERS
 # =========================================================
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def pick_existing(candidates: List[Path]) -> Path:
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "Gerekli base dosya bulunamadı. Önce initial_build_911.py çalıştırılmalı.\n"
+        + "\n".join(str(x) for x in candidates)
+    )
 
 
 def read_any(path: Path) -> pd.DataFrame:
@@ -64,717 +134,651 @@ def read_any(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False)
 
 
-def write_both(df: pd.DataFrame, parquet_path: Path, csv_path: Path) -> None:
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(parquet_path, index=False)
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+def write_dual(df: pd.DataFrame, pq_path: Path, csv_path: Path) -> None:
+    df.to_parquet(pq_path, index=False)
+    df.to_csv(csv_path, index=False)
 
 
-def pick_existing(candidates: List[Path]) -> Optional[Path]:
-    for p in candidates:
-        if p.exists():
-            return p
-    return None
+def normalize_geoid(s: pd.Series, length: int = DEFAULT_GEOID_LEN) -> pd.Series:
+    out = s.astype("string").str.replace(r"\.0$", "", regex=True).str.strip()
+    out = out.mask(out.isin(["", "nan", "None", "<NA>"]), pd.NA)
+    out = out.str.zfill(length)
+    return out
 
 
-def to_date(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce").dt.date
+def normalize_hour_range_col(s: pd.Series) -> pd.Series:
+    x = s.astype("string").str.strip()
+    repl = {
+        "0-3": "00-03",
+        "3-6": "03-06",
+        "6-9": "06-09",
+        "9-12": "09-12",
+        "12-15": "12-15",
+        "15-18": "15-18",
+        "18-21": "18-21",
+        "21-24": "21-24",
+        "00:00-03:00": "00-03",
+        "03:00-06:00": "03-06",
+        "06:00-09:00": "06-09",
+        "09:00-12:00": "09-12",
+        "12:00-15:00": "12-15",
+        "15:00-18:00": "15-18",
+        "18:00-21:00": "18-21",
+        "21:00-24:00": "21-24",
+    }
+    x = x.replace(repl)
+    x = x.where(x.isin(HOUR_ORDER), pd.NA)
+    return x
 
 
-def normalize_geoid(s: pd.Series, width: int = DEFAULT_GEOID_LEN) -> pd.Series:
-    s = s.astype("string").str.strip()
-    s = s.replace({"<NA>": pd.NA, "nan": pd.NA, "None": pd.NA, "": pd.NA})
-    s = s.str.replace(r"\.0$", "", regex=True)
-    s = s.str.replace(r"\D", "", regex=True)
-    s = s.where(s.str.len() > 0, pd.NA)
-    s = s.str.zfill(width)
-    return s
-
-
-def safe_div(numer, denom):
-    numer = pd.to_numeric(numer, errors="coerce").fillna(0)
-    denom = pd.to_numeric(denom, errors="coerce").fillna(0)
-    out = np.where(denom > 0, numer / denom, 0.0)
-    return pd.Series(out, index=numer.index, dtype="float32")
-
-
-def canonicalize_hour_range(x) -> Optional[str]:
-    if pd.isna(x):
+def get_hour_range(dt_val) -> Optional[str]:
+    if pd.isna(dt_val):
         return None
-    s = str(x).strip()
-    if s in HOUR_ORDER:
-        return s
-
-    s = s.replace("–", "-").replace("—", "-").replace("_", "-").replace(" ", "")
-    m = re.match(r"^(\d{1,2})[:-]?(\d{2})?-(\d{1,2})[:-]?(\d{2})?$", s)
-    if m:
-        h1 = int(m.group(1))
-        h2 = int(m.group(3))
-        key = f"{h1:02d}-{h2:02d}"
-        if key in HOUR_ORDER:
-            return key
-
-    m2 = re.match(r"^(\d{1,2})$", s)
-    if m2:
-        h = int(m2.group(1))
-        slot = (h // 3) * 3
-        end = slot + 3
-        return f"{slot:02d}-{24 if end == 24 else end:02d}"
-
-    return None
+    h = int(pd.Timestamp(dt_val).hour)
+    s = (h // 3) * 3
+    e = s + 3
+    return f"{s:02d}-{e:02d}"
 
 
-def hour_to_range_from_datetime(dt_series: pd.Series) -> pd.Series:
-    hrs = pd.to_datetime(dt_series, errors="coerce").dt.hour
-    slot_start = (hrs // 3) * 3
-    slot_end = slot_start + 3
-    out = np.where(
-        hrs.notna(),
-        [f"{int(a):02d}-{24 if int(b) == 24 else int(b):02d}" for a, b in zip(slot_start.fillna(0), slot_end.fillna(0))],
-        None
+def parse_datetime_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+
+def extract_coords(x) -> Tuple[Optional[float], Optional[float]]:
+    try:
+        if pd.isna(x):
+            return (None, None)
+
+        if isinstance(x, dict):
+            coords = x.get("coordinates", None)
+            if isinstance(coords, list) and len(coords) >= 2:
+                return coords[0], coords[1]
+            return (None, None)
+
+        d = ast.literal_eval(str(x))
+        coords = d.get("coordinates", None)
+        if isinstance(coords, list) and len(coords) >= 2:
+            return coords[0], coords[1]
+        return (None, None)
+    except Exception:
+        return (None, None)
+
+
+def safe_seconds(delta_series: pd.Series) -> pd.Series:
+    out = delta_series.dt.total_seconds()
+    out = out.mask((out < 0) | (out > MAX_RT_SECONDS))
+    return out.astype("float32")
+
+
+def to_float32(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype("float32")
+    return df
+
+
+def to_int32(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype("int32")
+    return df
+
+
+# =========================================================
+# 1) EXISTING SUMMARY LOAD
+# =========================================================
+def load_existing_summary() -> pd.DataFrame:
+    p = pick_existing(SUMMARY_IN_CANDIDATES)
+    log(f"📥 mevcut 911 summary okunuyor: {p}")
+    df = read_any(p)
+
+    req = ["GEOID", "date", "hour_range", "slot_index", "call_count",
+           "violent_count", "property_count", "disturbance_count",
+           "traffic_count", "dispatch_to_onscene_mean", "dispatch_to_close_mean"]
+    missing = [c for c in req if c not in df.columns]
+    if missing:
+        raise ValueError(f"Mevcut summary dosyasında eksik kolonlar var: {missing}")
+
+    df["GEOID"] = normalize_geoid(df["GEOID"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["hour_range"] = normalize_hour_range_col(df["hour_range"])
+    df["slot_index"] = pd.to_numeric(df["slot_index"], errors="coerce").fillna(0).astype("int8")
+
+    df = df[df["GEOID"].notna()].copy()
+    df = df[df["date"].notna()].copy()
+    df = df[df["hour_range"].isin(HOUR_ORDER)].copy()
+
+    df = df.drop_duplicates(subset=["GEOID", "date", "hour_range"], keep="last").copy()
+    df = df[df["date"] >= WINDOW_START].copy()
+
+    df = to_int32(
+        df,
+        ["call_count", "violent_count", "property_count", "disturbance_count", "traffic_count"]
     )
-    return pd.Series(out, index=dt_series.index, dtype="object")
-
-
-def load_neighbor_file() -> Optional[Path]:
-    p = pick_existing(NEIGHBOR_CANDIDATES)
-    if p is not None:
-        log(f"🧭 Neighbor file bulundu: {p}")
-    else:
-        log("⚠️ Neighbor file bulunamadı; fallback kullanılacak.")
-    return p
-
-
-# =========================================================
-# EVENT-LEVEL PREP
-# =========================================================
-def choose_datetime_col(df: pd.DataFrame) -> Optional[str]:
-    for c in [
-        "received_datetime",
-        "entry_datetime",
-        "dispatch_datetime",
-        "onscene_datetime",
-        "close_datetime",
-        "datetime",
-        "date",
-    ]:
-        if c in df.columns:
-            return c
-    return None
-
-
-def normalize_categoricals(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    for c in [
-        "agency",
-        "priority_final",
-        "priority_original",
-        "disposition",
-        "call_type_final_desc",
-        "call_type_original_desc",
-        "call_type_final",
-        "call_type_original",
-    ]:
-        if c in df.columns:
-            df[c] = df[c].astype("string").str.strip()
-
-    agency_txt = df["agency"].astype("string").str.upper().fillna("") if "agency" in df.columns else pd.Series("", index=df.index)
-    df["police_calls"] = agency_txt.str.contains(r"\bPD\b|POLICE", regex=True).astype("int8")
-    df["mta_calls"] = agency_txt.str.contains(r"\bMTA\b|TRANSIT", regex=True).astype("int8")
-    df["sheriff_calls"] = agency_txt.str.contains(r"SHERIFF", regex=True).astype("int8")
-
-    pr = None
-    for c in ["priority_final", "priority_original"]:
-        if c in df.columns:
-            pr = df[c].astype("string").str.upper().str.strip()
-            break
-    if pr is None:
-        pr = pd.Series("", index=df.index, dtype="string")
-
-    df["priority_A_calls"] = pr.str.startswith("A").astype("int8")
-    df["priority_B_calls"] = pr.str.startswith("B").astype("int8")
-    df["priority_C_calls"] = pr.str.startswith("C").astype("int8")
-
-    disp = df["disposition"].astype("string").str.upper().fillna("") if "disposition" in df.columns else pd.Series("", index=df.index, dtype="string")
-    df["disp_han_count"] = disp.str.contains("HAN", regex=False).astype("int8")
-    df["disp_utl_count"] = disp.str.contains("UTL", regex=False).astype("int8")
-    df["disp_adv_count"] = disp.str.contains("ADV", regex=False).astype("int8")
-    df["disp_arr_count"] = disp.str.contains("ARR", regex=False).astype("int8")
-
-    return df
-
-
-def classify_call_types(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    src = None
-    for c in ["call_type_final_desc", "call_type_original_desc", "call_type_final", "call_type_original"]:
-        if c in df.columns:
-            src = c
-            break
-
-    txt = df[src].astype("string").str.lower().fillna("") if src else pd.Series("", index=df.index)
-
-    patterns = {
-        "type_traffic_count": r"traffic|vehicle|collision|accident|road",
-        "type_assault_count": r"assault|battery|fight|stabbing|shooting",
-        "type_theft_count": r"theft|burglary|robbery|larceny|shoplift",
-        "type_disturbance_count": r"disturb|noise|trespass|suspicious|dispute",
-        "type_domestic_count": r"domestic|family violence|dv",
-        "type_weapon_count": r"weapon|gun|knife|armed",
-    }
-
-    for col, pat in patterns.items():
-        df[col] = txt.str.contains(pat, case=False, regex=True, na=False).astype("int8")
-
-    return df
-
-
-def build_event_level(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    dt_col = choose_datetime_col(df)
-    if dt_col is None:
-        raise ValueError("911 ham verisinde datetime kolonu bulunamadı.")
-
-    df["_event_dt"] = pd.to_datetime(df[dt_col], errors="coerce")
-    df["date"] = df["_event_dt"].dt.date
-    df["hour_range"] = hour_to_range_from_datetime(df["_event_dt"])
-
-    if "GEOID" not in df.columns:
-        raise ValueError("911 ham verisinde GEOID kolonu yok.")
-
-    df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
-
-    df = df[
-        df["date"].notna()
-        & df["GEOID"].notna()
-        & df["hour_range"].isin(HOUR_ORDER)
-    ].copy()
-
-    df = normalize_categoricals(df)
-    df = classify_call_types(df)
+    df = to_float32(
+        df,
+        ["dispatch_to_onscene_mean", "dispatch_to_close_mean"]
+    )
 
     return df
 
 
 # =========================================================
-# SUMMARY
+# 2) API DOWNLOAD (RECENT CHUNK)
 # =========================================================
-def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+def download_recent_raw(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
+    log(f"🌐 API'den indiriliyor: {start_date.date()} -> {end_date.date()}")
 
-    # Zaten summary ise normalize et
-    if {"date", "hour_range"}.issubset(df.columns) and (
-        "call_count" in df.columns or "911_request_count_hour_range" in df.columns
-    ):
-        log("ℹ️ Girdi zaten summary gibi görünüyor, kolonlar normalize edilecek.")
+    where_clause = (
+        f"received_datetime >= '{start_date.strftime('%Y-%m-%dT00:00:00')}' "
+        f"AND received_datetime <= '{end_date.strftime('%Y-%m-%dT23:59:59')}'"
+    )
 
-        if "call_count" not in df.columns and "911_request_count_hour_range" in df.columns:
-            df["call_count"] = pd.to_numeric(df["911_request_count_hour_range"], errors="coerce").fillna(0)
+    dfs = []
+    offset = 0
 
-        if "call_count" not in df.columns:
-            df["call_count"] = 0.0
+    while True:
+        params = {
+            "$select": ",".join(KEEP_RAW_COLS),
+            "$where": where_clause,
+            "$limit": API_LIMIT,
+            "$offset": offset,
+            "$order": "received_datetime ASC",
+        }
 
-        df["date"] = to_date(df["date"])
-        df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
-        df["hour_range"] = df["hour_range"].map(canonicalize_hour_range)
+        if APP_TOKEN:
+            params["$$app_token"] = APP_TOKEN
 
-        df = df[
-            df["GEOID"].notna()
-            & df["date"].notna()
-            & df["hour_range"].isin(HOUR_ORDER)
-        ].copy()
-
-        if "slot_index" not in df.columns:
-            df["slot_index"] = df["hour_range"].map(HOUR_TO_SLOT)
-
-        if "daily_cnt" not in df.columns:
-            day = (
-                df.groupby(["GEOID", "date"], dropna=False, observed=True)["call_count"]
-                .sum()
-                .reset_index(name="daily_cnt")
+        query_parts = []
+        for k, v in params.items():
+            query_parts.append(
+                f"{k}={str(v).replace(' ', '%20').replace(':', '%3A').replace(',', '%2C').replace('\'', '%27')}"
             )
-            df = df.merge(day, on=["GEOID", "date"], how="left")
+        url = SF911_API_URL + "?" + "&".join(query_parts)
 
-        if "911_request_count_daily(before_24_hours)" not in df.columns:
-            day_tbl = (
-                df[["GEOID", "date", "daily_cnt"]]
-                .drop_duplicates()
-                .sort_values(["GEOID", "date"])
-                .copy()
-            )
-            day_tbl["911_request_count_daily(before_24_hours)"] = (
-                day_tbl.groupby("GEOID", sort=False)["daily_cnt"].shift(1).fillna(0)
-            )
-            df = df.merge(
-                day_tbl[["GEOID", "date", "911_request_count_daily(before_24_hours)"]],
-                on=["GEOID", "date"],
-                how="left",
-            )
+        chunk = pd.read_json(url)
 
-        return df
-
-    # Raw event-level -> compact summary
-    df = build_event_level(df)
-
-    call_type_col = None
-    for c in ["call_type_final_desc", "call_type_original_desc", "call_type_final", "call_type_original"]:
-        if c in df.columns:
-            call_type_col = c
+        if chunk.empty:
             break
 
-    priority_col = None
-    for c in ["priority_final", "priority_original"]:
-        if c in df.columns:
-            priority_col = c
+        dfs.append(chunk)
+        log(f"   ✅ çekildi: {len(chunk):,} satır | offset={offset:,}")
+        offset += API_LIMIT
+
+        if len(chunk) < API_LIMIT:
             break
 
-    agg_map = {
-        "call_count": ("GEOID", "size"),
-        "police_calls": ("police_calls", "sum"),
-        "mta_calls": ("mta_calls", "sum"),
-        "sheriff_calls": ("sheriff_calls", "sum"),
-        "priority_A_calls": ("priority_A_calls", "sum"),
-        "priority_B_calls": ("priority_B_calls", "sum"),
-        "priority_C_calls": ("priority_C_calls", "sum"),
-        "disp_han_count": ("disp_han_count", "sum"),
-        "disp_utl_count": ("disp_utl_count", "sum"),
-        "disp_adv_count": ("disp_adv_count", "sum"),
-        "disp_arr_count": ("disp_arr_count", "sum"),
-        "type_traffic_count": ("type_traffic_count", "sum"),
-        "type_assault_count": ("type_assault_count", "sum"),
-        "type_theft_count": ("type_theft_count", "sum"),
-        "type_disturbance_count": ("type_disturbance_count", "sum"),
-        "type_domestic_count": ("type_domestic_count", "sum"),
-        "type_weapon_count": ("type_weapon_count", "sum"),
-    }
+    if not dfs:
+        log("ℹ️ API son pencere için boş döndü.")
+        return pd.DataFrame(columns=KEEP_RAW_COLS)
 
-    panel = df.groupby(["GEOID", "date", "hour_range"], dropna=False, observed=True).agg(
-        **agg_map
-    ).reset_index()
+    raw = pd.concat(dfs, ignore_index=True)
+    raw = raw[[c for c in KEEP_RAW_COLS if c in raw.columns]].copy()
 
-    if call_type_col is not None:
-        tmp = (
-            df.groupby(["GEOID", "date", "hour_range"], dropna=False, observed=True)[call_type_col]
-            .nunique(dropna=True)
-            .reset_index(name="unique_call_type")
-        )
-        panel = panel.merge(tmp, on=["GEOID", "date", "hour_range"], how="left")
+    dedup_keys = [c for c in ["cad_number", "received_datetime", "call_type_final", "call_type_final_desc"] if c in raw.columns]
+    if dedup_keys:
+        before = len(raw)
+        raw = raw.drop_duplicates(subset=dedup_keys, keep="last").copy()
+        log(f"🧹 raw duplicate temizliği: {before:,} -> {len(raw):,}")
+
+    return raw
+
+
+# =========================================================
+# 3) RAW -> GEOID -> SUMMARY PATCH
+# =========================================================
+def build_geoid_from_raw(raw_df: pd.DataFrame) -> pd.DataFrame:
+    if raw_df.empty:
+        return pd.DataFrame()
+
+    df = raw_df.copy()
+
+    dt_cols = [
+        "received_datetime", "entry_datetime", "dispatch_datetime",
+        "enroute_datetime", "onscene_datetime", "close_datetime",
+        "data_as_of", "data_updated_at", "data_loaded_at"
+    ]
+    df = parse_datetime_cols(df, dt_cols)
+
+    if "received_datetime" not in df.columns:
+        raise ValueError("received_datetime kolonu yok.")
+
+    df["date"] = pd.to_datetime(df["received_datetime"], errors="coerce").dt.normalize()
+    df["hour_range"] = df["received_datetime"].apply(get_hour_range)
+    df["hour_range"] = normalize_hour_range_col(df["hour_range"])
+    df["slot_index"] = df["hour_range"].map(HOUR_TO_SLOT)
+
+    coords = df["intersection_point"].apply(extract_coords)
+    df["lon"] = coords.apply(lambda x: x[0])
+    df["lat"] = coords.apply(lambda x: x[1])
+    df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+    df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+
+    df = df[df["lon"].between(-123.0, -122.0, inclusive="both") | df["lon"].isna()].copy()
+    df = df[df["lat"].between(37.0, 38.5, inclusive="both") | df["lat"].isna()].copy()
+    df = df.dropna(subset=["lon", "lat"]).copy()
+    df = df[df["date"].notna()].copy()
+    df = df[df["hour_range"].isin(HOUR_ORDER)].copy()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df["lon"], df["lat"]),
+        crs="EPSG:4326"
+    )
+
+    tracts = gpd.read_file(TRACT_SHP_URL)
+    tracts = tracts[tracts["COUNTYFP"] == COUNTYFP_SF].copy()
+    tracts = tracts.to_crs(gdf.crs)
+
+    gdf_joined = gpd.sjoin(
+        gdf,
+        tracts[["GEOID", "geometry"]],
+        how="left",
+        predicate="intersects"
+    )
+
+    gdf_joined["GEOID"] = normalize_geoid(gdf_joined["GEOID"])
+    geoid_df = gdf_joined.dropna(subset=["GEOID"]).copy()
+    geoid_df = geoid_df[gdf_joined["GEOID"].str.len() == DEFAULT_GEOID_LEN].copy()
+    geoid_df = geoid_df[geoid_df["GEOID"].str.startswith("06075")].copy()
+
+    drop_cols = [c for c in ["geometry", "index_right"] if c in geoid_df.columns]
+    geoid_df = geoid_df.drop(columns=drop_cols).copy()
+
+    return geoid_df
+
+
+def build_theme_flags(df: pd.DataFrame) -> pd.DataFrame:
+    desc = pd.Series("", index=df.index, dtype="string")
+    code = pd.Series("", index=df.index, dtype="string")
+
+    if "call_type_final_desc" in df.columns:
+        desc = df["call_type_final_desc"].astype("string").str.upper().fillna("")
+    if "call_type_final" in df.columns:
+        code = df["call_type_final"].astype("string").str.upper().fillna("")
+
+    txt = (desc + " " + code).str.upper()
+
+    df["is_violent_911"] = txt.str.contains(
+        r"ASSAULT|BATTERY|FIGHT|ROBBERY|GUN|WEAPON|SHOT|SHOOT|KNIFE|STAB|DV|DOMESTIC",
+        regex=True, na=False
+    ).astype("int8")
+
+    df["is_property_911"] = txt.str.contains(
+        r"THEFT|LARCENY|BURGLARY|BURG|STOLEN|AUTO BOOST|AUTO THEFT|VANDAL|SHOPLIFT",
+        regex=True, na=False
+    ).astype("int8")
+
+    df["is_disturbance_911"] = txt.str.contains(
+        r"DISTURB|DISPUTE|NOISE|SUSP|TRESPASS|WELFARE|MENTAL|5150|SUIC",
+        regex=True, na=False
+    ).astype("int8")
+
+    df["is_traffic_911"] = txt.str.contains(
+        r"TRAF|TRAFFIC|VEH|ACCIDENT|COLLISION|TOW|DUI|RECKLESS",
+        regex=True, na=False
+    ).astype("int8")
+
+    return df
+
+
+def aggregate_recent_summary(geoid_df: pd.DataFrame) -> pd.DataFrame:
+    if geoid_df.empty:
+        return pd.DataFrame(columns=[
+            "GEOID", "date", "hour_range", "slot_index",
+            "call_count", "violent_count", "property_count",
+            "disturbance_count", "traffic_count",
+            "dispatch_to_onscene_mean", "dispatch_to_close_mean"
+        ])
+
+    df = geoid_df.copy()
+
+    dt_cols = [
+        "received_datetime", "entry_datetime", "dispatch_datetime",
+        "enroute_datetime", "onscene_datetime", "close_datetime",
+        "data_as_of", "data_updated_at", "data_loaded_at"
+    ]
+    df = parse_datetime_cols(df, dt_cols)
+
+    df["GEOID"] = normalize_geoid(df["GEOID"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["hour_range"] = normalize_hour_range_col(df["hour_range"])
+    df = df[df["GEOID"].notna()].copy()
+    df = df[df["date"].notna()].copy()
+    df = df[df["hour_range"].isin(HOUR_ORDER)].copy()
+    df["slot_index"] = df["hour_range"].map(HOUR_TO_SLOT).astype("int8")
+
+    if "cad_number" not in df.columns:
+        df["cad_number"] = np.arange(len(df), dtype=np.int64)
+
+    if {"dispatch_datetime", "onscene_datetime"}.issubset(df.columns):
+        df["sec_dispatch_to_onscene"] = safe_seconds(df["onscene_datetime"] - df["dispatch_datetime"])
     else:
-        panel["unique_call_type"] = 0
+        df["sec_dispatch_to_onscene"] = np.nan
 
-    if priority_col is not None:
-        tmp = (
-            df.groupby(["GEOID", "date", "hour_range"], dropna=False, observed=True)[priority_col]
-            .nunique(dropna=True)
-            .reset_index(name="unique_priority")
-        )
-        panel = panel.merge(tmp, on=["GEOID", "date", "hour_range"], how="left")
+    if {"dispatch_datetime", "close_datetime"}.issubset(df.columns):
+        df["sec_dispatch_to_close"] = safe_seconds(df["close_datetime"] - df["dispatch_datetime"])
     else:
-        panel["unique_priority"] = 0
+        df["sec_dispatch_to_close"] = np.nan
 
-    if "disposition" in df.columns:
-        tmp = (
-            df.groupby(["GEOID", "date", "hour_range"], dropna=False, observed=True)["disposition"]
-            .nunique(dropna=True)
-            .reset_index(name="unique_disposition")
-        )
-        panel = panel.merge(tmp, on=["GEOID", "date", "hour_range"], how="left")
-    else:
-        panel["unique_disposition"] = 0
+    df = build_theme_flags(df)
 
-    panel["date"] = to_date(panel["date"])
-    panel["GEOID"] = normalize_geoid(panel["GEOID"], DEFAULT_GEOID_LEN)
-    panel["hour_range"] = panel["hour_range"].map(canonicalize_hour_range)
+    agg = (
+        df.groupby(["GEOID", "date", "hour_range", "slot_index"], observed=True, sort=False)
+          .agg(
+              call_count=("cad_number", "count"),
+              violent_count=("is_violent_911", "sum"),
+              property_count=("is_property_911", "sum"),
+              disturbance_count=("is_disturbance_911", "sum"),
+              traffic_count=("is_traffic_911", "sum"),
+              dispatch_to_onscene_mean=("sec_dispatch_to_onscene", "mean"),
+              dispatch_to_close_mean=("sec_dispatch_to_close", "mean"),
+          )
+          .reset_index()
+    )
 
-    panel = panel[
-        panel["GEOID"].notna()
-        & panel["date"].notna()
-        & panel["hour_range"].isin(HOUR_ORDER)
-    ].copy()
+    agg = to_int32(
+        agg,
+        ["call_count", "violent_count", "property_count", "disturbance_count", "traffic_count"]
+    )
+    agg = to_float32(
+        agg,
+        ["dispatch_to_onscene_mean", "dispatch_to_close_mean"]
+    )
 
-    panel["slot_index"] = panel["hour_range"].map(HOUR_TO_SLOT)
+    return agg
+
+
+# =========================================================
+# 4) PATCH SUMMARY
+# =========================================================
+def patch_summary(existing_summary: pd.DataFrame, recent_summary: pd.DataFrame, patch_start: pd.Timestamp) -> pd.DataFrame:
+    log(f"🔁 summary patch başlangıcı: {patch_start.date()}")
+
+    keep_old = existing_summary[existing_summary["date"] < patch_start].copy()
+    keep_new = recent_summary[recent_summary["date"] >= patch_start].copy()
+
+    out = pd.concat([keep_old, keep_new], ignore_index=True)
+    out = out.drop_duplicates(subset=["GEOID", "date", "hour_range"], keep="last").copy()
+    out = out[out["date"] >= WINDOW_START].copy()
+    out = out.sort_values(["GEOID", "date", "slot_index"]).reset_index(drop=True)
+
+    return out
+
+
+# =========================================================
+# 5) REBUILD Y FEATURES
+# =========================================================
+def rebuild_y_features(summary_df: pd.DataFrame) -> pd.DataFrame:
+    log("🧠 past-only y feature set yeniden üretiliyor...")
+
+    panel = summary_df.copy()
+
+    panel["GEOID"] = normalize_geoid(panel["GEOID"])
+    panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
+    panel["hour_range"] = normalize_hour_range_col(panel["hour_range"])
+    panel["slot_index"] = pd.to_numeric(panel["slot_index"], errors="coerce").fillna(0).astype("int8")
+
+    panel = panel[panel["GEOID"].notna()].copy()
+    panel = panel[panel["date"].notna()].copy()
+    panel = panel[panel["hour_range"].isin(HOUR_ORDER)].copy()
+    panel = panel[panel["date"] >= WINDOW_START].copy()
+
+    panel = to_int32(
+        panel,
+        ["call_count", "violent_count", "property_count", "disturbance_count", "traffic_count"]
+    )
+    panel = to_float32(
+        panel,
+        ["dispatch_to_onscene_mean", "dispatch_to_close_mean"]
+    )
+
     panel = panel.sort_values(["GEOID", "date", "slot_index"]).reset_index(drop=True)
 
-    # Günlük toplam
-    daily = (
-        panel.groupby(["GEOID", "date"], dropna=False, observed=True)["call_count"]
-        .sum()
-        .reset_index(name="daily_cnt")
-    )
-    panel = panel.merge(daily, on=["GEOID", "date"], how="left")
+    grp = panel.groupby("GEOID", sort=False)
+    grp_slot = panel.groupby(["GEOID", "hour_range"], sort=False)
 
-    # Önceki gün toplamı
-    day_tbl = daily.sort_values(["GEOID", "date"]).copy()
-    day_tbl["911_request_count_daily(before_24_hours)"] = (
-        day_tbl.groupby("GEOID", sort=False)["daily_cnt"].shift(1).fillna(0)
+    panel["911_prev_slot"] = grp["call_count"].shift(1)
+    panel["911_prev_2slot"] = grp["call_count"].shift(2)
+    panel["911_prev_8slot"] = grp["call_count"].shift(8)
+
+    panel["911_roll_1d"] = grp["call_count"].transform(
+        lambda s: s.rolling(8, min_periods=1).sum().shift(1)
     )
-    panel = panel.merge(
-        day_tbl[["GEOID", "date", "911_request_count_daily(before_24_hours)"]],
-        on=["GEOID", "date"],
-        how="left",
+    panel["911_roll_7d"] = grp["call_count"].transform(
+        lambda s: s.rolling(56, min_periods=1).sum().shift(1)
     )
 
-    # Temporal compact features
-    g = panel.groupby("GEOID", sort=False)
-    gs = panel.groupby(["GEOID", "hour_range"], sort=False)
-
-    panel["911_prev_slot"] = g["call_count"].shift(1).fillna(0)
-    panel["911_prev_2slot"] = (
-        g["call_count"].rolling(2, min_periods=1).sum().shift(1).reset_index(level=0, drop=True).fillna(0)
-    )
-    panel["911_prev_8slot"] = (
-        g["call_count"].rolling(8, min_periods=1).sum().shift(1).reset_index(level=0, drop=True).fillna(0)
+    panel["911_same_slot_prev_1d"] = grp_slot["call_count"].shift(1)
+    panel["911_same_slot_prev_7d"] = grp_slot["call_count"].shift(7)
+    panel["911_same_slot_roll_4"] = grp_slot["call_count"].transform(
+        lambda s: s.rolling(4, min_periods=1).mean().shift(1)
     )
 
-    panel["911_roll_1d"] = (
-        g["call_count"].rolling(8, min_periods=1).sum().shift(1).reset_index(level=0, drop=True).fillna(0)
+    roll_mean_1d = grp["call_count"].transform(
+        lambda s: s.rolling(8, min_periods=2).mean().shift(1)
     )
-    panel["911_roll_3d"] = (
-        g["call_count"].rolling(24, min_periods=1).sum().shift(1).reset_index(level=0, drop=True).fillna(0)
+    roll_std_1d = grp["call_count"].transform(
+        lambda s: s.rolling(8, min_periods=2).std().shift(1)
     )
-    panel["911_roll_7d"] = (
-        g["call_count"].rolling(56, min_periods=1).sum().shift(1).reset_index(level=0, drop=True).fillna(0)
-    )
-
-    panel["911_same_slot_prev_1d"] = gs["call_count"].shift(1).fillna(0)
-    panel["911_same_slot_prev_3d"] = gs["call_count"].shift(3).fillna(0)
-    panel["911_same_slot_prev_7d"] = gs["call_count"].shift(7).fillna(0)
-    panel["911_same_slot_roll_4"] = (
-        gs["call_count"].rolling(4, min_periods=1).mean().shift(1).reset_index(level=[0, 1], drop=True).fillna(0)
-    )
-
-    prev2 = g["call_count"].shift(2).fillna(0)
-    panel["911_growth_prev_slot"] = safe_div(panel["911_prev_slot"] - prev2, prev2)
-
-    roll_mean = g["call_count"].rolling(8, min_periods=2).mean().shift(1).reset_index(level=0, drop=True)
-    roll_std = g["call_count"].rolling(8, min_periods=2).std().shift(1).reset_index(level=0, drop=True)
-
-    panel["911_zscore_1d"] = np.where(
-        roll_std.fillna(0) > 0,
-        (panel["911_prev_slot"] - roll_mean.fillna(0)) / roll_std.fillna(0),
-        0.0
-    )
-    panel["911_zscore_1d"] = pd.Series(panel["911_zscore_1d"], index=panel.index).fillna(0).astype("float32")
+    panel["911_zscore_1d"] = (panel["call_count"] - roll_mean_1d) / (roll_std_1d + 1e-6)
     panel["911_spike_flag_1d"] = (panel["911_zscore_1d"] >= 2.0).astype("int8")
 
-    panel["has_past_crime"] = (panel["911_prev_slot"] > 0).astype("int8")
-
-    panel["row_no_geoid"] = g.cumcount()
-    last_pos = np.where(panel["call_count"] > 0, panel["row_no_geoid"], np.nan)
-    last_pos = pd.Series(last_pos, index=panel.index)
-    last_pos = last_pos.groupby(panel["GEOID"]).ffill().shift(1)
-    panel["slots_since_last_crime"] = panel["row_no_geoid"] - last_pos
-    panel["slots_since_last_crime"] = panel["slots_since_last_crime"].fillna(9999).astype("float32")
-    panel = panel.drop(columns=["row_no_geoid"], errors="ignore")
-
-    for c in panel.columns:
-        if c in ["GEOID", "date", "hour_range"]:
-            continue
-        if not pd.api.types.is_numeric_dtype(panel[c]):
-            panel[c] = pd.to_numeric(panel[c], errors="coerce").fillna(0)
-
-    return panel
-
-
-# =========================================================
-# NEIGHBOR FEATURES
-# =========================================================
-def add_neighbor_features_fallback(summary: pd.DataFrame) -> pd.DataFrame:
-    summary = summary.copy()
-    summary["date"] = pd.to_datetime(summary["date"], errors="coerce").dt.date
-    log("ℹ️ Neighbor fallback: aynı date-hour_range'te diğer GEOID ortalaması kullanılacak.")
-
-    base_cols = ["911_roll_3d", "911_roll_7d"]
-    rename_map = {
-        "911_roll_3d": "911_neighbors_last3d",
-        "911_roll_7d": "911_neighbors_last7d",
-    }
-
-    grp = summary.groupby(["date", "hour_range"], observed=True)
-
-    for c in base_cols:
-        if c not in summary.columns:
-            summary[c] = 0.0
-
-        total = grp[c].transform("sum")
-        cnt = grp[c].transform("count")
-        neigh = np.where(cnt > 1, (total - summary[c]) / (cnt - 1), 0)
-
-        summary[rename_map[c]] = (
-            pd.Series(neigh, index=summary.index).fillna(0).astype("float32")
+    for c in ["violent_count", "property_count", "disturbance_count", "traffic_count"]:
+        out = "911_" + c.replace("_count", "_roll_1d")
+        panel[out] = grp[c].transform(
+            lambda s: s.rolling(8, min_periods=1).sum().shift(1)
         )
 
-    return summary
-
-
-def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
-    summary = summary.copy()
-    summary["date"] = pd.to_datetime(summary["date"], errors="coerce").dt.date
-
-    neighbor_path = load_neighbor_file()
-    needed = ["GEOID", "date", "hour_range", "911_roll_3d", "911_roll_7d"]
-    for c in needed:
-        if c not in summary.columns:
-            summary[c] = 0.0
-
-    if neighbor_path is None:
-        return add_neighbor_features_fallback(summary)
-
-    try:
-        adj = pd.read_csv(neighbor_path, low_memory=False)
-        cols_lower = {c.lower(): c for c in adj.columns}
-
-        if "geoid" in cols_lower and "neighbor_geoid" in cols_lower:
-            adj = adj.rename(columns={
-                cols_lower["geoid"]: "GEOID",
-                cols_lower["neighbor_geoid"]: "neighbor_GEOID",
-            })
-        elif "geoid" in cols_lower and "neighbor" in cols_lower:
-            adj = adj.rename(columns={
-                cols_lower["geoid"]: "GEOID",
-                cols_lower["neighbor"]: "neighbor_GEOID",
-            })
-        elif "GEOID" in adj.columns and "neighbor_GEOID" in adj.columns:
-            pass
-        else:
-            raise ValueError(f"neighbors.csv beklenen kolonları taşımıyor: {adj.columns.tolist()}")
-
-        adj["GEOID"] = normalize_geoid(adj["GEOID"], DEFAULT_GEOID_LEN)
-        adj["neighbor_GEOID"] = normalize_geoid(adj["neighbor_GEOID"], DEFAULT_GEOID_LEN)
-        adj = adj.dropna(subset=["GEOID", "neighbor_GEOID"]).drop_duplicates().copy()
-
-        log(f"🧭 Neighbor pair sayısı         : {len(adj):,}")
-        log(f"🧭 Unique GEOID sayısı         : {adj['GEOID'].nunique():,}")
-        log(f"🧭 Unique neighbor_GEOID sayısı: {adj['neighbor_GEOID'].nunique():,}")
-
-        if adj.empty:
-            return add_neighbor_features_fallback(summary)
-
-        base = summary[["GEOID", "date", "hour_range", "911_roll_3d", "911_roll_7d"]].copy()
-        base = base.groupby(["GEOID", "date", "hour_range"], as_index=False, observed=True).mean(numeric_only=True)
-
-        merged = adj.merge(
-            base.rename(columns={"GEOID": "neighbor_GEOID"}),
-            on="neighbor_GEOID",
-            how="left"
-        )
-
-        agg = merged.groupby(["GEOID", "date", "hour_range"], observed=True).agg(
-            **{
-                "911_neighbors_last3d": ("911_roll_3d", "mean"),
-                "911_neighbors_last7d": ("911_roll_7d", "mean"),
-            }
-        ).reset_index()
-
-        summary = summary.merge(agg, on=["GEOID", "date", "hour_range"], how="left")
-
-        for c in ["911_neighbors_last3d", "911_neighbors_last7d"]:
-            if c in summary.columns:
-                summary[c] = summary[c].fillna(0).astype("float32")
-
-        return summary
-
-    except Exception as e:
-        log(f"⚠️ neighbors.csv okunamadı / işlenemedi, fallback kullanılacak: {e}")
-        return add_neighbor_features_fallback(summary)
-
-
-# =========================================================
-# MERGE WITH CRIME
-# =========================================================
-def merge_with_crime(df_crime: pd.DataFrame, df_911: pd.DataFrame) -> pd.DataFrame:
-    df_crime = df_crime.copy()
-    df_911 = df_911.copy()
-
-    if "GEOID" not in df_crime.columns:
-        raise ValueError("Crime dosyasında GEOID kolonu yok.")
-
-    if "date" not in df_crime.columns:
-        dt_candidates = [c for c in ["date", "datetime", "occurred_at", "incident_datetime"] if c in df_crime.columns]
-        if dt_candidates:
-            df_crime["date"] = to_date(df_crime[dt_candidates[0]])
-        else:
-            raise ValueError("Crime dosyasında date/datetime kolonu bulunamadı.")
-
-    if "hour_range" not in df_crime.columns:
-        if "event_hour" in df_crime.columns:
-            event_hour = pd.to_numeric(df_crime["event_hour"], errors="coerce").fillna(-1).astype(int)
-            slot_start = (event_hour // 3) * 3
-            slot_end = slot_start + 3
-            df_crime["hour_range"] = np.where(
-                event_hour >= 0,
-                [f"{int(a):02d}-{24 if int(b) == 24 else int(b):02d}" for a, b in zip(slot_start, slot_end)],
-                None
-            )
-        elif "datetime" in df_crime.columns:
-            df_crime["hour_range"] = hour_to_range_from_datetime(pd.to_datetime(df_crime["datetime"], errors="coerce"))
-        else:
-            raise ValueError("Crime dosyasında hour_range/event_hour/datetime bulunamadı.")
-
-    df_crime["GEOID"] = normalize_geoid(df_crime["GEOID"], DEFAULT_GEOID_LEN)
-    df_crime["date"] = to_date(df_crime["date"])
-    df_crime["hour_range"] = df_crime["hour_range"].map(canonicalize_hour_range)
-
-    df_911["GEOID"] = normalize_geoid(df_911["GEOID"], DEFAULT_GEOID_LEN)
-    df_911["date"] = to_date(df_911["date"])
-    df_911["hour_range"] = df_911["hour_range"].map(canonicalize_hour_range)
-
-    df_crime = df_crime[
-        df_crime["GEOID"].notna()
-        & df_crime["date"].notna()
-        & df_crime["hour_range"].isin(HOUR_ORDER)
-    ].copy()
-
-    df_911 = df_911[
-        df_911["GEOID"].notna()
-        & df_911["date"].notna()
-        & df_911["hour_range"].isin(HOUR_ORDER)
-    ].copy()
-
-    log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
-
-    crime_shape_before = df_crime.shape
-    merged = df_crime.merge(
-        df_911,
-        on=["GEOID", "date", "hour_range"],
-        how="left"
+    panel["911_dispatch_to_onscene_roll_1d"] = grp["dispatch_to_onscene_mean"].transform(
+        lambda s: s.rolling(8, min_periods=1).mean().shift(1)
+    )
+    panel["911_dispatch_to_close_roll_1d"] = grp["dispatch_to_close_mean"].transform(
+        lambda s: s.rolling(8, min_periods=1).mean().shift(1)
     )
 
-    log(f"📐 CRIME⨯911 merged: {merged.shape}")
-
-    if "call_count" in merged.columns:
-        matched = merged["call_count"].notna().sum()
-        unmatched = merged["call_count"].isna().sum()
-        log(f"🔍 911 match olan satır    : {matched:,}")
-        log(f"🔍 911 match olmayan satır : {unmatched:,}")
-        log(f"🔍 911 match oranı         : %{(matched / len(merged) * 100):.2f}")
-
-    fill_cols = [
-        "call_count",
-        "daily_cnt",
-        "911_request_count_daily(before_24_hours)",
-
+    float_cols = [
         "911_prev_slot",
         "911_prev_2slot",
         "911_prev_8slot",
         "911_roll_1d",
-        "911_roll_3d",
         "911_roll_7d",
-
         "911_same_slot_prev_1d",
-        "911_same_slot_prev_3d",
         "911_same_slot_prev_7d",
         "911_same_slot_roll_4",
-
-        "911_growth_prev_slot",
         "911_zscore_1d",
-        "911_spike_flag_1d",
-
-        "911_neighbors_last3d",
-        "911_neighbors_last7d",
-
-        "police_calls",
-        "mta_calls",
-        "sheriff_calls",
-
-        "priority_A_calls",
-        "priority_B_calls",
-        "priority_C_calls",
-
-        "type_traffic_count",
-        "type_assault_count",
-        "type_theft_count",
-        "type_disturbance_count",
-        "type_domestic_count",
-        "type_weapon_count",
-
-        "disp_han_count",
-        "disp_utl_count",
-        "disp_adv_count",
-        "disp_arr_count",
-
-        "unique_call_type",
-        "unique_priority",
-        "unique_disposition",
-
-        "has_past_crime",
-        "slots_since_last_crime",
+        "911_violent_roll_1d",
+        "911_property_roll_1d",
+        "911_disturbance_roll_1d",
+        "911_traffic_roll_1d",
+        "911_dispatch_to_onscene_roll_1d",
+        "911_dispatch_to_close_roll_1d",
     ]
 
-    for c in fill_cols:
-        if c in merged.columns:
-            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0)
+    for c in float_cols:
+        panel[c] = (
+            pd.to_numeric(panel[c], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0)
+            .astype("float32")
+        )
 
-    log(f"📏 crime input satır/sütun   : {crime_shape_before}")
-    log(f"📏 sf_crime_01 satır/sütun   : {merged.shape}")
-    if merged.shape[0] == crime_shape_before[0]:
-        log("✅ Merge sonrası satır kaybı yok.")
-    else:
-        log("⚠️ Merge sonrası satır sayısı değişti.")
+    panel["911_spike_flag_1d"] = panel["911_spike_flag_1d"].fillna(0).astype("int8")
 
-    nan_total = int(merged.isna().sum().sum())
-    nan_cols = merged.isna().sum()
-    nan_cols = nan_cols[nan_cols > 0].sort_values(ascending=False)
+    y_cols = [
+        "GEOID",
+        "date",
+        "hour_range",
+        "slot_index",
+        "911_prev_slot",
+        "911_prev_2slot",
+        "911_prev_8slot",
+        "911_roll_1d",
+        "911_roll_7d",
+        "911_same_slot_prev_1d",
+        "911_same_slot_prev_7d",
+        "911_same_slot_roll_4",
+        "911_zscore_1d",
+        "911_spike_flag_1d",
+        "911_violent_roll_1d",
+        "911_property_roll_1d",
+        "911_disturbance_roll_1d",
+        "911_traffic_roll_1d",
+        "911_dispatch_to_onscene_roll_1d",
+        "911_dispatch_to_close_roll_1d",
+    ]
 
-    log(f"🧪 sf_crime_01 toplam NaN sayısı: {nan_total:,}")
-    log(f"🧪 sf_crime_01 NaN içeren kolon sayısı: {len(nan_cols):,}")
-    if len(nan_cols) > 0:
-        topn = min(10, len(nan_cols))
-        log(f"🧪 sf_crime_01 en çok NaN içeren ilk {topn} kolon:")
-        for col, cnt in nan_cols.head(topn).items():
-            pct = (cnt / len(merged) * 100) if len(merged) else 0
-            log(f"   - {col}: {cnt:,} (%{pct:.2f})")
+    y_df = panel[y_cols].copy()
+    return y_df
 
-    return merged
+
+# =========================================================
+# 6) MERGE INTO CRIME
+# =========================================================
+def load_crime_input() -> Tuple[Path, pd.DataFrame]:
+    p = pick_existing(CRIME_IN_CANDIDATES)
+    log(f"📥 crime input okunuyor: {p}")
+    df = read_any(p)
+
+    req = ["GEOID", "date", "hour_range"]
+    missing = [c for c in req if c not in df.columns]
+    if missing:
+        raise ValueError(f"Crime input dosyasında eksik kolonlar var: {missing}")
+
+    df["GEOID"] = normalize_geoid(df["GEOID"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["hour_range"] = normalize_hour_range_col(df["hour_range"])
+
+    df = df[df["GEOID"].notna()].copy()
+    df = df[df["date"].notna()].copy()
+    df = df[df["hour_range"].isin(HOUR_ORDER)].copy()
+
+    return p, df
+
+
+def merge_911_into_crime(crime_df: pd.DataFrame, y_df: pd.DataFrame) -> pd.DataFrame:
+    y_use_cols = [
+        "GEOID",
+        "date",
+        "hour_range",
+        "911_prev_slot",
+        "911_prev_2slot",
+        "911_prev_8slot",
+        "911_roll_1d",
+        "911_roll_7d",
+        "911_same_slot_prev_1d",
+        "911_same_slot_prev_7d",
+        "911_same_slot_roll_4",
+        "911_zscore_1d",
+        "911_spike_flag_1d",
+        "911_violent_roll_1d",
+        "911_property_roll_1d",
+        "911_disturbance_roll_1d",
+        "911_traffic_roll_1d",
+        "911_dispatch_to_onscene_roll_1d",
+        "911_dispatch_to_close_roll_1d",
+    ]
+    y_small = y_df[y_use_cols].copy()
+
+    before = len(crime_df)
+    out = crime_df.merge(
+        y_small,
+        on=["GEOID", "date", "hour_range"],
+        how="left",
+        validate="m:1"
+    )
+    after = len(out)
+
+    log(f"🔗 merge satır kontrolü: {before:,} -> {after:,}")
+
+    added_cols = [c for c in y_use_cols if c not in ["GEOID", "date", "hour_range"]]
+    for c in added_cols:
+        if c in out.columns:
+            if c == "911_spike_flag_1d":
+                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("int8")
+            else:
+                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("float32")
+
+    return out
 
 
 # =========================================================
 # MAIN
 # =========================================================
 def main():
-    log(f"📂 SCRIPT_DIR = {SCRIPT_DIR}")
-    log(f"📂 BASE_DIR   = {BASE_DIR}")
-    log(f"📂 OUT_DIR    = {OUT_DIR}")
-    log(f"🧾 DAILY_OUT seen as: {os.getenv('DAILY_OUT', '(unset)')}")
+    log("=========================================================")
+    log("SF 911 DAILY UPDATE BAŞLADI")
+    log("=========================================================")
+    log(f"📂 BASE_DIR = {BASE_DIR}")
+    log(f"📅 TODAY    = {TODAY.date()}")
+    log(f"📅 WINDOW   = {WINDOW_START.date()} -> {TODAY.date()}")
 
-    p_911 = pick_existing(RAW_911_CANDIDATES)
-    if p_911 is None:
-        raise FileNotFoundError(f"911 input bulunamadı. Adaylar: {[str(x) for x in RAW_911_CANDIDATES]}")
+    existing_summary = load_existing_summary()
+    last_summary_date = existing_summary["date"].max()
 
-    log(f"📦 911 base bulundu: {p_911}")
-    log(f"📥 Yerel 911 tabanı okunuyor: {p_911}")
-    df_911_raw = read_any(p_911)
-    log(f"📐 911 input raw/summary: {df_911_raw.shape}")
+    if pd.isna(last_summary_date):
+        raise ValueError("Mevcut summary dosyasında geçerli tarih yok.")
 
-    df_911 = make_standard_summary(df_911_raw)
-    df_911 = add_neighbor_features(df_911)
+    log(f"📌 mevcut summary son tarihi: {last_summary_date.date()}")
 
-    write_both(df_911, SUMMARY_OUT_PARQUET, SUMMARY_OUT_CSV)
-    log(f"✅ Yerel 911 özet kaydedildi → {SUMMARY_OUT_PARQUET}")
+    patch_start = max(
+        pd.Timestamp(last_summary_date) - pd.Timedelta(days=REDOWNLOAD_BUFFER_DAYS),
+        pd.Timestamp(WINDOW_START)
+    )
+    feature_start = max(
+        pd.Timestamp(patch_start) - pd.Timedelta(days=FEATURE_BUFFER_DAYS),
+        pd.Timestamp(WINDOW_START)
+    )
 
-    write_both(df_911, SUMMARY_Y_OUT_PARQUET, SUMMARY_Y_OUT_CSV)
-    log(f"✅ Y-özet kaydedildi        → {SUMMARY_Y_OUT_PARQUET}")
-    log(f"📐 final_911: {df_911.shape}")
+    log(f"🔁 patch_start   = {patch_start.date()}")
+    log(f"🧠 feature_start = {feature_start.date()}")
 
-    p_crime = pick_existing(CRIME_IN_CANDIDATES)
-    if p_crime is None:
-        raise FileNotFoundError(f"Crime input bulunamadı. Adaylar: {[str(x) for x in CRIME_IN_CANDIDATES]}")
+    raw_recent = download_recent_raw(start_date=patch_start, end_date=TODAY)
+    geoid_recent = build_geoid_from_raw(raw_recent)
+    recent_summary = aggregate_recent_summary(geoid_recent)
 
-    log(f"✅ Ana crime input bulundu: {p_crime}")
-    df_crime = read_any(p_crime)
-    log(f"📐 crime input: {df_crime.shape}")
+    if recent_summary.empty:
+        log("ℹ️ son pencere için yeni summary patch yok. Eski summary korunacak.")
+        patched_summary = existing_summary.copy()
+    else:
+        patched_summary = patch_summary(existing_summary, recent_summary, patch_start=patch_start)
 
-    merged = merge_with_crime(df_crime, df_911)
+    patched_summary = patched_summary[patched_summary["date"] >= WINDOW_START].copy()
+    patched_summary = patched_summary.sort_values(["GEOID", "date", "slot_index"]).reset_index(drop=True)
 
-    merged.to_csv(CRIME_OUT_CSV, index=False, encoding="utf-8-sig")
-    merged.to_parquet(CRIME_OUT_PARQUET, index=False)
+    write_dual(patched_summary, SUMMARY_OUT_PARQUET, SUMMARY_OUT_CSV)
+    log(f"💾 summary güncellendi: {SUMMARY_OUT_PARQUET}")
+    log(f"💾 summary güncellendi: {SUMMARY_OUT_CSV}")
 
-    log(f"✅ sf_crime_01.csv yazıldı     → {CRIME_OUT_CSV}")
-    log(f"✅ sf_crime_01.parquet yazıldı → {CRIME_OUT_PARQUET}")
+    y_df = rebuild_y_features(patched_summary)
+    write_dual(y_df, SUMMARY_Y_OUT_PARQUET, SUMMARY_Y_OUT_CSV)
+    log(f"💾 y feature güncellendi: {SUMMARY_Y_OUT_PARQUET}")
+    log(f"💾 y feature güncellendi: {SUMMARY_Y_OUT_CSV}")
+
+    crime_path, crime_df = load_crime_input()
+    crime_01 = merge_911_into_crime(crime_df, y_df)
+
+    crime_01.to_csv(CRIME_OUT_CSV, index=False)
+    crime_01.to_parquet(CRIME_OUT_PARQUET, index=False)
+    log(f"💾 crime merge çıktı: {CRIME_OUT_CSV}")
+    log(f"💾 crime merge çıktı: {CRIME_OUT_PARQUET}")
+
+    log("=========================================================")
+    log("✅ SF 911 DAILY UPDATE TAMAMLANDI")
+    log("=========================================================")
+    log(f"📏 existing_summary : {existing_summary.shape}")
+    log(f"📏 recent_summary   : {recent_summary.shape}")
+    log(f"📏 patched_summary  : {patched_summary.shape}")
+    log(f"📏 y_df             : {y_df.shape}")
+    log(f"📏 crime_df         : {crime_df.shape}")
+    log(f"📏 crime_01         : {crime_01.shape}")
+    log("=========================================================")
 
 
 if __name__ == "__main__":
