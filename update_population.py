@@ -1,38 +1,9 @@
 # update_population.py
 # =============================================================================
-# DEMOGRAPHIC / POPULATION ENRICH (APPEND-ONLY, TRACT/GEOID-BASED)
-#
-# AMAÇ
-# ----
-# 1) crime_prediction_data/sf_population.csv dosyasından tract-level
-#    demografik öznitelikler üretmek
-# 2) sf_crime_02.csv -> sf_crime_03.csv zenginleştirmesini yapmak
-# 3) İlk koşuda tüm veriyi enrich etmek
-# 4) Sonraki koşularda eski sf_crime_03 satırlarını değiştirmeden,
-#    yalnızca yeni crime satırlarını yeni demografi snapshot'ı ile eklemek
-#
-# SÖZLEŞME
-# --------
-# - GEOID seviyesi: census tract (11 hane)
-# - İlk kez çalışırsa: tüm sf_crime_02 -> sf_crime_03
-# - sf_crime_03 zaten varsa:
-#     * eski satırlar korunur
-#     * yalnızca yeni satırlar enrich edilir
-# - Demografi dosyası güncellenirse:
-#     * eski crime satırları değişmez
-#     * yeni crime satırları yeni demografiyle eşleşir
-#
-# NOT
-# ---
-# Bu script, verdiğin demografik veri şemasına göre tasarlanmıştır:
-# - geography == tract
-# - geography_id = GEOID
-# - estimate = değer
-# - acs_table / acs_label / demographic_category_label = feature çıkarımı
+# DEMOGRAPHIC / POPULATION ENRICH (LEAN + APPEND-ONLY + RAM-FRIENDLY)
 # =============================================================================
 
 import os
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -82,9 +53,9 @@ def normalize_geoid(series: pd.Series, target_len: int = 11) -> pd.Series:
 def parse_numeric_series(s: pd.Series) -> pd.Series:
     x = (
         s.astype(str)
-         .str.replace(".", "", regex=False)   # 757.193 gibi binlik ayracı varsa
-         .str.replace(",", ".", regex=False)  # 0,123 -> 0.123
-         .str.replace(" ", "", regex=False)
+        .str.replace(".", "", regex=False)   # binlik ayracı
+        .str.replace(",", ".", regex=False)  # 0,123 -> 0.123
+        .str.replace(" ", "", regex=False)
     )
     return pd.to_numeric(x, errors="coerce")
 
@@ -106,7 +77,7 @@ def ensure_date_col(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
     out = df.copy()
     if col not in out.columns:
         raise KeyError(f"❌ '{col}' kolonu yok.")
-    out[col] = pd.to_datetime(out[col], errors="coerce").dt.normalize()
+    out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     return out
 
 
@@ -127,6 +98,18 @@ def dedupe_by_panel_keys(df: pd.DataFrame, keys: list[str], keep: str = "first")
     if dropped > 0:
         print(f"⚠️ Panel anahtarlarına göre {dropped} duplikasyon temizlendi.")
     return out
+
+
+def make_panel_key_series(df: pd.DataFrame) -> pd.Series:
+    missing = [c for c in ["GEOID", "date", "hour_range"] if c not in df.columns]
+    if missing:
+        raise KeyError(f"❌ Panel key için eksik kolon(lar): {missing}")
+
+    tmp = df[["GEOID", "date", "hour_range"]].copy()
+    tmp["GEOID"] = normalize_geoid(tmp["GEOID"], GEOID_LEN)
+    tmp["date"] = pd.to_datetime(tmp["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    tmp["hour_range"] = tmp["hour_range"].astype(str)
+    return tmp["GEOID"] + "|" + tmp["date"] + "|" + tmp["hour_range"]
 
 
 # =============================================================================
@@ -153,34 +136,29 @@ DEMOGRAPHIC_FEATURES_CSV = str(BASE_DIR / "sf_demographic_features.csv")
 GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 APPEND_ONLY = os.getenv("APPEND_ONLY", "1").strip().lower() not in ("0", "false", "no")
 
+# Stacking için budanmış son demografi seti
+FINAL_DEMOGRAPHIC_COLS = [
+    "GEOID",
+    "population",
+    "pct_age_18_34",
+    "pct_age_65_plus",
+    "pct_hispanic",
+    "pct_nh_white",
+    "pct_nh_black",
+    "pct_nh_asian",
+    "pct_nh_multiracial",
+]
+
 
 # =============================================================================
 # DEMOGRAPHIC FEATURE EXTRACTION
 # =============================================================================
 def select_latest_rows_per_feature(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aynı GEOID + feature birden çok ACS döneminde gelebilir.
-    En güncel satırı seçmek için:
-      - end_year büyük olan
-      - data_loaded_at büyük olan
-    öncelikli alınır.
-    """
     x = df.copy()
 
-    if "end_year" in x.columns:
-        x["end_year_num"] = pd.to_numeric(x["end_year"], errors="coerce")
-    else:
-        x["end_year_num"] = np.nan
-
-    if "data_loaded_at" in x.columns:
-        x["data_loaded_at_ts"] = pd.to_datetime(x["data_loaded_at"], errors="coerce")
-    else:
-        x["data_loaded_at_ts"] = pd.NaT
-
-    if "data_as_of" in x.columns:
-        x["data_as_of_ts"] = pd.to_datetime(x["data_as_of"], errors="coerce")
-    else:
-        x["data_as_of_ts"] = pd.NaT
+    x["end_year_num"] = pd.to_numeric(x["end_year"], errors="coerce") if "end_year" in x.columns else np.nan
+    x["data_loaded_at_ts"] = pd.to_datetime(x["data_loaded_at"], errors="coerce") if "data_loaded_at" in x.columns else pd.NaT
+    x["data_as_of_ts"] = pd.to_datetime(x["data_as_of"], errors="coerce") if "data_as_of" in x.columns else pd.NaT
 
     sort_cols = ["GEOID", "feature_name", "end_year_num", "data_loaded_at_ts", "data_as_of_ts"]
     sort_cols = [c for c in sort_cols if c in x.columns]
@@ -191,29 +169,17 @@ def select_latest_rows_per_feature(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def map_feature_name(row: pd.Series) -> Optional[str]:
-    """
-    Verilen demografi şemasından kullanılabilir tract-level feature adı üretir.
-    """
     acs_table = str(row.get("acs_table", "")).strip()
     acs_label = str(row.get("acs_label", "")).strip().lower()
     demo_label = str(row.get("demographic_category_label", "")).strip().lower()
-    acs_concept = str(row.get("acs_concept", "")).strip().lower()
 
-    # -------------------------
-    # TOPLAM NÜFUS
-    # -------------------------
-    # B01001 total veya B03002 total gibi
-    if acs_table == "B01001" and "estimate!!total:" == acs_label:
+    # total population
+    if acs_table == "B01001" and acs_label == "estimate!!total:":
         return "population_total"
-
     if acs_table == "B03002" and acs_label == "estimate!!total:":
         return "population_total"
 
-    # -------------------------
-    # YAŞ DAĞILIMI (B06001)
-    # -------------------------
-    # Bu veri setinde yaş grupları B06001 içinde tract-level geliyor.
-    # Şimdilik doğrudan label bazlı alıyoruz.
+    # age
     if acs_table == "B06001":
         if demo_label == "under 5 years":
             return "pop_age_under_5"
@@ -236,18 +202,11 @@ def map_feature_name(row: pd.Series) -> Optional[str]:
         if demo_label == "85 years and over":
             return "pop_age_85_plus"
 
-    # -------------------------
-    # IRK / ETNİSİTE (B03002)
-    # -------------------------
-    # Bu tabloda label pattern matching ile feature çıkarıyoruz.
+    # race / ethnicity
     if acs_table == "B03002":
         s = acs_label
-
-        # Hispanic total
         if "estimate!!total:!!hispanic or latino:" == s:
             return "pop_hispanic"
-
-        # Not Hispanic racial groups
         if "not hispanic or latino:!!white alone" in s:
             return "pop_nh_white"
         if "not hispanic or latino:!!black or african american alone" in s:
@@ -267,11 +226,6 @@ def map_feature_name(row: pd.Series) -> Optional[str]:
 
 
 def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tract-level demografik feature tablosu üretir.
-    Çıktı: GEOID bazında tekil feature tablosu
-    """
-
     df = demo_raw.copy()
     log_shape(df, "DEMOGRAPHIC RAW")
 
@@ -280,25 +234,18 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             raise KeyError(f"❌ Demografik dosyada zorunlu kolon eksik: {c}")
 
-    # Sadece tract
     df = df[df["geography"].astype(str).str.lower().eq("tract")].copy()
     log_shape(df, "DEMOGRAPHIC (yalnız tract)")
 
-    # GEOID normalize
     df["GEOID"] = normalize_geoid(df["geography_id"], GEOID_LEN)
-
-    # estimate numeric
     df["estimate_num"] = parse_numeric_series(df["estimate"])
-
-    # feature name eşle
     df["feature_name"] = df.apply(map_feature_name, axis=1)
+
     df = df.dropna(subset=["GEOID", "feature_name"]).copy()
     log_shape(df, "DEMOGRAPHIC (feature-mapped)")
 
-    # Aynı feature için en güncel snapshot'ı al
     df = select_latest_rows_per_feature(df)
 
-    # Pivot
     feat = (
         df.pivot_table(
             index="GEOID",
@@ -310,9 +257,6 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
     )
     feat.columns.name = None
 
-    # -----------------------------
-    # Temel eksikler ve oranlar
-    # -----------------------------
     if "population_total" not in feat.columns:
         feat["population_total"] = np.nan
 
@@ -346,62 +290,49 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
         if c not in feat.columns:
             feat[c] = 0.0
 
-    # Yaş toplulaştırmaları
     feat["pop_age_18_34"] = feat["pop_age_18_24"].fillna(0) + feat["pop_age_25_34"].fillna(0)
-    feat["pop_age_35_64"] = (
-        feat["pop_age_35_44"].fillna(0)
-        + feat["pop_age_45_54"].fillna(0)
-        + feat["pop_age_55_64"].fillna(0)
-    )
     feat["pop_age_65_plus"] = (
         feat["pop_age_65_74"].fillna(0)
         + feat["pop_age_75_84"].fillna(0)
         + feat["pop_age_85_plus"].fillna(0)
     )
 
-    # Güvenli payda
     denom = pd.to_numeric(feat["population_total"], errors="coerce").replace(0, np.nan)
 
-    # Oranlar
-    feat["pct_age_under_5"] = feat["pop_age_under_5"] / denom
-    feat["pct_age_5_17"] = feat["pop_age_5_17"] / denom
-    feat["pct_age_18_24"] = feat["pop_age_18_24"] / denom
-    feat["pct_age_25_34"] = feat["pop_age_25_34"] / denom
     feat["pct_age_18_34"] = feat["pop_age_18_34"] / denom
-    feat["pct_age_35_64"] = feat["pop_age_35_64"] / denom
     feat["pct_age_65_plus"] = feat["pop_age_65_plus"] / denom
-
     feat["pct_hispanic"] = feat["pop_hispanic"] / denom
     feat["pct_nh_white"] = feat["pop_nh_white"] / denom
     feat["pct_nh_black"] = feat["pop_nh_black"] / denom
     feat["pct_nh_asian"] = feat["pop_nh_asian"] / denom
     feat["pct_nh_multiracial"] = feat["pop_nh_multiracial"] / denom
 
-    # NaN temizliği
-    num_cols = [c for c in feat.columns if c != "GEOID"]
-    for c in num_cols:
+    feat["population"] = pd.to_numeric(feat["population_total"], errors="coerce")
+
+    # Sadece lean final set
+    for c in FINAL_DEMOGRAPHIC_COLS:
+        if c not in feat.columns:
+            feat[c] = 0.0 if c != "GEOID" else None
+
+    feat = feat[FINAL_DEMOGRAPHIC_COLS].copy()
+
+    # temiz tipler
+    for c in feat.columns:
+        if c == "GEOID":
+            continue
         feat[c] = pd.to_numeric(feat[c], errors="coerce")
 
-    # Absolute count kolonları NaN ise 0, ratio kolonları NaN ise 0
-    abs_cols = [c for c in num_cols if not c.startswith("pct_")]
-    pct_cols = [c for c in num_cols if c.startswith("pct_")]
+    if "population" in feat.columns:
+        feat["population"] = feat["population"].fillna(0).round().astype("int32")
 
-    feat[abs_cols] = feat[abs_cols].fillna(0)
-    feat[pct_cols] = feat[pct_cols].fillna(0.0)
-
-    # population int
-    if "population_total" in feat.columns:
-        feat["population_total"] = feat["population_total"].round().astype(int)
-
-    # Uyum için eski kolon adını da koy
-    feat["population"] = feat["population_total"]
+    pct_cols = [c for c in feat.columns if c.startswith("pct_")]
+    for c in pct_cols:
+        feat[c] = feat[c].fillna(0.0).astype("float32")
 
     feat = feat.sort_values("GEOID").drop_duplicates(subset="GEOID", keep="last")
-    log_shape(feat, "DEMOGRAPHIC FEATURES (GEOID-level)")
+    log_shape(feat, "DEMOGRAPHIC FEATURES (LEAN GEOID-level)")
 
-    # Kaydet
     safe_save_csv(feat, DEMOGRAPHIC_FEATURES_CSV)
-
     return feat
 
 
@@ -410,33 +341,32 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    sf_crime_03 mevcutsa:
-      - eski satırları korur
-      - sf_crime_02'de olup sf_crime_03'te olmayan satırları yeni kabul eder
+    sf_crime_03 varsa sadece yeni anahtarları bulur.
+    RAM dostu: full merge yerine key set membership kullanır.
     """
     if not APPEND_ONLY or not os.path.exists(crime_out_path):
         print("ℹ️ Append-only çıktı yok → tüm satırlar yeni kabul edilecek.")
-        return pd.DataFrame(columns=crime_in.columns), crime_in.copy()
+        return pd.DataFrame(columns=crime_in.columns), crime_in
 
     old = pd.read_csv(crime_out_path, low_memory=False)
+
     if "GEOID" not in old.columns:
         print("⚠️ Eski sf_crime_03 içinde GEOID yok → tüm giriş yeni kabul edilecek.")
-        return old, crime_in.copy()
+        return old, crime_in
 
     old["GEOID"] = normalize_geoid(old["GEOID"], GEOID_LEN)
     crime_in = crime_in.copy()
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
 
-    keys = detect_panel_keys(crime_in)
-    if set(["GEOID", "date", "hour_range"]).issubset(keys) and set(["GEOID", "date", "hour_range"]).issubset(old.columns):
+    if set(["GEOID", "date", "hour_range"]).issubset(crime_in.columns) and set(["GEOID", "date", "hour_range"]).issubset(old.columns):
         crime_in = ensure_date_col(crime_in, "date")
         old = ensure_date_col(old, "date")
 
-        old_keys = old[["GEOID", "date", "hour_range"]].drop_duplicates().copy()
-        old_keys["__seen__"] = 1
+        old_keys = set(make_panel_key_series(old).dropna().unique())
+        crime_keys = make_panel_key_series(crime_in)
 
-        marked = crime_in.merge(old_keys, on=["GEOID", "date", "hour_range"], how="left")
-        new_rows = marked[marked["__seen__"].isna()].drop(columns=["__seen__"]).copy()
+        is_new = ~crime_keys.isin(old_keys)
+        new_rows = crime_in.loc[is_new].copy()
 
         print("🧠 Yeni satır tespiti: GEOID + date + hour_range")
         log_shape(old, "MEVCUT sf_crime_03")
@@ -444,46 +374,38 @@ def split_old_and_new_rows(crime_in: pd.DataFrame, crime_out_path: str) -> tuple
         log_shape(new_rows, "YENİ CRIME SATIRLARI")
         return old, new_rows
 
-    # fallback
-    print("⚠️ Panel anahtarları eksik → güvenli tarafta kalıp tüm sf_crime_02'yi yeni kabul ediyorum.")
-    return old, crime_in.copy()
+    print("⚠️ Panel anahtarları eksik → tüm sf_crime_02 yeni kabul ediliyor.")
+    return old, crime_in
 
 
 def merge_demographics(df_crime: pd.DataFrame, demo_feat: pd.DataFrame) -> pd.DataFrame:
     out = df_crime.copy()
     out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
 
-    # overlap temizliği
     overlap = (set(out.columns) & set(demo_feat.columns)) - {"GEOID"}
     if overlap:
-        print(f"🧹 DEMOGRAPHIC merge overlap bulundu, demo_feat'ten düşürüldü: {sorted(overlap)}")
+        print(f"🧹 DEMOGRAPHIC overlap bulundu, demo_feat'ten düşürüldü: {sorted(overlap)}")
         demo_feat = demo_feat.drop(columns=list(overlap), errors="ignore")
 
     before = out.shape
     out = out.merge(demo_feat, on="GEOID", how="left", validate="many_to_one")
     log_delta(before, out.shape, "CRIME ⨯ DEMOGRAPHIC")
 
-    # Güvenli fill
-    for c in out.columns:
-        if c.startswith("pct_"):
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
-    for c in out.columns:
-        if c.startswith("pop_") or c in ("population", "population_total"):
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
-
     if "population" in out.columns:
-        out["population"] = out["population"].round().astype(int)
-    if "population_total" in out.columns:
-        out["population_total"] = out["population_total"].round().astype(int)
+        out["population"] = pd.to_numeric(out["population"], errors="coerce").fillna(0).round().astype("int32")
+
+    pct_cols = [c for c in out.columns if c.startswith("pct_")]
+    for c in pct_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype("float32")
 
     return out
 
 
 def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     if old_df is None or len(old_df) == 0:
-        out = new_df.copy()
-    else:
-        out = pd.concat([old_df, new_df], ignore_index=True)
+        return new_df.copy()
+
+    out = pd.concat([old_df, new_df], ignore_index=True)
 
     if "GEOID" in out.columns:
         out["GEOID"] = normalize_geoid(out["GEOID"], GEOID_LEN)
@@ -494,9 +416,10 @@ def finalize_output(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     keys = detect_panel_keys(out)
     out = dedupe_by_panel_keys(out, keys, keep="first")
 
-    sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in out.columns]
-    if sort_cols:
-        out = out.sort_values(sort_cols).reset_index(drop=True)
+    # burada tam sort zorunlu değil; istersen açarsın
+    # sort_cols = [c for c in ["date", "GEOID", "hour_range"] if c in out.columns]
+    # if sort_cols:
+    #     out = out.sort_values(sort_cols).reset_index(drop=True)
 
     return out
 
@@ -512,29 +435,17 @@ def main():
     if not Path(DEMOGRAPHIC_PATH).exists():
         raise FileNotFoundError(f"❌ sf_population.csv bulunamadı: {DEMOGRAPHIC_PATH}")
 
-    # -------------------------------------------------------------------------
-    # 1) Crime input oku
-    # -------------------------------------------------------------------------
     crime_in = pd.read_csv(CRIME_INPUT, low_memory=False)
     if "GEOID" not in crime_in.columns:
         raise KeyError("❌ Suç verisinde GEOID kolonu yok.")
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
     log_shape(crime_in, "CRIME INPUT")
 
-    # -------------------------------------------------------------------------
-    # 2) Demographic raw oku
-    # -------------------------------------------------------------------------
     demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
     log_shape(demo_raw, "DEMOGRAPHIC CSV")
 
-    # -------------------------------------------------------------------------
-    # 3) Feature üret
-    # -------------------------------------------------------------------------
     demo_feat = build_demographic_features(demo_raw)
 
-    # -------------------------------------------------------------------------
-    # 4) Append-only split
-    # -------------------------------------------------------------------------
     old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
 
     if new_rows.empty:
@@ -543,68 +454,35 @@ def main():
             print(f"📁 Mevcut çıktı: {CRIME_OUTPUT}")
         return
 
-    # -------------------------------------------------------------------------
-    # 5) Sadece yeni satırları enrich et
-    # -------------------------------------------------------------------------
     before = new_rows.shape
     new_rows_enriched = merge_demographics(new_rows, demo_feat)
     log_delta(before, new_rows_enriched.shape, "YENİ SATIRLAR ⨯ DEMOGRAPHIC")
     log_shape(new_rows_enriched, "NEW ENRICHED ROWS")
 
-    # -------------------------------------------------------------------------
-    # 6) Eski + yeni birleştir
-    # -------------------------------------------------------------------------
-    final_df = finalize_output(old_out, new_rows_enriched)
+    # İlk full run ise gereksiz concat/sort/dedupe yapma
+    if old_out is None or len(old_out) == 0:
+        final_df = new_rows_enriched
+        print("⚡ İlk/full run: finalize_output bypass edildi.")
+    else:
+        final_df = finalize_output(old_out, new_rows_enriched)
+
     log_shape(final_df, "FINAL sf_crime_03")
 
-    # -------------------------------------------------------------------------
-    # 7) NaN / coverage raporu
-    # -------------------------------------------------------------------------
     if "population" in final_df.columns:
         zero_pop = int((pd.to_numeric(final_df["population"], errors="coerce").fillna(0) == 0).sum())
         print(f"🔎 population=0 olan satır sayısı: {zero_pop}")
 
-    dem_cols = [
-        "population",
-        "population_total",
-        "pct_age_under_5",
-        "pct_age_5_17",
-        "pct_age_18_24",
-        "pct_age_25_34",
-        "pct_age_18_34",
-        "pct_age_35_64",
-        "pct_age_65_plus",
-        "pct_hispanic",
-        "pct_nh_white",
-        "pct_nh_black",
-        "pct_nh_asian",
-        "pct_nh_multiracial",
-    ]
-    dem_cols = [c for c in dem_cols if c in final_df.columns]
+    dem_cols = [c for c in FINAL_DEMOGRAPHIC_COLS if c != "GEOID" and c in final_df.columns]
     if dem_cols:
         print("🔎 Demographic kolon NaN sayıları:")
         print(final_df[dem_cols].isna().sum().to_string())
 
-    # -------------------------------------------------------------------------
-    # 8) Kaydet
-    # -------------------------------------------------------------------------
     safe_save_csv(final_df, CRIME_OUTPUT)
 
     try:
-        preview_cols = [c for c in [
-            "GEOID", "date", "hour_range",
-            "population",
-            "pct_age_18_24",
-            "pct_age_25_34",
-            "pct_age_65_plus",
-            "pct_hispanic",
-            "pct_nh_white",
-            "pct_nh_black",
-            "pct_nh_asian",
-        ] if c in final_df.columns]
-        if preview_cols:
-            print("📌 Önizleme:")
-            print(final_df[preview_cols].tail(10).to_string(index=False))
+        preview_cols = [c for c in ["GEOID", "date", "hour_range"] + [c for c in FINAL_DEMOGRAPHIC_COLS if c != "GEOID"] if c in final_df.columns]
+        print("📌 Önizleme:")
+        print(final_df[preview_cols].tail(10).to_string(index=False))
     except Exception as e:
         print(f"ℹ️ Önizleme atlandı: {e}")
 
