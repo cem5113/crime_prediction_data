@@ -294,9 +294,13 @@ def download_recent_raw(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.
 
         query_parts = []
         for k, v in params.items():
-            query_parts.append(
-                f"{k}={str(v).replace(' ', '%20').replace(':', '%3A').replace(',', '%2C').replace('\'', '%27')}"
-            )
+            v_str = str(v)
+            v_str = v_str.replace(" ", "%20")
+            v_str = v_str.replace(":", "%3A")
+            v_str = v_str.replace(",", "%2C")
+            v_str = v_str.replace("'", "%27")
+            
+            query_parts.append(f"{k}={v_str}")
         url = SF911_API_URL + "?" + "&".join(query_parts)
 
         chunk = pd.read_json(url)
