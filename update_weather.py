@@ -104,14 +104,10 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
     if d.empty:
         cols = [
             "date",
-            "tavg", "tmin", "tmax", "prcp",
-            "temp_range", "is_rainy", "is_hot_day",
-            "prcp_lag1", "tavg_lag1", "tmax_lag1",
+            "tavg", "prcp",
+            "temp_range", "is_rainy",
             "prcp_roll3", "prcp_roll7",
-            "tavg_roll3", "tavg_roll7",
-            "tmax_roll3", "tmax_roll7",
-            "temp_anom_7d", "prcp_anom_7d",
-            "rain_streak_3d", "hot_streak_3d"
+            "temp_anom_7d"
         ]
         return pd.DataFrame(columns=cols)
 
@@ -123,7 +119,6 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
     def col(c: str) -> str:
         return lmap[c]
 
-    # tarih kolonu standardizasyonu
     if has("date"):
         d[col("date")] = to_date(d[col("date")])
     elif has("time"):
@@ -133,7 +128,6 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
     else:
         d["date"] = pd.NaT
 
-    # kolon adlarını standardize et
     ren = {}
     if has("temp_min") and not has("tmin"):
         ren[col("temp_min")] = "tmin"
@@ -147,13 +141,10 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
         ren[col("taverage")] = "tavg"
     d.rename(columns=ren, inplace=True)
 
-    # numeric'e çevir
-    for c in ["tavg", "tmin", "tmax", "prcp", "snow", "wspd", "pres"]:
+    for c in ["tavg", "tmin", "tmax", "prcp"]:
         if c in d.columns:
             d[c] = safe_numeric(d[c])
-
-    for c in ["tavg", "tmin", "tmax", "prcp"]:
-        if c not in d.columns:
+        else:
             d[c] = np.nan
 
     d["date"] = to_date(d["date"])
@@ -161,50 +152,26 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
     d = d.drop_duplicates(subset=["date"]).sort_values("date")
     d = d[(d["date"] >= win_start) & (d["date"] <= win_end)].copy()
 
-    # temel feature'lar
     d["temp_range"] = (d["tmax"] - d["tmin"]).astype(float)
     d["is_rainy"] = (safe_numeric(d["prcp"]).fillna(0) > 0).astype("Int64")
-    d["is_hot_day"] = (safe_numeric(d["tmax"]) > HOT_DAY_THRESHOLD_C).astype("Int64")
 
     d = d.sort_values("date").reset_index(drop=True)
 
-    # lag
-    d["prcp_lag1"] = d["prcp"].shift(1)
-    d["tavg_lag1"] = d["tavg"].shift(1)
-    d["tmax_lag1"] = d["tmax"].shift(1)
-
-    # rolling
     d["prcp_roll3"] = d["prcp"].shift(1).rolling(3, min_periods=1).mean()
     d["prcp_roll7"] = d["prcp"].shift(1).rolling(7, min_periods=1).mean()
-    
-    d["tavg_roll3"] = d["tavg"].shift(1).rolling(3, min_periods=1).mean()
+
     d["tavg_roll7"] = d["tavg"].shift(1).rolling(7, min_periods=1).mean()
-    
-    d["tmax_roll3"] = d["tmax"].shift(1).rolling(3, min_periods=1).mean()
-    d["tmax_roll7"] = d["tmax"].shift(1).rolling(7, min_periods=1).mean()
-    
     d["temp_anom_7d"] = d["tavg"] - d["tavg_roll7"]
-    d["prcp_anom_7d"] = d["prcp"] - d["prcp_roll7"]
-
-    # streak
-    d["rain_streak_3d"] = (
-        d["is_rainy"].fillna(0).astype(int).rolling(3, min_periods=1).sum()
-    ).astype(float)
-
-    d["hot_streak_3d"] = (
-        d["is_hot_day"].fillna(0).astype(int).rolling(3, min_periods=1).sum()
-    ).astype(float)
 
     final_cols = [
         "date",
-        "tavg", "tmin", "tmax", "prcp",
-        "temp_range", "is_rainy", "is_hot_day",
-        "prcp_lag1", "tavg_lag1", "tmax_lag1",
-        "prcp_roll3", "prcp_roll7",
-        "tavg_roll3", "tavg_roll7",
-        "tmax_roll3", "tmax_roll7",
-        "temp_anom_7d", "prcp_anom_7d",
-        "rain_streak_3d", "hot_streak_3d"
+        "tavg",
+        "prcp",
+        "temp_range",
+        "is_rainy",
+        "prcp_roll3",
+        "prcp_roll7",
+        "temp_anom_7d"
     ]
 
     for c in final_cols:
