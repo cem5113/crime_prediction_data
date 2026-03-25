@@ -1038,10 +1038,15 @@ panel["is_weekend"] = (panel["day_of_week"] >= 5).astype("int8")
 
 # ============================================================
 # ✅ CRIME-ONLY TEMPORAL / SURGE FEATURES
+#    Amaç:
+#    - gereksiz kolon şişirmeden
+#    - stacking için ek sinyal + biraz diversity üretmek
 # ============================================================
 panel = panel.sort_values(["GEOID", "slot_start_dt"]).copy()
 
+# ------------------------------------------------------------
 # 1) Son suçtan beri geçen 3 saatlik slot sayısı
+# ------------------------------------------------------------
 delta_hours = (
     (
         pd.to_datetime(panel["slot_start_dt"], errors="coerce") -
@@ -1070,7 +1075,9 @@ panel["slots_since_last_crime_range"] = (
     .fillna("no_prior")
 )
 
+# ------------------------------------------------------------
 # 2) Aynı GEOID için kısa dönem lag sayıları
+# ------------------------------------------------------------
 panel["crime_count_prev_slot"] = (
     panel.groupby("GEOID", observed=True)["y_count"]
          .shift(1)
@@ -1098,24 +1105,24 @@ panel["crime_count_prev_8slots"] = (
          .astype("float32")
 )
 
-# 3) Ani artış / surge oranları
-# Mevcut anchor feature'larını kullanıyoruz
-panel["surge_ratio_1d_7d"] = (
-    (panel["crime_count_last_1d_from_last_crime"].astype("float32") + 1.0) /
-    ((panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0) + 1.0)
-).astype("float32")
+# ------------------------------------------------------------
+# 3) Mevcut anchor feature'larından surge / trend
+# ------------------------------------------------------------
+c1 = panel["crime_count_last_1d_from_last_crime"].astype("float32")
+c3 = panel["crime_count_last_3d_from_last_crime"].astype("float32")
+c7 = panel["crime_count_last_7d_from_last_crime"].astype("float32")
 
-panel["surge_ratio_3d_7d"] = (
-    ((panel["crime_count_last_3d_from_last_crime"].astype("float32") / 3.0) + 1.0) /
-    ((panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0) + 1.0)
-).astype("float32")
+panel["surge_ratio_1d_7d"] = ((c1 + 1.0) / ((c7 / 7.0) + 1.0)).astype("float32")
+panel["surge_ratio_3d_7d"] = (((c3 / 3.0) + 1.0) / ((c7 / 7.0) + 1.0)).astype("float32")
+panel["surge_diff_1d_7d"]  = (c1 - (c7 / 7.0)).astype("float32")
 
-panel["surge_diff_1d_7d"] = (
-    panel["crime_count_last_1d_from_last_crime"].astype("float32") -
-    (panel["crime_count_last_7d_from_last_crime"].astype("float32") / 7.0)
-).astype("float32")
+# 🔹 YENİ: trend direction
+panel["trend_1d_vs_3d"] = (c1 - (c3 / 3.0)).astype("float32")
+panel["trend_3d_vs_7d"] = ((c3 / 3.0) - (c7 / 7.0)).astype("float32")
 
+# ------------------------------------------------------------
 # 4) Aynı GEOID + aynı slot için tarihsel ortalama
+# ------------------------------------------------------------
 panel["slot_roll_mean_7d"] = (
     panel.groupby(["GEOID", "hour_range"], observed=True)["y_count"]
          .rolling(7, min_periods=1)
@@ -1136,7 +1143,9 @@ panel["slot_roll_mean_28d"] = (
          .astype("float32")
 )
 
+# ------------------------------------------------------------
 # 5) Aynı hafta günü + aynı slot pattern'i
+# ------------------------------------------------------------
 panel["same_dow_slot_rate_8w"] = (
     panel.groupby(["GEOID", "day_of_week", "hour_range"], observed=True)["y_event"]
          .rolling(8, min_periods=1)
@@ -1147,10 +1156,69 @@ panel["same_dow_slot_rate_8w"] = (
          .astype("float32")
 )
 
+# ------------------------------------------------------------
 # 6) Log dönüşümlü varyantlar
+# ------------------------------------------------------------
 panel["log_prev_8slots"] = np.log1p(panel["crime_count_prev_8slots"]).astype("float32")
-panel["log_last_7d_from_last_crime"] = np.log1p(
-    panel["crime_count_last_7d_from_last_crime"].astype("float32")
+panel["log_last_7d_from_last_crime"] = np.log1p(c7).astype("float32")
+
+# ------------------------------------------------------------
+# 7) YENİ: relative risk (local vs global)
+#    Amaç: sadece lokal seviye değil, gün içindeki göreli risk de görülsün
+# ------------------------------------------------------------
+daily_global_mean = (
+    panel.groupby("date", observed=True)["y_count"]
+         .transform("mean")
+         .astype("float32")
+)
+
+daily_global_event_rate = (
+    panel.groupby("date", observed=True)["y_event"]
+         .transform("mean")
+         .astype("float32")
+)
+
+panel["global_daily_mean_ycount"] = daily_global_mean
+panel["global_daily_event_rate"] = daily_global_event_rate
+
+panel["relative_risk_7d_vs_global"] = (
+    c7 / (daily_global_mean + 1.0)
+).astype("float32")
+
+panel["relative_event_rate_vs_global"] = (
+    panel["same_dow_slot_rate_8w"].astype("float32") / (daily_global_event_rate + 1e-6)
+).astype("float32")
+
+# ------------------------------------------------------------
+# 8) YENİ: volatility / stability
+#    Amaç: stabil riskli bölge mi, spike yapan bölge mi?
+# ------------------------------------------------------------
+geo_roll_mean_7 = (
+    panel.groupby("GEOID", observed=True)["y_count"]
+         .rolling(7, min_periods=2)
+         .mean()
+         .shift(1)
+         .reset_index(level=0, drop=True)
+)
+
+geo_roll_std_7 = (
+    panel.groupby("GEOID", observed=True)["y_count"]
+         .rolling(7, min_periods=2)
+         .std()
+         .shift(1)
+         .reset_index(level=0, drop=True)
+)
+
+panel["geo_roll_mean_7"] = geo_roll_mean_7.fillna(0).astype("float32")
+panel["geo_roll_std_7"]  = geo_roll_std_7.fillna(0).astype("float32")
+
+panel["volatility_7d"] = (
+    panel["geo_roll_std_7"] / (panel["geo_roll_mean_7"] + 1.0)
+).astype("float32")
+
+# İstersen kategoriye çevrilebilir ama şimdilik sayısal kalsın
+panel["stability_score_7d"] = (
+    1.0 / (1.0 + panel["volatility_7d"])
 ).astype("float32")
 
 season_map = {12:"Winter",1:"Winter",2:"Winter",3:"Spring",4:"Spring",5:"Spring",6:"Summer",7:"Summer",8:"Summer",9:"Fall",10:"Fall",11:"Fall"}
