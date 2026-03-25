@@ -51,8 +51,12 @@ def add_neighbor_features_fallback(summary: pd.DataFrame) -> pd.DataFrame:
     log("ℹ️ Neighbor fallback: aynı date-hour_range'te diğer GEOID ortalaması kullanılacak.")
 
     base_cols = [
-        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
-        "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
+        "911_geo_last1h",
+        "911_geo_last3h",
+        "911_geo_last6h",
+        "911_geo_last24h",
+        "911_geo_last3d",
+        "911_geo_last7d",
     ]
 
     grp = summary.groupby(["date", "hour_range"], observed=True)
@@ -345,27 +349,45 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
         "911_request_count_hour_range" in df.columns or "call_count" in df.columns
     ):
         log("ℹ️ Girdi zaten summary gibi görünüyor, kolonlar normalize edilecek.")
+    
         if "call_count" not in df.columns and "911_request_count_hour_range" in df.columns:
-            df["call_count"] = pd.to_numeric(df["911_request_count_hour_range"], errors="coerce").fillna(0)
-        if "911_request_count_hour_range" not in df.columns and "call_count" in df.columns:
-            df["911_request_count_hour_range"] = pd.to_numeric(df["call_count"], errors="coerce").fillna(0)
-
+            df["call_count"] = pd.to_numeric(
+                df["911_request_count_hour_range"], errors="coerce"
+            ).fillna(0)
+    
+        if "call_count" not in df.columns:
+            df["call_count"] = 0.0
+    
         df["date"] = to_date(df["date"])
         df["GEOID"] = normalize_geoid(df["GEOID"], DEFAULT_GEOID_LEN)
         df["hour_range"] = df["hour_range"].astype("string").str.strip()
-        df = df[df["GEOID"].notna() & df["date"].notna() & df["hour_range"].isin(HOUR_ORDER)].copy()
+        df = df[
+            df["GEOID"].notna()
+            & df["date"].notna()
+            & df["hour_range"].isin(HOUR_ORDER)
+        ].copy()
+    
         if "slot_index" not in df.columns:
             df["slot_index"] = df["hour_range"].map(hour_map)
-
+    
+        # legacy uyumluluk: geri üret
+        if "911_request_count_hour_range" not in df.columns:
+            df["911_request_count_hour_range"] = pd.to_numeric(
+                df["call_count"], errors="coerce"
+            ).fillna(0)
+    
+        if "hr_cnt" not in df.columns:
+            df["hr_cnt"] = pd.to_numeric(df["call_count"], errors="coerce").fillna(0)
+    
         # günlük count yoksa üret
         if "911_request_count_daily(before_24_hours)" not in df.columns:
             day = (
-                df.groupby(["GEOID", "date"], dropna=False, observed=True)["911_request_count_hour_range"]
+                df.groupby(["GEOID", "date"], dropna=False, observed=True)["call_count"]
                 .sum()
                 .reset_index(name="911_request_count_daily(before_24_hours)")
             )
             df = df.merge(day, on=["GEOID", "date"], how="left")
-
+    
         return df
 
     # ----------------------------
@@ -672,9 +694,6 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
     # ----------------------------
     # legacy compatibility cols
     # ----------------------------
-    # ana count
-    panel["911_request_count_hour_range"] = panel["call_count"]
-
     # günlük toplam
     daily = (
         panel.groupby(["GEOID", "date"], dropna=False, observed=True)["call_count"]
@@ -689,20 +708,7 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
         .transform(lambda s: s.shift(1))
         .fillna(0)
     )
-
-    # 3h slot bazlı legacy
-    panel["911_geo_last3h"] = panel["911_prev_slot"]
-    panel["911_geo_last6h"] = grp["call_count"].transform(lambda s: s.rolling(2, min_periods=1).sum().shift(1))
-    panel["911_geo_last24h"] = panel["911_roll_1d"]
-    panel["911_geo_last3d"] = panel["911_roll_3d"]
-    panel["911_geo_last7d"] = panel["911_roll_7d"]
-
-    # 1h legacy: 3h veriden birebir çıkmaz; backward compatibility için 3h sinyalinin hafif normalize hali
-    panel["911_geo_last1h"] = (panel["911_geo_last3h"] / 3.0).astype("float32")
-
-    # yardımcı
-    panel["hr_cnt"] = panel["call_count"]
-
+    
     # fill lag-like
     lag_like_cols = [
         "911_prev_slot", "911_prev_2slot", "911_prev_8slot", "911_prev_16slot",
@@ -712,8 +718,7 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
         "911_zscore_1d",
         "911_same_slot_prev_1d", "911_same_slot_prev_3d", "911_same_slot_prev_7d",
         "911_same_slot_roll_4",
-        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d",
-        "911_request_count_daily(before_24_hours)", "daily_cnt", "hr_cnt",
+        "911_request_count_daily(before_24_hours)", "daily_cnt",
     ]
     for c in lag_like_cols:
         if c in panel.columns:
@@ -737,8 +742,7 @@ def make_standard_summary(df: pd.DataFrame) -> pd.DataFrame:
         "911_growth_prev_slot", "911_zscore_1d",
         "911_same_slot_prev_1d", "911_same_slot_prev_3d", "911_same_slot_prev_7d",
         "911_same_slot_roll_4",
-        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d",
-        "911_request_count_daily(before_24_hours)", "daily_cnt", "hr_cnt",
+        "911_request_count_daily(before_24_hours)", "daily_cnt",
     ]
     float_like_cols += [c for c in panel.columns if c.endswith("_prev_slot") or c.endswith("_roll_1d")]
     for c in sorted(set(float_like_cols)):
@@ -771,8 +775,6 @@ def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
 
     needed = [
         "GEOID", "date", "hour_range",
-        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
-        "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
     ]
     for c in needed:
         if c not in summary.columns:
@@ -814,19 +816,19 @@ def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
             "911_geo_last1h", "911_geo_last3h", "911_geo_last6h",
             "911_geo_last24h", "911_geo_last3d", "911_geo_last7d"
         ]].copy()
-
+        
         base = base.groupby(
             ["GEOID", "date", "hour_range"],
             as_index=False,
             observed=True
         ).mean(numeric_only=True)
-
+        
         merged = adj.merge(
             base.rename(columns={"GEOID": "neighbor_GEOID"}),
             on="neighbor_GEOID",
             how="left"
         )
-
+        
         agg = merged.groupby(["GEOID", "date", "hour_range"], observed=True).agg(
             **{
                 "911_neighbors_last1h": ("911_geo_last1h", "mean"),
@@ -837,9 +839,9 @@ def add_neighbor_features(summary: pd.DataFrame) -> pd.DataFrame:
                 "911_neighbors_last7d": ("911_geo_last7d", "mean"),
             }
         ).reset_index()
-
+        
         summary = summary.merge(agg, on=["GEOID", "date", "hour_range"], how="left")
-
+        
         for c in [
             "911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h",
             "911_neighbors_last24h", "911_neighbors_last3d", "911_neighbors_last7d"
@@ -933,9 +935,15 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
         merged = crime.merge(summary, on=keys, how="left")
         log("🔗 Join modu: DATE-BASED (GEOID, date, hour_range)")
         
-        if "911_request_count_hour_range" in merged.columns:
-            matched = merged["911_request_count_hour_range"].notna().sum()
-            unmatched = merged["911_request_count_hour_range"].isna().sum()
+        probe_col = None
+        for c in ["call_count", "911_request_count_hour_range"]:
+            if c in merged.columns:
+                probe_col = c
+                break
+        
+        if probe_col is not None:
+            matched = merged[probe_col].notna().sum()
+            unmatched = merged[probe_col].isna().sum()
             log(f"🔍 911 match olan satır    : {matched:,}")
             log(f"🔍 911 match olmayan satır : {unmatched:,}")
             log(f"🔍 911 match oranı         : %{(matched / len(merged) * 100):.2f}")
@@ -968,23 +976,17 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
     # 911 merge flag: fillna(0)'dan ÖNCE üret
     probe_cols = [
         c for c in [
-            "911_request_count_hour_range",
             "call_count",
             "police_calls",
             "unique_call_type",
             "priority_A_calls"
         ] if c in merged.columns
     ]
-    if probe_cols:
-        merged["has_911_match"] = merged[probe_cols].notna().any(axis=1).astype("int8")
-    else:
-        merged["has_911_match"] = 0
 
     fill_cols = [
         # ana 911 yoğunlukları
-        "911_request_count_hour_range",
         "911_request_count_daily(before_24_hours)",
-        "hr_cnt", "daily_cnt",
+        "daily_cnt",
         "call_count",
 
         # unique / agency / flag count'ları
@@ -1001,7 +1003,6 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
         "type_disturbance_count", "type_domestic_count", "type_mental_health_count", "type_weapon_count",
 
         # geo / neighbor lag'leri
-        "911_geo_last1h", "911_geo_last3h", "911_geo_last6h", "911_geo_last24h", "911_geo_last3d", "911_geo_last7d",
         "911_neighbors_last1h", "911_neighbors_last3h", "911_neighbors_last6h", "911_neighbors_last24h",
         "911_neighbors_last3d", "911_neighbors_last7d",
 
@@ -1043,13 +1044,6 @@ def merge_with_crime(crime_path: Path, summary: pd.DataFrame) -> pd.DataFrame:
     if "slots_since_last_crime" in merged.columns:
         merged["has_past_crime"] = merged["slots_since_last_crime"].notna().astype("int8")
         merged["slots_since_last_crime"] = merged["slots_since_last_crime"].fillna(9999)
-    
-    # 3. last_crime_dt → modelde kullanma (isteğe bağlı drop)
-    if "last_crime_dt" in merged.columns:
-        # sadece debug için tutmak istersen bırak
-        # modelde kullanmayacaksan drop et:
-        # merged = merged.drop(columns=["last_crime_dt"])
-        pass
     
     # -------------------------------------------------
     
