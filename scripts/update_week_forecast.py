@@ -28,12 +28,8 @@ today = datetime.now(SF_TZ).date()
 
 # ======================
 # WINDOW
-# dün + bugün + ileri 7 gün istiyorsan:
-# start_date = today - timedelta(days=1)
-# end_date   = today + timedelta(days=6)
-
-# 48 saat geriden başlasın istiyorsan:
-start_date = today - timedelta(days=2)
+# 72saat geriden başlasın istiyorsan:
+start_date = today - timedelta(days=3)
 end_date = today + timedelta(days=6)
 
 # ======================
