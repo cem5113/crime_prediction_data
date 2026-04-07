@@ -26,8 +26,13 @@ os.makedirs(CRIME_DATA_DIR, exist_ok=True)
 SF_TZ = ZoneInfo("America/Los_Angeles")
 now = datetime.now(SF_TZ)
 today = now.date()
-tomorrow = today + timedelta(days=1)
-week_end = tomorrow + timedelta(days=6)
+
+# ======================
+# WINDOW
+# -2 günden başlayıp +6 güne kadar = toplam 9 gün
+# ======================
+start_date = today - timedelta(days=2)
+end_date = today + timedelta(days=6)
 
 # ======================
 # API request
@@ -72,15 +77,17 @@ df["day"] = pd.to_datetime(df["date"]).dt.day_name()
 df["is_rainy"] = (df["prcp"].fillna(0) > 0).astype(int)
 
 HOT_C = 25.0
-HOT_F = HOT_C * 9/5 + 32
+HOT_F = HOT_C * 9 / 5 + 32
 hot_thr = HOT_F if WX_UNIT.lower() == "us" else HOT_C
 df["is_hot"] = (df["tmax"] > hot_thr).astype(int)
 
-cols = ["date","tavg","tmin","tmax","prcp","temp_range","day","is_rainy","is_hot"]
+cols = ["date", "tavg", "tmin", "tmax", "prcp", "temp_range", "day", "is_rainy", "is_hot"]
 
-df_week = df[(df["date"] >= tomorrow) & (df["date"] <= week_end)][cols].copy()
+# -2 gün ... +6 gün
+df_week = df[(df["date"] >= start_date) & (df["date"] <= end_date)][cols].copy()
 
 df_week.to_csv(out_path, index=False)
 
 print(f"✅ week.csv üretildi → {out_path}")
-print(df_week.head())
+print(f"📅 Aralık: {start_date} → {end_date} | Gün sayısı: {len(df_week)}")
+print(df_week.head(10))
