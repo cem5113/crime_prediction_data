@@ -24,22 +24,25 @@ os.makedirs(CRIME_DATA_DIR, exist_ok=True)
 # SF timezone
 # ======================
 SF_TZ = ZoneInfo("America/Los_Angeles")
-now = datetime.now(SF_TZ)
-today = now.date()
+today = datetime.now(SF_TZ).date()
 
 # ======================
 # WINDOW
-# -2 günden başlayıp +6 güne kadar = toplam 9 gün
-# ======================
+# dün + bugün + ileri 7 gün istiyorsan:
+# start_date = today - timedelta(days=1)
+# end_date   = today + timedelta(days=6)
+
+# 48 saat geriden başlasın istiyorsan:
 start_date = today - timedelta(days=2)
 end_date = today + timedelta(days=6)
 
 # ======================
 # API request
+# tarih aralığını URL içine VER
 # ======================
 url = (
     "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/"
-    f"timeline/{WX_LOCATION}"
+    f"timeline/{WX_LOCATION}/{start_date}/{end_date}"
     f"?unitGroup={WX_UNIT}&key={API_KEY}&contentType=json"
 )
 
@@ -67,10 +70,8 @@ for k, v in rename_map.items():
 df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
 df = df.dropna(subset=["date"]).sort_values("date")
 
-df["tavg"] = pd.to_numeric(df.get("tavg"), errors="coerce")
-df["tmin"] = pd.to_numeric(df.get("tmin"), errors="coerce")
-df["tmax"] = pd.to_numeric(df.get("tmax"), errors="coerce")
-df["prcp"] = pd.to_numeric(df.get("prcp"), errors="coerce")
+for c in ["tavg", "tmin", "tmax", "prcp"]:
+    df[c] = pd.to_numeric(df.get(c), errors="coerce")
 
 df["temp_range"] = df["tmax"] - df["tmin"]
 df["day"] = pd.to_datetime(df["date"]).dt.day_name()
@@ -81,10 +82,12 @@ HOT_F = HOT_C * 9 / 5 + 32
 hot_thr = HOT_F if WX_UNIT.lower() == "us" else HOT_C
 df["is_hot"] = (df["tmax"] > hot_thr).astype(int)
 
-cols = ["date", "tavg", "tmin", "tmax", "prcp", "temp_range", "day", "is_rainy", "is_hot"]
+cols = [
+    "date", "tavg", "tmin", "tmax", "prcp",
+    "temp_range", "day", "is_rainy", "is_hot"
+]
 
-# -2 gün ... +6 gün
-df_week = df[(df["date"] >= start_date) & (df["date"] <= end_date)][cols].copy()
+df_week = df[cols].copy()
 
 df_week.to_csv(out_path, index=False)
 
