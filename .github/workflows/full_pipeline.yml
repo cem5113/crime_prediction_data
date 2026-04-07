@@ -916,6 +916,43 @@ jobs:
 
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
+      - name: Convert sf_crime_x.csv to sf_crime_x.parquet
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+          GEOID_LEN: "11"
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pandas as pd
+
+          D = os.environ["CRIME_DATA_DIR"]
+          GEOID_LEN = int(os.environ.get("GEOID_LEN", "11"))
+
+          csvp = os.path.join(D, "sf_crime_x.csv")
+          parp = os.path.join(D, "sf_crime_x.parquet")
+
+          df = pd.read_csv(csvp, low_memory=False)
+
+          if "GEOID" in df.columns:
+              df["GEOID"] = (
+                  df["GEOID"]
+                  .astype(str)
+                  .str.replace(r"\D", "", regex=True)
+                  .str.zfill(GEOID_LEN)
+              )
+
+          # datetime varsa mümkün olduğunca datetime'a çevir
+          for c in ["datetime", "date"]:
+              if c in df.columns:
+                  df[c] = pd.to_datetime(df[c], errors="coerce")
+
+          df.to_parquet(parp, index=False, engine="pyarrow")
+          print("✅ wrote", parp, "shape=", df.shape)
+          PY
+
+          ls -lh "${CRIME_DATA_DIR}/sf_crime_x.csv" "${CRIME_DATA_DIR}/sf_crime_x.parquet" || true
+
       - name: 10.9) Quick verify (after incremental features)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         run: |
@@ -953,6 +990,8 @@ jobs:
           path: |
             ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_population.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_01.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_02.csv
@@ -990,7 +1029,7 @@ jobs:
           echo "Files check:"
           ls -lah "${CRIME_DATA_DIR}/week.csv" || { echo "❌ week.csv yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
-          ls -lah "${CRIME_DATA_DIR}/sf_crime_x.csv" || { echo "❌ sf_crime_x.csv yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_x.parquet" || { echo "❌ sf_crime_x.parquet yok"; exit 2; }
 
           if ! command -v rclone >/dev/null; then
             echo "rclone not found, installing..."
@@ -1009,7 +1048,7 @@ jobs:
           echo "Uploading files to Google Drive..."
           rclone copyto "${CRIME_DATA_DIR}/week.csv"            "${DEST}/week.csv"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.csv"      "${DEST}/sf_crime_x.csv"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"      "${DEST}/sf_crime_x.parquet"
 
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 20 || true
