@@ -70,6 +70,58 @@ GH_TOKEN = os.getenv("GH_TOKEN", "")
 ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output")
 
 # Helpers
+def normalize_geoid_safe(x, width=DEFAULT_GEOID_LEN):
+    """
+    San Francisco tract GEOID için güvenli normalize.
+    Beklenen doğru format: 11 hane, çoğunlukla 06075 ile başlar.
+
+    Düzeltmeye çalıştığı bozuk örnekler:
+      6075010101   -> 06075010101
+      60750101010  -> 06075010101
+      06075010101  -> 06075010101
+      6075010101.0 -> 06075010101
+    """
+    try:
+        if pd.isna(x):
+            return pd.NA
+
+        s = str(x).strip()
+
+        # decimal sonu temizle
+        s = re.sub(r"\.0+$", "", s)
+
+        # sadece rakamları tut
+        s = re.sub(r"\D+", "", s)
+
+        if s == "":
+            return pd.NA
+
+        # zaten doğru 11 hane ise
+        if len(s) == width and s.startswith("0"):
+            return pd.NA if s == "0" * width else s
+
+        # baştaki 0 düşmüşse: 10 hane -> sola 0 ekle
+        if len(s) == width - 1:
+            s2 = s.zfill(width)
+            return pd.NA if s2 == "0" * width else s2
+
+        # yanlışlıkla *10 olmuşsa:
+        # 60750101010 -> int//10 -> 6075010101 -> zfill -> 06075010101
+        if len(s) == width and (not s.startswith("0")) and s.endswith("0"):
+            s2 = str(int(s) // 10).zfill(width)
+            return pd.NA if s2 == "0" * width else s2
+
+        # fazla uzunsa bozulmuş kabul et
+        if len(s) > width:
+            return pd.NA
+
+        # daha kısa ama yine de doldurulabiliyorsa son çare
+        s2 = s.zfill(width)
+        return pd.NA if s2 == "0" * width else s2
+
+    except Exception:
+        return pd.NA
+        
 def _to_date_series(x):
     try:
         s = pd.to_datetime(x, utc=True, errors="coerce").dt.tz_convert(SF_TZ).dt.date
@@ -346,11 +398,10 @@ if os.path.exists(blocks_path):
         gdf_blocks = gpd.read_file(blocks_path)
         # GEOID normalize
         if "GEOID" in gdf_blocks.columns:
-            gdf_blocks["GEOID"] = (
-                gdf_blocks["GEOID"].astype(str)
-                .str.extract(r"(\d+)")[0]
-                .str[:DEFAULT_GEOID_LEN]
-            )
+            gdf_blocks["GEOID"] = gdf_blocks["GEOID"].apply(normalize_geoid_safe)
+            print("🧪 gdf_blocks GEOID head:", gdf_blocks["GEOID"].head(10).tolist())
+            print("🧪 gdf_blocks GEOID na_rate:", float(gdf_blocks["GEOID"].isna().mean()))
+            print("🧪 gdf_blocks GEOID starts_06075:", float(gdf_blocks["GEOID"].astype("string").str.startswith("06075", na=False).mean()))
         else:
             print(f"⚠️ blocks dosyasında 'GEOID' kolonu yok: {blocks_path}")
             gdf_blocks = None
@@ -581,7 +632,10 @@ if raw_new is not None and not raw_new.empty:
         gdfp = gpd.GeoDataFrame(df_new, geometry=gpd.points_from_xy(df_new["longitude"], df_new["latitude"]), crs="EPSG:4326")
         gdfp = gpd.sjoin(gdfp, gdf_blocks[["GEOID","geometry"]], how="left", predicate="within")
         gdfp = gdfp.drop(columns=["geometry","index_right"], errors="ignore")
-        gdfp["GEOID"] = gdfp["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+        gdfp["GEOID"] = gdfp["GEOID"].apply(normalize_geoid_safe)
+        print("🧪 gdfp GEOID head:", gdfp["GEOID"].head(10).tolist())
+        print("🧪 gdfp GEOID na_rate:", float(gdfp["GEOID"].isna().mean()))
+        print("🧪 gdfp GEOID starts_06075:", float(gdfp["GEOID"].astype("string").str.startswith("06075", na=False).mean()))
         df_new = pd.DataFrame(gdfp)
     else:
         # # lat/lon yoksa GEOID eşlemesi mümkün değil; GEOID boş kalabilir.
@@ -609,7 +663,10 @@ if "id" not in df_all.columns:
     df_all["id"] = np.nan
 df_all["id"] = df_all["id"].astype(str)
 if "GEOID" in df_all.columns:
-    df_all["GEOID"] = df_all["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    df_all["GEOID"] = df_all["GEOID"].apply(normalize_geoid_safe)
+    print("🧪 df_all GEOID head:", df_all["GEOID"].head(10).tolist())
+    print("🧪 df_all GEOID na_rate:", float(df_all["GEOID"].isna().mean()))
+    print("🧪 df_all GEOID starts_06075:", float(df_all["GEOID"].astype("string").str.startswith("06075", na=False).mean()))
 
 # ============================================================
 # ✅ DUPLICATE GUARD (reingest overlap güvenliği)
@@ -714,14 +771,8 @@ with pd.option_context("display.max_columns", 200, "display.width", 200):
     print(df_all.sample(n=min(5, len(df_all)), random_state=42))
 
 def _safe_zfill_geoid(x, width=DEFAULT_GEOID_LEN):
-    try:
-        s = str(x)
-        s = re.sub(r"\.0$", "", s)
-        s = re.sub(r"\D", "", s)
-        return s.zfill(width)
-    except Exception:
-        return np.nan
-
+    return normalize_geoid_safe(x, width=width)
+    
 # --- GEOID standard (yeni kolon) ---
 if "GEOID" in df_all.columns:
     df_all["GEOID_std"] = df_all["GEOID"].apply(_safe_zfill_geoid)
@@ -832,7 +883,7 @@ def add_last_crime_anchor_features(panel_df: pd.DataFrame, event_df: pd.DataFram
             out[c] = 0 if c != "last_crime_dt" else pd.NaT
         return out
 
-    ev["GEOID"] = ev["GEOID"].astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    ev["GEOID"] = ev["GEOID"].apply(normalize_geoid_safe)
     ev["datetime"] = pd.to_datetime(ev["datetime"], errors="coerce")
     ev = ev.dropna(subset=["GEOID", "datetime"]).copy()
 
@@ -974,7 +1025,7 @@ slot_y["Y_label"] = slot_y["y_event"].astype("int8")
 
 # 3) FULL GRID = tüm GEOID × tüm date × 8 hour_range
 all_geoids = (
-    panel_evt["GEOID"].dropna().astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
+    panel_evt["GEOID"].dropna().astype(str).apply(normalize_geoid_safe)
     .dropna().unique()
 )
 
