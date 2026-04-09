@@ -70,6 +70,15 @@ GH_TOKEN = os.getenv("GH_TOKEN", "")
 ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output")
 
 # Helpers
+def _safe_zfill_geoid(x, width=DEFAULT_GEOID_LEN):
+    try:
+        s = str(x)
+        s = re.sub(r"\.0$", "", s)   
+        s = re.sub(r"\D", "", s)    
+        return s.zfill(width)      
+    except Exception:
+        return np.nan
+        
 def _to_date_series(x):
     try:
         s = pd.to_datetime(x, utc=True, errors="coerce").dt.tz_convert(SF_TZ).dt.date
