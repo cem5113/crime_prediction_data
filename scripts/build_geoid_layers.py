@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # ============================================================
 # PATH AYARLARI
 # ============================================================
-BASE_DIR = "/content/drive/MyDrive/crime_inputs"
+BASE_DIR = os.environ.get("CRIME_DATA_DIR", "/content/drive/MyDrive/crime_inputs")
 
 INPUT_PATHS = [
     os.path.join(BASE_DIR, "sf_crime_09.parquet"),
@@ -40,7 +40,6 @@ INPUT_PATHS = [
 OUT_PROFILE = os.path.join(BASE_DIR, "geoid_profile.parquet")
 OUT_SNAPSHOT = os.path.join(BASE_DIR, "geoid_dashboard_snapshot.parquet")
 OUT_DEBUG_JSON = os.path.join(BASE_DIR, "geoid_layer_build_debug.json")
-
 
 # ============================================================
 # YARDIMCI FONKSİYONLAR
@@ -122,8 +121,12 @@ def normalize_hour_range(x):
 
     return x
 
-
 def load_main_panel() -> Tuple[pd.DataFrame, str]:
+    print(f"🔎 BASE_DIR={BASE_DIR}")
+    print("🔎 INPUT_PATHS:")
+    for p in INPUT_PATHS:
+        print("   -", p, "| exists =", os.path.exists(p))
+
     for p in INPUT_PATHS:
         if os.path.exists(p):
             if p.endswith(".parquet"):
@@ -131,11 +134,21 @@ def load_main_panel() -> Tuple[pd.DataFrame, str]:
             else:
                 df = pd.read_csv(p)
             return df, p
+
+    existing = []
+    if os.path.isdir(BASE_DIR):
+        try:
+            existing = sorted(os.listdir(BASE_DIR))[:50]
+        except Exception:
+            existing = []
+
     raise FileNotFoundError(
-        f"Ana panel bulunamadı. Beklenen yollardan hiçbiri yok: {INPUT_PATHS}"
+        "Ana panel bulunamadı.\n"
+        f"BASE_DIR={BASE_DIR}\n"
+        f"Beklenen yollar={INPUT_PATHS}\n"
+        f"BASE_DIR ilk dosyalar={existing}"
     )
-
-
+   
 def aggregate_static_feature(g: pd.core.groupby.SeriesGroupBy, how: str):
     if how == "median":
         return g.median()
