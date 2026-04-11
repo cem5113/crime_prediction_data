@@ -916,6 +916,17 @@ jobs:
 
           ls -lh "${CRIME_DATA_DIR}/sf_crime_09.csv" "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
+      - name: Build GEOID profile layers
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
+        run: |
+          set -euo pipefail
+          python -u scripts/build_geoid_layers.py
+
+          ls -lh "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
+          ls -lh "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" || { echo "❌ geoid_dashboard_snapshot.parquet yok"; exit 2; }
+          
       - name: Convert sf_crime_x.csv to sf_crime_x.parquet
         if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
@@ -966,12 +977,14 @@ jobs:
             sf_crime_01.csv sf_crime_02.csv sf_crime_03.csv sf_crime_04.csv sf_crime_05.csv sf_crime_06.csv sf_crime_07.csv sf_crime_08.csv sf_crime_09.csv \
             sf_911_last_5_year.csv sf_311_last_5_years.csv \
             sf_crime_grid_full_labeled.csv \
-            neighbors.csv
+            neighbors.csv \
+            geoid_profile.parquet \
+            geoid_dashboard_snapshot.parquet
           do
             p="${CRIME_DATA_DIR}/$f"
             if [ -f "$p" ]; then
               echo "✅ $f"
-              head -n 3 "$p" || true
+              ls -lh "$p" || true
             else
               echo "⚠️ missing: $f"
             fi
@@ -1030,6 +1043,8 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/week.csv" || { echo "❌ week.csv yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.parquet" || { echo "❌ sf_crime_x.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" || { echo "❌ geoid_dashboard_snapshot.parquet yok"; exit 2; }
 
           if ! command -v rclone >/dev/null; then
             echo "rclone not found, installing..."
@@ -1046,9 +1061,11 @@ jobs:
           DEST="gdrive:crime_inputs"
 
           echo "Uploading files to Google Drive..."
-          rclone copyto "${CRIME_DATA_DIR}/week.csv"            "${DEST}/week.csv"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet" "${DEST}/sf_crime_09.parquet"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"      "${DEST}/sf_crime_x.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/week.csv"                         "${DEST}/week.csv"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"              "${DEST}/sf_crime_09.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"               "${DEST}/sf_crime_x.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"            "${DEST}/geoid_profile.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
 
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 20 || true
