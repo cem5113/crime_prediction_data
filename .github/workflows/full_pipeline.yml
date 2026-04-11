@@ -922,6 +922,9 @@ jobs:
           CRIME_DATA_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
+          echo "CRIME_DATA_DIR=${CRIME_DATA_DIR}"
+          ls -lah "${CRIME_DATA_DIR}" | sed -n '1,160p' || true
+
           python -u scripts/build_geoid_layers.py
 
           ls -lh "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
@@ -1001,34 +1004,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
           path: |
-            ${{ env.CRIME_DATA_DIR }}/sf_crime.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
-            ${{ env.CRIME_DATA_DIR }}/sf_population.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_01.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_02.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_03.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_04.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_05.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_06.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_07.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_08.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
-            ${{ env.CRIME_DATA_DIR }}/sf_crime_grid_full_labeled.csv
-            ${{ env.CRIME_DATA_DIR }}/neighbors.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year_y.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years_y.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_bus_stops_with_geoid.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_train_stops_with_geoid.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_pois_cleaned_with_geoid.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years.csv
-            ${{ env.CRIME_DATA_DIR }}/sf_weather_5years_y.csv
             ${{ env.CRIME_DATA_DIR }}/week.csv
-            ${{ env.CRIME_DATA_DIR }}/*.geojson
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
+            ${{ env.CRIME_DATA_DIR }}/geoid_profile.parquet
+            ${{ env.CRIME_DATA_DIR }}/geoid_dashboard_snapshot.parquet
 
       - name: Upload selected outputs to Google Drive (overwrite)
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -1066,6 +1046,5 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"               "${DEST}/sf_crime_x.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"            "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
-
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 20 || true
