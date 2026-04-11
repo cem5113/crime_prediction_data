@@ -1007,6 +1007,7 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/week.csv
             ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x_harm.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_profile.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_dashboard_snapshot.parquet
 
@@ -1023,6 +1024,7 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/week.csv" || { echo "❌ week.csv yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.parquet" || { echo "❌ sf_crime_x.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_crime_x_harm.parquet" || { echo "❌ sf_crime_x_harm.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" || { echo "❌ geoid_dashboard_snapshot.parquet yok"; exit 2; }
 
@@ -1042,9 +1044,11 @@ jobs:
 
           echo "Uploading files to Google Drive..."
           rclone copyto "${CRIME_DATA_DIR}/week.csv"                         "${DEST}/week.csv"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"              "${DEST}/sf_crime_09.parquet"
-          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"               "${DEST}/sf_crime_x.parquet"
-          rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"            "${DEST}/geoid_profile.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"             "${DEST}/sf_crime_09.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"              "${DEST}/sf_crime_x.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_crime_x_harm.parquet"         "${DEST}/sf_crime_x_harm.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
+
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 20 || true
