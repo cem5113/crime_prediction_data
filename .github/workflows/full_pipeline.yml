@@ -1043,7 +1043,9 @@ jobs:
           DEST="gdrive:crime_inputs"
 
           echo "Uploading files to Google Drive..."
+          echo "Uploading files to Google Drive..."
           rclone copyto "${CRIME_DATA_DIR}/week.csv"                         "${DEST}/week.csv"
+          rclone copyto "${CRIME_DATA_DIR}/week.parquet"                    "${DEST}/week.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"             "${DEST}/sf_crime_09.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"              "${DEST}/sf_crime_x.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
