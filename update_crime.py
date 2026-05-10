@@ -982,10 +982,39 @@ slot_y["y_event"] = (slot_y["y_count"] > 0).astype("int8")
 slot_y["Y_label"] = slot_y["y_event"].astype("int8")
 
 # 3) FULL GRID = tüm GEOID × tüm date × 8 hour_range
-all_geoids = (
-    panel_evt["GEOID"].dropna().astype(str).str.extract(r"(\d+)")[0].str[:DEFAULT_GEOID_LEN]
-    .dropna().unique()
-)
+
+if gdf_blocks is not None and "GEOID" in gdf_blocks.columns:
+
+    all_geoids = (
+        gdf_blocks["GEOID"]
+        .dropna()
+        .astype(str)
+        .str.extract(r"(\d+)")[0]
+        .str[:DEFAULT_GEOID_LEN]
+        .dropna()
+        .unique()
+    )
+
+    all_geoids = sorted(all_geoids)
+
+    print(f"🧭 GEOID evreni boundary dosyasından alındı: {len(all_geoids)} GEOID")
+
+else:
+
+    # fallback
+    all_geoids = (
+        panel_evt["GEOID"]
+        .dropna()
+        .astype(str)
+        .str.extract(r"(\d+)")[0]
+        .str[:DEFAULT_GEOID_LEN]
+        .dropna()
+        .unique()
+    )
+
+    all_geoids = sorted(all_geoids)
+
+    print(f"⚠️ Boundary GEOID bulunamadı → event tabanlı GEOID kullanıldı: {len(all_geoids)}")
 
 dmin = panel_evt["date"].min()
 dmax = panel_evt["date"].max()
