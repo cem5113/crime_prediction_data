@@ -302,7 +302,7 @@ jobs:
           ARTIFACT_NAME: sf-crime-pipeline-output
           WORKFLOW_NAME: Full SF Crime Pipeline
           TARGET_FILE: sf_911_last_5_year.parquet
-          OUT_DIR: crime_prediction_data
+          OUT_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
       
@@ -351,7 +351,7 @@ jobs:
           ARTIFACT_NAME: sf-crime-pipeline-output
           WORKFLOW_NAME: Full SF Crime Pipeline
           TARGET_FILE: sf_311_last_5_years_y.parquet
-          OUT_DIR: crime_prediction_data
+          OUT_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
           mkdir -p "${OUT_DIR}"
@@ -362,9 +362,12 @@ jobs:
 
           for RID in ${RUNS}; do
             rm -rf "_prev/$RID" && mkdir -p "_prev/$RID"
+
             if gh run download -R "${GITHUB_REPOSITORY}" "$RID" \
               -n "${ARTIFACT_NAME}" -D "_prev/$RID" >/dev/null 2>&1; then
+
               F=$(find "_prev/$RID" -type f -iname "${TARGET_FILE}" | head -n1 || true)
+
               if [ -n "${F:-}" ]; then
                 cp -f "$F" "${OUT_DIR}/${TARGET_FILE}"
                 echo "✅ Bulundu: ${OUT_DIR}/${TARGET_FILE}"
@@ -382,7 +385,7 @@ jobs:
           ARTIFACT_NAME: sf-crime-pipeline-output
           WORKFLOW_NAME: Full SF Crime Pipeline
           TARGET_FILE: week.parquet
-          OUT_DIR: crime_prediction_data
+          OUT_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
           mkdir -p "${OUT_DIR}"
@@ -1169,6 +1172,8 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.parquet" || { echo "❌ sf_crime_x.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_911_last_5_year.parquet" || { echo "❌ sf_911_last_5_year.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_911_last_5_year_y.parquet" || { echo "❌ sf_911_last_5_year_y.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_311_last_5_years_y.parquet" || { echo "❌ sf_311_last_5_years_y.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_311_last_5_years.parquet" || { echo "❌ sf_311_last_5_years.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" || { echo "❌ geoid_dashboard_snapshot.parquet yok"; exit 2; }
 
@@ -1194,6 +1199,8 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"              "${DEST}/sf_crime_x.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_911_last_5_year.parquet"      "${DEST}/sf_911_last_5_year.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_911_last_5_year_y.parquet"    "${DEST}/sf_911_last_5_year_y.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_311_last_5_years_y.parquet" "${DEST}/sf_311_last_5_years_y.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_311_last_5_years.parquet"   "${DEST}/sf_311_last_5_years.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
 
