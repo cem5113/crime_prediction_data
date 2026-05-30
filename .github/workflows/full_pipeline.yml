@@ -28,6 +28,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CRIME_DATA_DIR: ${{ github.workspace }}
+  WRITE_BASE_TO_REPO: "1"
   GEOID_LEN: "11"
   ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
   DEMOG_WHITELIST: ${{ vars.DEMOG_WHITELIST || '' }}
@@ -1008,6 +1009,8 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/week.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_x.csv
+            ${{ env.CRIME_DATA_DIR }}/sf_crime_y.csv
             ${{ env.CRIME_DATA_DIR }}/geoid_profile.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_dashboard_snapshot.parquet
 
@@ -1050,6 +1053,23 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"              "${DEST}/sf_crime_x.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
+
+      - name: Commit updated crime base files
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          echo "Files before commit:"
+          ls -lh sf_crime_x.csv sf_crime_y.csv || true
+          ls -lh crime_prediction_data/sf_crime_x.csv crime_prediction_data/sf_crime_y.csv || true
+
+          git add sf_crime_x.csv sf_crime_y.csv crime_prediction_data/sf_crime_x.csv crime_prediction_data/sf_crime_y.csv
+
+          git commit -m "Update crime base datasets" || echo "No changes to commit"
+          git push
 
           echo "✅ Upload complete → ${DEST}"
           rclone ls "${DEST}" | tail -n 20 || true
