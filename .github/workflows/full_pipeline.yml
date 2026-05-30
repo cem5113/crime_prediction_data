@@ -278,6 +278,56 @@ jobs:
           if [ -z "${FOUND}" ]; then
             echo "ℹ️ ${TARGET_FILE} önceki artifact’larda bulunamadı; update_crime.py release fallback kullanacak."
           fi
+
+      # Prefetch sf_911_last_5_year.parquet
+      - name: 00.1) Prefetch sf_911_last_5_year.parquet from previous successful run (artifact)
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: sf-crime-pipeline-output
+          WORKFLOW_NAME: Full SF Crime Pipeline
+          TARGET_FILE: sf_911_last_5_year.parquet
+          OUT_DIR: crime_prediction_data
+        run: |
+          set -euo pipefail
+      
+          mkdir -p "${OUT_DIR}"
+      
+          if [ -f "${OUT_DIR}/${TARGET_FILE}" ]; then
+            echo "ℹ️ ${OUT_DIR}/${TARGET_FILE} zaten var, indirme atlandı."
+            exit 0
+          fi
+      
+          mkdir -p _prev
+          FOUND=""
+      
+          RUNS=$(gh run list -R "${GITHUB_REPOSITORY}" \
+                  --workflow "${WORKFLOW_NAME}" --status success \
+                  -L 10 --json databaseId -q '.[].databaseId' || true)
+      
+          for RID in ${RUNS}; do
+            echo "🔎 Run #$RID içinde ${TARGET_FILE} aranıyor…"
+      
+            rm -rf "_prev/$RID"
+            mkdir -p "_prev/$RID"
+      
+            if gh run download -R "${GITHUB_REPOSITORY}" "$RID" \
+                 -n "${ARTIFACT_NAME}" -D "_prev/$RID" >/dev/null 2>&1; then
+      
+              F=$(find "_prev/$RID" -type f -iname "${TARGET_FILE}" | head -n1 || true)
+      
+              if [ -n "${F:-}" ]; then
+                cp -f "$F" "${OUT_DIR}/${TARGET_FILE}"
+                echo "✅ Bulundu ve kopyalandı: $F → ${OUT_DIR}/${TARGET_FILE}"
+                FOUND="yes"
+                break
+              fi
+            fi
+          done
+      
+          if [ -z "${FOUND}" ]; then
+            echo "ℹ️ ${TARGET_FILE} bulunamadı; update_911.py CSV fallback kullanacak."
+          fi
       # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
       # ---- PIPELINE ----
@@ -1009,6 +1059,8 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/week.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_09.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year_y.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_profile.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_dashboard_snapshot.parquet
 
@@ -1026,6 +1078,8 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/week.parquet" || { echo "❌ week.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || { echo "❌ sf_crime_09.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/sf_crime_x.parquet" || { echo "❌ sf_crime_x.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_911_last_5_year.parquet" || { echo "❌ sf_911_last_5_year.parquet yok"; exit 2; }
+          ls -lah "${CRIME_DATA_DIR}/sf_911_last_5_year_y.parquet" || { echo "❌ sf_911_last_5_year_y.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_profile.parquet" || { echo "❌ geoid_profile.parquet yok"; exit 2; }
           ls -lah "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" || { echo "❌ geoid_dashboard_snapshot.parquet yok"; exit 2; }
 
@@ -1049,6 +1103,8 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/week.parquet"                    "${DEST}/week.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_09.parquet"             "${DEST}/sf_crime_09.parquet"
           rclone copyto "${CRIME_DATA_DIR}/sf_crime_x.parquet"              "${DEST}/sf_crime_x.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_911_last_5_year.parquet"      "${DEST}/sf_911_last_5_year.parquet"
+          rclone copyto "${CRIME_DATA_DIR}/sf_911_last_5_year_y.parquet"    "${DEST}/sf_911_last_5_year_y.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
 
