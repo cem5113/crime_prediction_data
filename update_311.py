@@ -69,7 +69,10 @@ SAVE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 RAW_311_NAME_Y = os.getenv("RAW_311_NAME_Y", "sf_311_last_5_years_y.csv")
+RAW_311_PARQUET = os.getenv("RAW_311_PARQUET", "sf_311_last_5_years_y.parquet")
+
 AGG_BASENAME = os.getenv("AGG_311_NAME", "sf_311_last_5_years.csv")
+AGG_PARQUET = os.getenv("AGG_311_PARQUET", "sf_311_last_5_years.parquet")
 AGG_ALIAS = os.getenv("AGG_311_ALIAS", "sf_311_last_5_years_3h.csv")
 
 LEGACY_311_Y = os.getenv("LEGACY_311_Y", "sf_311_last_5_year_y.csv")
@@ -255,12 +258,16 @@ def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
 
 def resolve_existing_raw_path():
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    target_names = [RAW_311_NAME_Y, LEGACY_311_Y]
+    target_names = [
+        RAW_311_PARQUET,
+        RAW_311_NAME_Y,
+        LEGACY_311_Y,
+    ]
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
             return False
-        if p.suffix.lower() != ".csv":
+        if p.suffix.lower() not in [".csv", ".parquet"]:
             return False
         if is_lfs_pointer_file(p):
             return False
@@ -311,11 +318,15 @@ def resolve_existing_raw_path():
     print(f"ℹ️ Mevcut 311 ham CSV yok; oluşturulacak: {preferred.resolve()}")
     return str(preferred)
 
-
 def load_existing_raw(path):
     if not os.path.exists(path):
         return pd.DataFrame()
-    df = pd.read_csv(path, dtype={"GEOID": str}, low_memory=False)
+    if str(path).lower().endswith(".parquet"):
+        df = pd.read_parquet(path)
+        if "GEOID" in df.columns:
+            df["GEOID"] = df["GEOID"].astype(str)
+    else:
+        df = pd.read_csv(path, dtype={"GEOID": str}, low_memory=False)
     if "index_right" in df.columns:
         df = df.drop(columns=["index_right"])
     if "datetime" in df.columns:
@@ -711,6 +722,15 @@ def main():
 
         save_atomic(df_raw, raw_path)
         print(f"✅ Ham (5y/chunk) kaydedildi: {os.path.abspath(raw_path)}")
+        
+        raw_parquet_path = os.path.join(SAVE_DIR, RAW_311_PARQUET)
+        df_raw.to_parquet(
+            raw_parquet_path,
+            index=False,
+            engine="pyarrow",
+            compression="snappy",
+        )
+        print(f"💾 Ham 311 parquet yazıldı: {os.path.abspath(raw_parquet_path)}")
 
         try:
             save_atomic(df_raw, os.path.join(SAVE_DIR, RAW_311_NAME_Y))
@@ -750,6 +770,15 @@ def main():
 
     save_atomic(slot_cur, agg_path)
     save_atomic(slot_cur, os.path.join(SAVE_DIR, AGG_BASENAME))
+    
+    agg_parquet_path = os.path.join(SAVE_DIR, AGG_PARQUET)
+    slot_cur.to_parquet(
+        agg_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+    print(f"💾 311 özet parquet yazıldı: {os.path.abspath(agg_parquet_path)}")
     if AGG_ALIAS and AGG_ALIAS != AGG_BASENAME:
         save_atomic(slot_cur, os.path.join(SAVE_DIR, AGG_ALIAS))
 
