@@ -99,9 +99,16 @@ OUT_DIR = Path(os.getenv("CRIME_DATA_DIR", str(Path(BASE_DIR)))).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCAL_NAME = "sf_911_last_5_year.csv"
+LOCAL_PARQUET_NAME = "sf_911_last_5_year.parquet"
+
 local_summary_path = OUT_DIR / LOCAL_NAME
+local_parquet_path = OUT_DIR / LOCAL_PARQUET_NAME
+
 Y_NAME = "sf_911_last_5_year_y.csv"
+Y_PARQUET_NAME = "sf_911_last_5_year_y.parquet"
+
 y_summary_path = OUT_DIR / Y_NAME
+y_parquet_path = OUT_DIR / Y_PARQUET_NAME
 
 merged_output_path = Path(os.getenv("DAILY_OUT", str(OUT_DIR / "sf_crime_01.csv")))
 if not merged_output_path.is_absolute():
@@ -324,8 +331,15 @@ def _fmt_hour_range(hr):
     return f"{a:02d}-{b:02d}"
 
 def summary_from_local(path: Path | str, min_date=None) -> pd.DataFrame:
+    path = Path(path)
     log(f"📥 Yerel 911 tabanı okunuyor: {path}")
-    df = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"})
+
+    if path.suffix.lower() == ".parquet":
+        df = pd.read_parquet(path)
+        if "GEOID" in df.columns:
+            df["GEOID"] = df["GEOID"].astype("string")
+    else:
+        df = pd.read_csv(path, low_memory=False, dtype={"GEOID": "string"})
 
     is_already_summary = (
         {"date", "hour_range"}.issubset(df.columns)
@@ -433,7 +447,12 @@ def summary_from_release(url: str, min_date=None) -> pd.DataFrame:
 # =========================================================
 def ensure_local_911_base() -> Optional[Path]:
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    prefer_names = ["sf_911_last_5_year_y.csv", "sf_911_last_5_year.csv"]
+    prefer_names = [
+        "sf_911_last_5_year.parquet",
+        "sf_911_last_5_year_y.parquet",
+        "sf_911_last_5_year.csv",
+        "sf_911_last_5_year_y.csv",
+    ]
 
     crime_grid_candidates = [
         OUT_DIR / "sf_crime_y.csv",
@@ -451,7 +470,7 @@ def ensure_local_911_base() -> Optional[Path]:
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
             return False
-        if p.suffix.lower() != ".csv":
+        if p.suffix.lower() not in [".csv", ".parquet"]:
             return False
         if is_lfs_pointer_file(p):
             return False
@@ -733,17 +752,59 @@ five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5 * 365)
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
 base_csv_path = ensure_local_911_base()
+
 if base_csv_path is not None:
     final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
+
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
-    log(f"✅ Yerel 911 özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
+
+    final_911.to_parquet(
+        local_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+    final_911.to_parquet(
+        y_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+
+    log(
+        f"✅ Yerel 911 özet kaydedildi → "
+        f"{local_summary_path} & {y_summary_path} "
+        f"+ parquet ({local_parquet_path}, {y_parquet_path}) "
+        f"(satır: {len(final_911)})"
+    )
+
 else:
     release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
     final_911 = summary_from_release(release_url, min_date=five_years_ago)
+
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
-    log(f"✅ Release özet kaydedildi → {local_summary_path} & {y_summary_path} (satır: {len(final_911)})")
+
+    final_911.to_parquet(
+        local_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+    final_911.to_parquet(
+        y_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+
+    log(
+        f"✅ Release 911 özet kaydedildi → "
+        f"{local_summary_path} & {y_summary_path} "
+        f"+ parquet ({local_parquet_path}, {y_parquet_path}) "
+        f"(satır: {len(final_911)})"
+    )
 
 base_max_date = to_date(final_911["date"]).max() if not final_911.empty else None
 today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
@@ -751,7 +812,7 @@ today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
 if base_max_date is None:
     fetch_start, fetch_end = today_sf, today_sf
 else:
-    fetch_start = base_max_date - timedelta(days=max(1, SF911_REINGEST_DAYS))
+    fetch_start = base_max_date + timedelta(days=1)
     fetch_end = today_sf
     if fetch_start < five_years_ago:
         fetch_start = five_years_ago
