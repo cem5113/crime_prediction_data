@@ -207,17 +207,22 @@ def ensure_base_csv_remote_first() -> Path | None:
     if PREFER_REMOTE_BASE and GH_TOKEN:
         blob = fetch_file_from_latest_artifact(
         pick_names=[
+            "sf_crime_x.parquet",
             EVENT_CSV_NAME,
             "sf_crime_x.csv",
+            "sf_crime.csv",
         ],
             artifact_name=ARTIFACT_NAME,
         )
         if blob and _is_valid_csv_bytes(blob):
             # indirilen dosyayı event mi panel mi ayırmadan TMP'ye yazıyoruz
             # (okuyunca schema-guard karar verecek)
-            _write_bytes_atomic(TMP_BASE_CSV, blob)
-            print(f"📦 Base (artifact) indirildi → {TMP_BASE_CSV}")
-            return TMP_BASE_CSV
+            artifact_suffix = ".parquet" if blob[:4] == b"PAR1" else ".csv"
+            tmp_base = RUN_TMP_DIR / f"sf_crime_x{artifact_suffix}"
+            
+            _write_bytes_atomic(tmp_base, blob)
+            print(f"📦 Base (artifact) indirildi → {tmp_base}")
+            return tmp_base
         else:
             print("⚠️ Artifact base bulunamadı/uygun değil (boş/küçük/LFS).")
 
@@ -810,9 +815,20 @@ if "GEOID_std" in df_all.columns:
 print("\n🧾 [QC] category_std top-10:")
 print(df_all["category_std"].value_counts(dropna=False).head(10))
 
-event_out = Path(event_csv_path) 
-safe_save(df_all.drop(columns=["date_only"], errors="ignore"), str(event_out))
+event_out = Path(event_csv_path)
+event_df_out = df_all.drop(columns=["date_only"], errors="ignore")
+
+safe_save(event_df_out, str(event_out))
 print(f"💾 Event-level cache yazıldı → {event_out}")
+
+event_parquet_out = Path("sf_crime_x.parquet")
+event_df_out.to_parquet(
+    event_parquet_out,
+    index=False,
+    engine="pyarrow",
+    compression="snappy"
+)
+print(f"💾 Event-level parquet yazıldı → {event_parquet_out}")
 
 # ============================================================
 # ✅ LAST-CRIME ANCHOR FEATURES
@@ -1306,9 +1322,13 @@ try:
     Path("crime_prediction_data").mkdir(exist_ok=True)
 
     # Artifact çıktıları (ikisi de)
+    shutil.copy2(event_parquet_out, "crime_prediction_data/sf_crime_x.parquet")
+    
+    # CSV'leri istersen debug için bırakabilirsin, ama artifact'e koymayacağız.
     shutil.copy2(event_out, f"crime_prediction_data/{Path(event_csv_path).name}")
     shutil.copy2(panel_csv_path, f"crime_prediction_data/{Path(panel_csv_path).name}")
-    print("✅ artifact outputs: sf_crime_x.csv + sf_crime_y.csv")
+    
+    print("✅ artifact outputs: sf_crime_x.parquet + csv debug outputs")
 
     # İstersen statik sf_crime.csv'yi de güncelle (default KAPALI) — DİKKAT:
     # Eğer bunu açarsan, HANGİSİNİ base sayacağını seçmelisin.
