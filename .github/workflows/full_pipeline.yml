@@ -241,7 +241,7 @@ jobs:
           ARTIFACT_NAME: sf-crime-pipeline-output
           WORKFLOW_NAME: Full SF Crime Pipeline
           TARGET_FILE: sf_crime_x.parquet
-          OUT_DIR: crime_prediction_data
+          OUT_DIR: ${{ env.CRIME_DATA_DIR }}
         run: |
           set -euo pipefail
 
