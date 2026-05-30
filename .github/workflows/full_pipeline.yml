@@ -28,7 +28,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CRIME_DATA_DIR: ${{ github.workspace }}
-  WRITE_BASE_TO_REPO: "1"
+  WRITE_BASE_TO_REPO: "0"
   GEOID_LEN: "11"
   ACS_YEAR: ${{ vars.ACS_YEAR || 'LATEST' }}
   DEMOG_WHITELIST: ${{ vars.DEMOG_WHITELIST || '' }}
@@ -997,7 +997,7 @@ jobs:
           ls -lah "${CRIME_DATA_DIR}/sf_crime_09.parquet" || true
 
       - name: Upload artifact (datasets only, after sf_crime_09)
-        if: ${{ steps.gate.outputs.proceed == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'artifact')) }}
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
