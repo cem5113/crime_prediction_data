@@ -1052,22 +1052,5 @@ jobs:
           rclone copyto "${CRIME_DATA_DIR}/geoid_profile.parquet"           "${DEST}/geoid_profile.parquet"
           rclone copyto "${CRIME_DATA_DIR}/geoid_dashboard_snapshot.parquet" "${DEST}/geoid_dashboard_snapshot.parquet"
 
-      - name: Commit updated crime base files
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        run: |
-          set -euo pipefail
-      
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-      
-          echo "Files before commit:"
-          ls -lh crime_prediction_data/sf_crime_x.parquet || true
-          ls -lh crime_prediction_data/geoid_profile.parquet || true
-          ls -lh crime_prediction_data/geoid_dashboard_snapshot.parquet || true
-      
-          git add crime_prediction_data/sf_crime_x.parquet
-          git add crime_prediction_data/geoid_profile.parquet
-          git add crime_prediction_data/geoid_dashboard_snapshot.parquet
-      
-          git commit -m "Update crime parquet datasets" || echo "No changes to commit"
-          git push
+          echo "✅ Upload complete → ${DEST}"
+          rclone ls "${DEST}" | tail -n 20 || true
