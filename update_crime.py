@@ -42,7 +42,7 @@ TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime_x.csv.gz"
 # ➜ İstediğin akış: 1) Artifact'tan sf_crime_y.csv, 2) releases/latest sf_crime.csv
 CRIME_BASE_URL = os.getenv(
     "CRIME_CSV_URL",
-    "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime.csv"  # Fallback (auto-latest)
+    "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime_x.csv"  # Fallback (auto-latest)
 )
 CRIME_API_URL = os.getenv("CRIME_API_URL", "https://data.sfgov.org/resource/wg3w-h783.json")
 SFCRIME_APP_TOKEN = os.getenv("SFCRIME_API_TOKEN", "")
@@ -235,6 +235,10 @@ def ensure_base_csv_remote_first() -> Path | None:
     local_candidates = [
         Path("crime_prediction_data/sf_crime_x.csv"),
         Path("sf_crime_x.csv"),
+    
+        # sadece geçiş dönemi fallback
+        Path("crime_prediction_data/sf_crime.csv"),
+        Path("sf_crime.csv"),
     ]
     for p in local_candidates:
         if _is_valid_local_csv(p):
