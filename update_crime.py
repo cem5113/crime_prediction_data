@@ -42,7 +42,7 @@ TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime_x.csv.gz"
 # ➜ İstediğin akış: 1) Artifact'tan sf_crime_y.csv, 2) releases/latest sf_crime.csv
 CRIME_BASE_URL = os.getenv(
     "CRIME_CSV_URL",
-    "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime_x.csv"  # Fallback (auto-latest)
+    "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime.csv"
 )
 CRIME_API_URL = os.getenv("CRIME_API_URL", "https://data.sfgov.org/resource/wg3w-h783.json")
 SFCRIME_APP_TOKEN = os.getenv("SFCRIME_API_TOKEN", "")
@@ -169,14 +169,14 @@ def _is_valid_csv_bytes(b: bytes, min_bytes: int = 5_000) -> bool:
         return False
     return True
 
-def _is_valid_local_csv(p: Path, min_bytes: int = 5_000) -> bool:
+def _is_valid_local_base(p: Path, min_bytes: int = 5_000) -> bool:
     if not p.exists():
         return False
     if p.stat().st_size < min_bytes:
         return False
     if p.suffix == ".csv" and is_lfs_pointer(p):
         return False
-    return True
+    return p.suffix in [".parquet", ".csv", ".gz"]
 
 def _write_bytes_atomic(dst: Path, content: bytes) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -233,15 +233,17 @@ def ensure_base_csv_remote_first() -> Path | None:
 
     # 3) Local fallback (repo içi) — ✅ event-level önce, panel-level en son
     local_candidates = [
+        Path("crime_prediction_data/sf_crime_x.parquet"),
+        Path("sf_crime_x.parquet"),
+    
+        # geçiş dönemi fallback
         Path("crime_prediction_data/sf_crime_x.csv"),
         Path("sf_crime_x.csv"),
-    
-        # sadece geçiş dönemi fallback
         Path("crime_prediction_data/sf_crime.csv"),
         Path("sf_crime.csv"),
     ]
     for p in local_candidates:
-        if _is_valid_local_csv(p):
+        if _is_valid_local_base(p):
             print(f"📦 Base (local fallback) bulundu: {p}")
             return p
 
@@ -252,8 +254,13 @@ def read_existing_crime_csv(p: Path) -> pd.DataFrame | None:
     if not p or not p.exists():
         return None
     try:
-        compression = "gzip" if p.suffix == ".gz" else None
-        df = pd.read_csv(p, dtype={"GEOID": str}, low_memory=False, compression=compression)
+        if p.suffix == ".parquet":
+            df = pd.read_parquet(p)
+            if "GEOID" in df.columns:
+                df["GEOID"] = df["GEOID"].astype(str)
+        else:
+            compression = "gzip" if p.suffix == ".gz" else None
+            df = pd.read_csv(p, dtype={"GEOID": str}, low_memory=False, compression=compression)
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
         elif "datetime" in df.columns:
@@ -1309,9 +1316,6 @@ try:
     if WRITE_BASE_TO_REPO:
         shutil.copy2(event_out, "crime_prediction_data/sf_crime_x.csv")
         shutil.copy2(event_out, "sf_crime_x.csv")
-    
-        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime_y.csv")
-        shutil.copy2(panel_csv_path, "sf_crime_y.csv")
     
         print("📝 WRITE_BASE_TO_REPO=1 → sf_crime_x.csv event-level base olarak güncellendi.")
     else:
