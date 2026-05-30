@@ -176,6 +176,7 @@ jobs:
 
       - name: 7-Day Forecast (Visual Crossing) → week.csv
         if: ${{ steps.gate.outputs.proceed == 'true' }}
+        continue-on-error: true
         env:
           VISUAL_CROSSING_API_KEY: ${{ secrets.VISUAL_CROSSING_API_KEY }}
           WX_LOCATION: "San Francisco, CA"
@@ -186,7 +187,6 @@ jobs:
           python -u scripts/update_week_forecast.py
           echo "week.csv — ilk 5 satır:"
           head -n 5 "${CRIME_DATA_DIR}/week.csv" || true
-
 
       - name: Geo stack smoke test
         if: ${{ steps.gate.outputs.proceed == 'true' }}
@@ -207,14 +207,29 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, pandas as pd
+          import os
+          import pandas as pd
+
           D = os.environ["CRIME_DATA_DIR"]
           csvp = os.path.join(D, "week.csv")
           parp = os.path.join(D, "week.parquet")
-          df = pd.read_csv(csvp)
-          df.to_parquet(parp, index=False, engine="pyarrow")
-          print("✅ wrote", parp, "shape=", df.shape)
+
+          if os.path.exists(csvp):
+              df = pd.read_csv(csvp)
+              df.to_parquet(parp, index=False, engine="pyarrow")
+              print("✅ week.csv bulundu, parquet güncellendi:", parp, "shape=", df.shape)
+
+          elif os.path.exists(parp):
+              df = pd.read_parquet(parp)
+              df.to_csv(csvp, index=False)
+              print("⚠️ week.csv yok; mevcut week.parquet ile devam:", parp, "shape=", df.shape)
+
+          else:
+              raise FileNotFoundError(
+                  "Ne week.csv ne week.parquet bulundu."
+              )
           PY
+
           ls -lh "${CRIME_DATA_DIR}/week.csv" "${CRIME_DATA_DIR}/week.parquet" || true
 
       # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -359,6 +374,37 @@ jobs:
           done
 
           echo "ℹ️ 311 parquet bulunamadı; CSV fallback kullanılacak."
+
+      - name: 00.3) Prefetch week.parquet from previous successful run
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: sf-crime-pipeline-output
+          WORKFLOW_NAME: Full SF Crime Pipeline
+          TARGET_FILE: week.parquet
+          OUT_DIR: crime_prediction_data
+        run: |
+          set -euo pipefail
+          mkdir -p "${OUT_DIR}"
+
+          RUNS=$(gh run list -R "${GITHUB_REPOSITORY}" \
+            --workflow "${WORKFLOW_NAME}" --status success \
+            -L 10 --json databaseId -q '.[].databaseId' || true)
+
+          for RID in ${RUNS}; do
+            rm -rf "_prev/$RID" && mkdir -p "_prev/$RID"
+            if gh run download -R "${GITHUB_REPOSITORY}" "$RID" \
+              -n "${ARTIFACT_NAME}" -D "_prev/$RID" >/dev/null 2>&1; then
+              F=$(find "_prev/$RID" -type f -iname "${TARGET_FILE}" | head -n1 || true)
+              if [ -n "${F:-}" ]; then
+                cp -f "$F" "${OUT_DIR}/${TARGET_FILE}"
+                echo "✅ week cache bulundu: ${OUT_DIR}/${TARGET_FILE}"
+                exit 0
+              fi
+            fi
+          done
+
+          echo "ℹ️ week.parquet bulunamadı; API denenilecek."
       # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
       # ---- PIPELINE ----
@@ -649,8 +695,18 @@ jobs:
           D = os.environ["CRIME_DATA_DIR"]
           csvp = os.path.join(D, "sf_weather_5years.csv")
           parp = os.path.join(D, "sf_weather_5years.parquet")
-          df = pd.read_csv(csvp)
-          df.to_parquet(parp, index=False, engine="pyarrow")
+          if os.path.exists(csvp):
+              df = pd.read_csv(csvp)
+              df.to_parquet(parp, index=False, engine="pyarrow")
+              print("✅ week.csv bulundu, parquet güncellendi:", parp, "shape=", df.shape)
+          
+          elif os.path.exists(parp):
+              df = pd.read_parquet(parp)
+              df.to_csv(csvp, index=False)
+              print("⚠️ week.csv yok; mevcut week.parquet ile devam:", parp, "shape=", df.shape)
+          
+          else:
+              raise FileNotFoundError("Ne week.csv ne week.parquet var.")
           print("✅ wrote", parp, "shape=", df.shape)
           PY
           ls -lh "${CRIME_DATA_DIR}/sf_weather_5years.csv" "${CRIME_DATA_DIR}/sf_weather_5years.parquet" || true
