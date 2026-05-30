@@ -225,7 +225,7 @@ jobs:
           GH_TOKEN: ${{ github.token }} # gh CLI bunu otomatik kullanır; login YOK
           ARTIFACT_NAME: sf-crime-pipeline-output
           WORKFLOW_NAME: Full SF Crime Pipeline
-          TARGET_FILE: sf_crime_y.csv
+          TARGET_FILE: sf_crime_x.parquet
           OUT_DIR: crime_prediction_data
         run: |
           set -euo pipefail
