@@ -34,9 +34,9 @@ RUN_TMP_DIR = Path(os.getenv("RUNNER_TEMP", "/tmp")) / "sfcrime_runtime"
 RUN_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # remote base dosya isimleri (temp)
-TMP_BASE_Y = RUN_TMP_DIR / "sf_crime_y.csv"
-TMP_BASE_CSV = RUN_TMP_DIR / "sf_crime.csv"
-TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime.csv.gz"
+TMP_BASE_EVENT = RUN_TMP_DIR / "sf_crime_x.csv"
+TMP_BASE_CSV = RUN_TMP_DIR / "sf_crime_x.csv"
+TMP_BASE_GZ = RUN_TMP_DIR / "sf_crime_x.csv.gz"
 
 # Kaynak URL/Token
 # ➜ İstediğin akış: 1) Artifact'tan sf_crime_y.csv, 2) releases/latest sf_crime.csv
@@ -206,7 +206,10 @@ def ensure_base_csv_remote_first() -> Path | None:
     # 1) Artifact → (event-level tercih)
     if PREFER_REMOTE_BASE and GH_TOKEN:
         blob = fetch_file_from_latest_artifact(
-            pick_names=[EVENT_CSV_NAME, "sf_crime_x.csv", "sf_crime.csv", PANEL_CSV_NAME, "sf_crime_y.csv"],
+        pick_names=[
+            EVENT_CSV_NAME,
+            "sf_crime_x.csv",
+        ],
             artifact_name=ARTIFACT_NAME,
         )
         if blob and _is_valid_csv_bytes(blob):
@@ -232,11 +235,6 @@ def ensure_base_csv_remote_first() -> Path | None:
     local_candidates = [
         Path("crime_prediction_data/sf_crime_x.csv"),
         Path("sf_crime_x.csv"),
-        Path("crime_prediction_data/sf_crime.csv"),
-        Path("sf_crime.csv"),
-        Path("crime_prediction_data/sf_crime.csv.gz"),
-        Path("crime_prediction_data/sf_crime_y.csv"),
-        Path("sf_crime_y.csv"),
     ]
     for p in local_candidates:
         if _is_valid_local_csv(p):
@@ -1305,11 +1303,15 @@ try:
     # Eğer bunu açarsan, HANGİSİNİ base sayacağını seçmelisin.
     # Ben güvenli tarafta kalıp paneli/base olarak ezmeyi önermiyorum.
     if WRITE_BASE_TO_REPO:
-        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime.csv")
-        shutil.copy2(panel_csv_path, "sf_crime.csv")
-        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime.csv panel ile güncellendi (repo workspace).")
+        shutil.copy2(event_out, "crime_prediction_data/sf_crime_x.csv")
+        shutil.copy2(event_out, "sf_crime_x.csv")
+    
+        shutil.copy2(panel_csv_path, "crime_prediction_data/sf_crime_y.csv")
+        shutil.copy2(panel_csv_path, "sf_crime_y.csv")
+    
+        print("📝 WRITE_BASE_TO_REPO=1 → sf_crime_x.csv event-level base olarak güncellendi.")
     else:
-        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo sf_crime.csv EZİLMEDİ (sadece artifact yazıldı).")
+        print("ℹ️ WRITE_BASE_TO_REPO=0 → repo base dosyası güncellenmedi; sadece artifact çıktıları yazıldı.")
 
 except Exception as e:
     print("Kopya uyarısı:", e)
