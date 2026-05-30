@@ -720,10 +720,14 @@ def main():
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
         df_raw.sort_values("datetime", inplace=True)
 
-        save_atomic(df_raw, raw_path)
-        print(f"✅ Ham (5y/chunk) kaydedildi: {os.path.abspath(raw_path)}")
-        
+        raw_csv_path = os.path.join(SAVE_DIR, RAW_311_NAME_Y)
         raw_parquet_path = os.path.join(SAVE_DIR, RAW_311_PARQUET)
+        
+        # CSV her zaman CSV olarak yazılsın
+        save_atomic(df_raw, raw_csv_path)
+        print(f"✅ Ham 311 CSV yazıldı: {os.path.abspath(raw_csv_path)}")
+        
+        # Parquet her zaman parquet olarak yazılsın
         df_raw.to_parquet(
             raw_parquet_path,
             index=False,
