@@ -214,7 +214,9 @@ def ensure_base_csv_remote_first() -> Path | None:
         ],
             artifact_name=ARTIFACT_NAME,
         )
-        if blob and _is_valid_csv_bytes(blob):
+        is_parquet = blob[:4] == b"PAR1"
+        
+        if blob and (is_parquet or _is_valid_csv_bytes(blob)):
             # indirilen dosyayı event mi panel mi ayırmadan TMP'ye yazıyoruz
             # (okuyunca schema-guard karar verecek)
             artifact_suffix = ".parquet" if blob[:4] == b"PAR1" else ".csv"
