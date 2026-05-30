@@ -328,6 +328,37 @@ jobs:
           if [ -z "${FOUND}" ]; then
             echo "ℹ️ ${TARGET_FILE} bulunamadı; update_911.py CSV fallback kullanacak."
           fi
+
+      - name: 00.2) Prefetch sf_311_last_5_years_y.parquet from previous successful run
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: sf-crime-pipeline-output
+          WORKFLOW_NAME: Full SF Crime Pipeline
+          TARGET_FILE: sf_311_last_5_years_y.parquet
+          OUT_DIR: crime_prediction_data
+        run: |
+          set -euo pipefail
+          mkdir -p "${OUT_DIR}"
+
+          RUNS=$(gh run list -R "${GITHUB_REPOSITORY}" \
+            --workflow "${WORKFLOW_NAME}" --status success \
+            -L 10 --json databaseId -q '.[].databaseId' || true)
+
+          for RID in ${RUNS}; do
+            rm -rf "_prev/$RID" && mkdir -p "_prev/$RID"
+            if gh run download -R "${GITHUB_REPOSITORY}" "$RID" \
+              -n "${ARTIFACT_NAME}" -D "_prev/$RID" >/dev/null 2>&1; then
+              F=$(find "_prev/$RID" -type f -iname "${TARGET_FILE}" | head -n1 || true)
+              if [ -n "${F:-}" ]; then
+                cp -f "$F" "${OUT_DIR}/${TARGET_FILE}"
+                echo "✅ Bulundu: ${OUT_DIR}/${TARGET_FILE}"
+                exit 0
+              fi
+            fi
+          done
+
+          echo "ℹ️ 311 parquet bulunamadı; CSV fallback kullanılacak."
       # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
       # ---- PIPELINE ----
@@ -1061,6 +1092,8 @@ jobs:
             ${{ env.CRIME_DATA_DIR }}/sf_crime_x.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year.parquet
             ${{ env.CRIME_DATA_DIR }}/sf_911_last_5_year_y.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years_y.parquet
+            ${{ env.CRIME_DATA_DIR }}/sf_311_last_5_years.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_profile.parquet
             ${{ env.CRIME_DATA_DIR }}/geoid_dashboard_snapshot.parquet
 
