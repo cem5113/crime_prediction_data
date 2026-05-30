@@ -840,7 +840,26 @@ if inc is not None and not inc.empty:
 
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
-    log(f"💾 911 özet GÜNCELLENDİ (base+API) → {local_summary_path} & {y_summary_path} (+{len(final_911)-before:,} satır)")
+    
+    final_911.to_parquet(
+        local_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+    final_911.to_parquet(
+        y_parquet_path,
+        index=False,
+        engine="pyarrow",
+        compression="snappy",
+    )
+    
+    log(
+        f"💾 911 özet GÜNCELLENDİ (base+API) → "
+        f"{local_summary_path} & {y_summary_path} "
+        f"+ parquet ({local_parquet_path}, {y_parquet_path}) "
+        f"(+{len(final_911)-before:,} satır)"
+    )
 else:
     log("ℹ️ API tarafında yeni gün yok veya boş döndü; taban veri geçerli.")
 
