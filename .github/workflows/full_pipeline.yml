@@ -1070,6 +1070,3 @@ jobs:
 
           git commit -m "Update crime base datasets" || echo "No changes to commit"
           git push
-
-          echo "✅ Upload complete → ${DEST}"
-          rclone ls "${DEST}" | tail -n 20 || true
