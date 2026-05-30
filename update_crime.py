@@ -322,20 +322,29 @@ else:
     latest_available = today - timedelta(days=int(os.getenv("PUBLISH_LAG_FALLBACK_DAYS", "2")))
     print(f"⚠️ API latest alınamadı → fallback latest_available: {latest_available}")
 
-# ✅ end=today değil, end=latest_available
-start_missing = latest_date - timedelta(days=max(1, CRIME_REINGEST_DAYS))
-if start_missing < start_date_5y if "start_date_5y" in globals() else False:
-    start_missing = start_date_5y
+# ✅ sadece son indirilen tarihten sonrası indirilsin
 
-date_range = pd.date_range(start=start_missing, end=latest_available)
-missing_dates = [d.date() for d in date_range]
-
-# ✅ GUARD
 if latest_date >= latest_available:
+    start_missing = None
     missing_dates = []
     print(f"ℹ️ Base zaten güncel görünüyor: latest_date={latest_date} ≥ latest_available={latest_available}")
+else:
+    # son günü tekrar indir (güvenli overlap)
+    start_missing = latest_date
 
-print(f"📆 Eksik tarihler: {len(missing_dates)} (end={latest_available})")
+    # overlap istemiyorsan:
+    # start_missing = latest_date + timedelta(days=1)
+
+    date_range = pd.date_range(
+        start=start_missing,
+        end=latest_available
+    )
+    missing_dates = [d.date() for d in date_range]
+
+print(
+    f"📆 Eksik tarihler: {len(missing_dates)} "
+    f"(start={start_missing}, end={latest_available})"
+)
 
 if not missing_dates:
     print("ℹ️ Eksik gün yok; artımlı indirme atlanacak.")
