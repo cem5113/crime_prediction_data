@@ -258,11 +258,20 @@ def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
 
 def resolve_existing_raw_path():
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    target_names = [
-        RAW_311_PARQUET,
-        RAW_311_NAME_Y,
-        LEGACY_311_Y,
-    ]
+    if BOOTSTRAP_311_FROM_CSV:
+        target_names = [
+            AGG_BASENAME,          # sf_311_last_5_years.csv
+            RAW_311_NAME_Y,
+            RAW_311_PARQUET,
+            LEGACY_311_Y,
+        ]
+    else:
+        target_names = [
+            RAW_311_PARQUET,
+            RAW_311_NAME_Y,
+            LEGACY_311_Y,
+            AGG_BASENAME,
+        ]
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
