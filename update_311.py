@@ -93,7 +93,6 @@ FIVE_YEARS = 5 * 365
 TODAY = datetime.utcnow().date()
 DEFAULT_START = TODAY - timedelta(days=FIVE_YEARS)
 BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "0"))
-REINGEST_DAYS = int(os.getenv("SF311_REINGEST_DAYS", "14"))
 
 BOOTSTRAP_311_FROM_CSV = (
     os.getenv("BOOTSTRAP_311_FROM_CSV", "0")
@@ -519,12 +518,19 @@ def decide_start_date(df_existing):
         return DEFAULT_START, "full-5y"
 
     last_date = last_dt.date()
-    start = last_date - timedelta(days=max(1, REINGEST_DAYS))
+    
+    # Sadece son günü tekrar indir:
+    # last_date=2026-05-30 ise start=2026-05-29 olur.
+    start = last_date - timedelta(days=1)
+    
     if start < DEFAULT_START:
         start = DEFAULT_START
-
-    print(f"📌 Mod: incremental+overlap | start={start} | last={last_date} | reingest={REINGEST_DAYS}d | window ≥ {DEFAULT_START}")
-    return start, "incremental+overlap"
+    
+    print(
+        f"📌 Mod: incremental+1d-overlap | "
+        f"start={start} | last={last_date} | window ≥ {DEFAULT_START}"
+    )
+    return start, "incremental+1d-overlap"
 
 
 # ================== İNDİRME ==================
