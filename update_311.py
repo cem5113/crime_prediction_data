@@ -96,7 +96,7 @@ BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "0"))
 REINGEST_DAYS = int(os.getenv("SF311_REINGEST_DAYS", "14"))
 
 BOOTSTRAP_311_FROM_CSV = (
-    os.getenv("BOOTSTRAP_311_FROM_CSV", "1")
+    os.getenv("BOOTSTRAP_311_FROM_CSV", "0")
     .lower()
     in ("1", "true", "yes", "on")
 )
@@ -279,20 +279,13 @@ def _load_raw_seed_from_base(base_csv_path: str) -> pd.DataFrame:
 
 def resolve_existing_raw_path():
     ARTIFACT_NAME = os.getenv("ARTIFACT_NAME", "sf-crime-pipeline-output").strip()
-    if BOOTSTRAP_311_FROM_CSV:
-        target_names = [
-            AGG_BASENAME,          # sf_311_last_5_years.csv
-            RAW_311_NAME_Y,
-            RAW_311_PARQUET,
-            LEGACY_311_Y,
-        ]
-    else:
-        target_names = [
-            RAW_311_PARQUET,
-            RAW_311_NAME_Y,
-            LEGACY_311_Y,
-            AGG_BASENAME,
-        ]
+    target_names = [
+        RAW_311_PARQUET,   # sf_311_last_5_years_y.parquet
+        RAW_311_NAME_Y,    # sf_311_last_5_years_y.csv
+        AGG_BASENAME,      # sf_311_last_5_years.csv
+        LEGACY_311_Y,
+        LEGACY_311,
+    ]
 
     def _ok(p: Path) -> bool:
         if not p or not p.exists() or p.is_dir():
