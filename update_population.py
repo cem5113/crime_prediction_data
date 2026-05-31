@@ -450,10 +450,30 @@ def main():
     crime_in["GEOID"] = normalize_geoid(crime_in["GEOID"], GEOID_LEN)
     log_shape(crime_in, "CRIME INPUT")
 
-    demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
-    log_shape(demo_raw, "DEMOGRAPHIC CSV")
-
-    demo_feat = build_demographic_features(demo_raw)
+    monthly_refresh = pd.Timestamp.utcnow().day == 1
+    force_population_refresh = (
+        os.getenv("FORCE_POPULATION_REFRESH", "0")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    )
+    
+    if (
+        os.path.exists(DEMOGRAPHIC_FEATURES_CSV)
+        and not monthly_refresh
+        and not force_population_refresh
+    ):
+        print(f"📦 Demographic cache kullanılıyor: {DEMOGRAPHIC_FEATURES_CSV}")
+        demo_feat = pd.read_csv(DEMOGRAPHIC_FEATURES_CSV, dtype={"GEOID": str}, low_memory=False)
+        demo_feat["GEOID"] = normalize_geoid(demo_feat["GEOID"], GEOID_LEN)
+    else:
+        print("♻️ Demographic features yeniden üretilecek.")
+        print(f"monthly_refresh={monthly_refresh}, force_population_refresh={force_population_refresh}")
+    
+        demo_raw = pd.read_csv(DEMOGRAPHIC_PATH, low_memory=False, dtype=str)
+        log_shape(demo_raw, "DEMOGRAPHIC CSV")
+    
+        demo_feat = build_demographic_features(demo_raw)
 
     old_out, new_rows = split_old_and_new_rows(crime_in, CRIME_OUTPUT)
 
