@@ -723,16 +723,31 @@ def main():
     print("🔎 Tercih edilen SAVE_DIR:", os.path.abspath(SAVE_DIR))
 
     raw_path = resolve_existing_raw_path()
-    agg_path = os.path.join(os.path.dirname(raw_path) or ".", AGG_BASENAME)
-    df_raw = load_existing_raw_or_seed(raw_path)
-
-    if raw_path and os.path.exists(raw_path):
+    
+    # Özet dosyayı ham base gibi kullanma.
+    # sf_311_last_5_years.csv sadece başlangıç tarihini belirlemek için kullanılır.
+    bootstrap_from_agg = (
+        BOOTSTRAP_311_FROM_CSV
+        and raw_path
+        and os.path.basename(raw_path) == AGG_BASENAME
+    )
+    
+    agg_path = os.path.join(SAVE_DIR, AGG_BASENAME)
+    
+    if bootstrap_from_agg:
+        print("🧭 Bootstrap modu: özet CSV sadece start_date için kullanılacak; ham df boş başlıyor.")
+        df_raw = pd.DataFrame()
         start_basis = load_existing_raw(raw_path)
-    elif df_raw is not None and not df_raw.empty:
-        start_basis = df_raw
     else:
-        start_basis = load_existing_agg_for_start()
-
+        df_raw = load_existing_raw_or_seed(raw_path)
+    
+        if raw_path and os.path.exists(raw_path):
+            start_basis = load_existing_raw(raw_path)
+        elif df_raw is not None and not df_raw.empty:
+            start_basis = df_raw
+        else:
+            start_basis = load_existing_agg_for_start()
+    
     start_date, _mode = decide_start_date(start_basis)
 
     df_new = download_by_date_chunks(start_date)
@@ -839,8 +854,41 @@ def main():
                 save_atomic(pd.DataFrame(columns=empty_agg_cols), os.path.join(SAVE_DIR, p))
         return
 
-    slot_cur = build_compact_311_summary(df_raw)
-
+    slot_new = build_compact_311_summary(df_raw)
+    
+    old_summary = pd.DataFrame()
+    
+    if bootstrap_from_agg and raw_path and os.path.exists(raw_path):
+        try:
+            old_summary = pd.read_csv(raw_path, dtype={"GEOID": str}, low_memory=False)
+            old_summary.columns = (
+                old_summary.columns
+                .astype(str)
+                .str.replace("\ufeff", "", regex=False)
+                .str.strip()
+            )
+            print(f"📦 Eski 311 özet yüklendi: {len(old_summary):,} satır")
+        except Exception as e:
+            print(f"⚠️ Eski 311 özet okunamadı: {e}")
+            old_summary = pd.DataFrame()
+    
+    if not old_summary.empty:
+        slot_cur = pd.concat([old_summary, slot_new], ignore_index=True)
+        if {"GEOID", "date", "hour_range"}.issubset(slot_cur.columns):
+            slot_cur["date"] = pd.to_datetime(slot_cur["date"], errors="coerce").dt.date
+            slot_cur["GEOID"] = normalize_geoid(slot_cur["GEOID"], DEFAULT_GEOID_LEN)
+            slot_cur["hour_range"] = slot_cur["hour_range"].astype(str).str.replace(
+                r"^21-00$", "21-24", regex=True
+            )
+            before = len(slot_cur)
+            slot_cur = slot_cur.drop_duplicates(
+                ["GEOID", "date", "hour_range"],
+                keep="last",
+            )
+            print(f"🧹 311 özet merge duplicate temizlendi: {before - len(slot_cur):,}")
+    else:
+        slot_cur = slot_new
+    
     save_atomic(slot_cur, agg_path)
     save_atomic(slot_cur, os.path.join(SAVE_DIR, AGG_BASENAME))
     
