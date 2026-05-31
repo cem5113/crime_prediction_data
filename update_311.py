@@ -15,25 +15,20 @@ try:
 except Exception:
     SF_TZ = None
 
-
 def log(msg: str):
     print(msg, flush=True)
-
 
 def log_shape(df, label):
     r, c = df.shape
     print(f"📊 {label}: {r} satır × {c} sütun")
-
 
 def log_merge_delta(before_shape, after_shape, label):
     br, bc = before_shape
     ar, ac = after_shape
     print(f"🔗 {label}: {br}×{bc} → {ar}×{ac} (Δr={ar-br}, Δc={ac-bc})")
 
-
 # ---- GEOID normalize ---------------------------------------------------------
 DEFAULT_GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
-
 
 def normalize_geoid(series, target_len: int | None = None):
     L = int(target_len or DEFAULT_GEOID_LEN)
@@ -42,13 +37,11 @@ def normalize_geoid(series, target_len: int | None = None):
     s = s.str.slice(0, L)
     return s.str.zfill(L)
 
-
 def normalize_geoid_11(x):
     if pd.isna(x):
         return pd.NA
     digits = re.sub(r"\D", "", str(x))
     return digits[:11] if len(digits) >= 11 else pd.NA
-
 
 def save_atomic(df, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
@@ -56,13 +49,11 @@ def save_atomic(df, path):
     df.to_csv(tmp, index=False, encoding="utf-8-sig")
     os.replace(tmp, path)
 
-
 def is_lfs_pointer_file(p: Path) -> bool:
     try:
         return "git-lfs.github.com/spec/v1" in p.read_text(errors="ignore")[:200]
     except Exception:
         return False
-
 
 # ================== AYARLAR ==================
 SAVE_DIR = os.getenv("CRIME_DATA_DIR", "crime_prediction_data")
