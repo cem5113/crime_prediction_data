@@ -116,6 +116,30 @@ HOUR_ORDER = [
 ]
 HOUR_TO_SLOT = {h: i for i, h in enumerate(HOUR_ORDER)}
 
+def normalize_hour_range_3h(s: pd.Series) -> pd.Series:
+    x = s.astype("string").str.strip()
+
+    # Eski Colab formatı: 0, 3, 6, 9, 12, 15, 18, 21
+    numeric = pd.to_numeric(x, errors="coerce")
+    out = x.copy()
+
+    mask = numeric.notna()
+    start = numeric[mask].astype(int)
+    end = (start + 3).clip(upper=24)
+    out.loc[mask] = (
+        start.astype(str).str.zfill(2)
+        + "-"
+        + end.astype(str).str.zfill(2)
+    )
+
+    # Diğer varyasyonlar
+    out = out.str.replace(r"^21-00$", "21-24", regex=True)
+    out = out.str.replace(r"^0-3$", "00-03", regex=True)
+    out = out.str.replace(r"^3-6$", "03-06", regex=True)
+    out = out.str.replace(r"^6-9$", "06-09", regex=True)
+    out = out.str.replace(r"^9-12$", "09-12", regex=True)
+
+    return out
 
 # ================== SOCRATA ==================
 def socrata_get(session: requests.Session, url, params):
@@ -878,9 +902,7 @@ def main():
         if {"GEOID", "date", "hour_range"}.issubset(slot_cur.columns):
             slot_cur["date"] = pd.to_datetime(slot_cur["date"], errors="coerce").dt.date
             slot_cur["GEOID"] = normalize_geoid(slot_cur["GEOID"], DEFAULT_GEOID_LEN)
-            slot_cur["hour_range"] = slot_cur["hour_range"].astype(str).str.replace(
-                r"^21-00$", "21-24", regex=True
-            )
+            slot_cur["hour_range"] = normalize_hour_range_3h(slot_cur["hour_range"])
             before = len(slot_cur)
             slot_cur = slot_cur.drop_duplicates(
                 ["GEOID", "date", "hour_range"],
@@ -931,7 +953,7 @@ def main():
 
         summary = pd.read_csv(summary_path, dtype={"GEOID": str}, low_memory=False)
         summary.columns = summary.columns.astype(str).str.replace("\ufeff", "", regex=False).str.strip()
-        summary["hour_range"] = summary["hour_range"].astype(str).str.replace(r"^21-00$", "21-24", regex=True)
+        summary["hour_range"] = normalize_hour_range_3h(summary["hour_range"])
 
         need = [
             "GEOID", "date", "hour_range",
