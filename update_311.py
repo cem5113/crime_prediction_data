@@ -104,6 +104,12 @@ DEFAULT_START = TODAY - timedelta(days=FIVE_YEARS)
 BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "0"))
 REINGEST_DAYS = int(os.getenv("SF311_REINGEST_DAYS", "14"))
 
+BOOTSTRAP_311_FROM_CSV = (
+    os.getenv("BOOTSTRAP_311_FROM_CSV", "1")
+    .lower()
+    in ("1", "true", "yes", "on")
+)
+
 HOUR_ORDER = [
     "00-03", "03-06", "06-09", "09-12",
     "12-15", "15-18", "18-21", "21-24"
