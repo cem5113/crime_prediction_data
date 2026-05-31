@@ -523,7 +523,6 @@ def decide_start_date(df_existing):
 def download_by_date_chunks(start_date):
     print(f"🧩 İndirme modu: DATE-CHUNKS ({CHUNK_DAYS}gün) + paging")
     session = requests.Session()
-    police_filter = "(agency_responsible like '%Police%' OR agency_responsible like '%SFPD%')"
     cols = ",".join([
         "service_request_id", "requested_datetime",
         "lat", "long",
@@ -548,7 +547,7 @@ def download_by_date_chunks(start_date):
         while True:
             params = {
                 "$select": cols,
-                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}' AND {police_filter}",
+                "$where": f"requested_datetime between '{start_iso}' and '{end_iso}'",
                 "$order": "requested_datetime ASC",
                 "$limit": PAGE_LIMIT,
                 "$offset": offset
@@ -871,9 +870,11 @@ def main():
         except Exception as e:
             print(f"⚠️ Eski 311 özet okunamadı: {e}")
             old_summary = pd.DataFrame()
-    
     if not old_summary.empty:
-        slot_cur = pd.concat([old_summary, slot_new], ignore_index=True)
+        if "request_count_311" in old_summary.columns and "311_request_count" not in old_summary.columns:
+            old_summary = old_summary.rename(columns={"request_count_311": "311_request_count"})
+    
+        slot_cur = pd.concat([old_summary, slot_new], ignore_index=True)    
         if {"GEOID", "date", "hour_range"}.issubset(slot_cur.columns):
             slot_cur["date"] = pd.to_datetime(slot_cur["date"], errors="coerce").dt.date
             slot_cur["GEOID"] = normalize_geoid(slot_cur["GEOID"], DEFAULT_GEOID_LEN)
