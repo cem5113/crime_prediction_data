@@ -336,36 +336,90 @@ def resolve_existing_raw_path():
 def load_existing_raw(path):
     if not os.path.exists(path):
         return pd.DataFrame()
+
     if str(path).lower().endswith(".parquet"):
         df = pd.read_parquet(path)
         if "GEOID" in df.columns:
             df["GEOID"] = df["GEOID"].astype(str)
     else:
         df = pd.read_csv(path, dtype={"GEOID": str}, low_memory=False)
+
     if "index_right" in df.columns:
         df = df.drop(columns=["index_right"])
-    if "datetime" in df.columns:
-        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
-    elif "date" in df.columns and "time" in df.columns:
-        df["datetime"] = pd.to_datetime(
+
+    # Kolon adlarını temizle
+    df.columns = (
+        df.columns
+        .astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+    )
+
+    # Eski/özet/raw dosyalarda tarih kolonu farklı isimlerde gelebiliyor
+    dt_candidates = [
+        "datetime",
+        "requested_datetime",
+        "request_datetime",
+        "opened",
+        "created_date",
+        "date",
+    ]
+
+    parsed = None
+
+    for c in dt_candidates:
+        if c in df.columns:
+            s = pd.to_datetime(df[c], errors="coerce", utc=True)
+            if s.notna().sum() > 0:
+                parsed = s
+                print(
+                    f"🕒 311 datetime kolonu kullanıldı: {c} | "
+                    f"parsed={int(s.notna().sum()):,}"
+                )
+                break
+
+    if parsed is None and {"date", "time"}.issubset(df.columns):
+        s = pd.to_datetime(
             df["date"].astype(str) + " " + df["time"].astype(str),
             errors="coerce",
             utc=True,
         )
-    else:
-        df["datetime"] = pd.NaT
+        if s.notna().sum() > 0:
+            parsed = s
+            print(
+                f"🕒 311 datetime date+time ile üretildi | "
+                f"parsed={int(s.notna().sum()):,}"
+            )
+
+    df["datetime"] = parsed if parsed is not None else pd.NaT
 
     if "date" not in df.columns:
         df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
+    else:
+        parsed_date = pd.to_datetime(df["date"], errors="coerce")
+        if parsed_date.notna().sum() > 0:
+            df["date"] = parsed_date.dt.date
+        else:
+            df["date"] = pd.to_datetime(df["datetime"], errors="coerce").dt.date
 
-    for c in ["id", "lat", "long", "category", "subcategory", "agency_responsible", "latitude", "longitude", "GEOID", "time"]:
+    for c in [
+        "id",
+        "lat",
+        "long",
+        "category",
+        "subcategory",
+        "agency_responsible",
+        "latitude",
+        "longitude",
+        "GEOID",
+        "time",
+    ]:
         if c not in df.columns:
             df[c] = pd.NA
 
     mx = pd.to_datetime(df["datetime"], errors="coerce").max()
     print(f"📁 Mevcut satır: {len(df):,} | max datetime={mx}")
     return df
-
 
 def load_existing_raw_or_seed(raw_path: str) -> pd.DataFrame:
     if raw_path and os.path.exists(raw_path):
