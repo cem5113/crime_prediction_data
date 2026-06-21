@@ -135,11 +135,12 @@ DEMOGRAPHIC_FEATURES_CSV = str(BASE_DIR / "sf_demographic_features.csv")
 GEOID_LEN = int(os.getenv("GEOID_LEN", "11"))
 APPEND_ONLY = os.getenv("APPEND_ONLY", "1").strip().lower() not in ("0", "false", "no")
 
-# Stacking için budanmış son demografi seti
 FINAL_DEMOGRAPHIC_COLS = [
     "GEOID",
     "population",
+    "pct_age_under_18",
     "pct_age_18_34",
+    "pct_age_35_64",
     "pct_age_65_plus",
 ]
 
@@ -244,7 +245,7 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
             index="GEOID",
             columns="feature_name",
             values="estimate_num",
-            aggfunc="last"
+            aggfunc="last",
         )
         .reset_index()
     )
@@ -265,69 +266,86 @@ def build_demographic_features(demo_raw: pd.DataFrame) -> pd.DataFrame:
         "pop_age_75_84",
         "pop_age_85_plus",
     ]
+
     for c in age_cols:
         if c not in feat.columns:
             feat[c] = 0.0
+        feat[c] = pd.to_numeric(feat[c], errors="coerce").fillna(0.0)
 
-    race_cols = [
-        "pop_hispanic",
-        "pop_nh_white",
-        "pop_nh_black",
-        "pop_nh_asian",
-        "pop_nh_native",
-        "pop_nh_pacific",
-        "pop_nh_other",
-        "pop_nh_multiracial",
-    ]
-    for c in race_cols:
-        if c not in feat.columns:
-            feat[c] = 0.0
-
-    feat["pop_age_18_34"] = feat["pop_age_18_24"].fillna(0) + feat["pop_age_25_34"].fillna(0)
-    feat["pop_age_65_plus"] = (
-        feat["pop_age_65_74"].fillna(0)
-        + feat["pop_age_75_84"].fillna(0)
-        + feat["pop_age_85_plus"].fillna(0)
+    feat["population"] = pd.to_numeric(
+        feat["population_total"], errors="coerce"
     )
 
-    denom = pd.to_numeric(feat["population_total"], errors="coerce").replace(0, np.nan)
+    denom = feat["population"].replace(0, np.nan)
 
+    # Geniş yaş grupları
+    feat["pop_age_under_18"] = (
+        feat["pop_age_under_5"]
+        + feat["pop_age_5_17"]
+    )
+
+    feat["pop_age_18_34"] = (
+        feat["pop_age_18_24"]
+        + feat["pop_age_25_34"]
+    )
+
+    feat["pop_age_35_64"] = (
+        feat["pop_age_35_44"]
+        + feat["pop_age_45_54"]
+        + feat["pop_age_55_64"]
+    )
+
+    feat["pop_age_65_plus"] = (
+        feat["pop_age_65_74"]
+        + feat["pop_age_75_84"]
+        + feat["pop_age_85_plus"]
+    )
+
+    feat["pct_age_under_18"] = feat["pop_age_under_18"] / denom
     feat["pct_age_18_34"] = feat["pop_age_18_34"] / denom
+    feat["pct_age_35_64"] = feat["pop_age_35_64"] / denom
     feat["pct_age_65_plus"] = feat["pop_age_65_plus"] / denom
-    feat["pct_hispanic"] = feat["pop_hispanic"] / denom
-    feat["pct_nh_white"] = feat["pop_nh_white"] / denom
-    feat["pct_nh_black"] = feat["pop_nh_black"] / denom
-    feat["pct_nh_asian"] = feat["pop_nh_asian"] / denom
-    feat["pct_nh_multiracial"] = feat["pop_nh_multiracial"] / denom
 
-    feat["population"] = pd.to_numeric(feat["population_total"], errors="coerce")
+    # Irk/etnisite değişkenleri bilinçli olarak final sete alınmıyor.
+    # Bu değişkenler veri dosyasında bulunabilir; ancak fairness/önyargı
+    # tartışmalarını azaltmak için nihai modele dahil edilmiyor.
 
-    # Sadece lean final set
     for c in FINAL_DEMOGRAPHIC_COLS:
         if c not in feat.columns:
             feat[c] = 0.0 if c != "GEOID" else None
 
     feat = feat[FINAL_DEMOGRAPHIC_COLS].copy()
 
-    # temiz tipler
     for c in feat.columns:
         if c == "GEOID":
             continue
         feat[c] = pd.to_numeric(feat[c], errors="coerce")
 
     if "population" in feat.columns:
-        feat["population"] = feat["population"].fillna(0).round().astype("int32")
+        feat["population"] = (
+            feat["population"]
+            .fillna(0)
+            .round()
+            .astype("int32")
+        )
 
     pct_cols = [c for c in feat.columns if c.startswith("pct_")]
     for c in pct_cols:
-        feat[c] = feat[c].fillna(0.0).astype("float32")
+        feat[c] = (
+            feat[c]
+            .fillna(0.0)
+            .clip(lower=0.0, upper=1.0)
+            .astype("float32")
+        )
 
-    feat = feat.sort_values("GEOID").drop_duplicates(subset="GEOID", keep="last")
-    log_shape(feat, "DEMOGRAPHIC FEATURES (LEAN GEOID-level)")
+    feat = feat.sort_values("GEOID").drop_duplicates(
+        subset="GEOID", keep="last"
+    )
+
+    log_shape(feat, "DEMOGRAPHIC FEATURES (AGE-BASED GEOID-level)")
 
     safe_save_csv(feat, DEMOGRAPHIC_FEATURES_CSV)
     return feat
-
 
 # =============================================================================
 # APPEND-ONLY LOGIC
