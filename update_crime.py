@@ -44,7 +44,7 @@ CRIME_BASE_URL = os.getenv(
     "CRIME_CSV_URL",
     "https://github.com/cem5113/crime_prediction_data/releases/latest/download/sf_crime.csv"
 )
-CRIME_API_URL = os.getenv("CRIME_API_URL", "https://data.sfgov.org/api/v3/views/wg3w-h783/query.json")
+CRIME_API_URL = os.getenv("CRIME_API_URL", "https://data.sfgov.org/resource/wg3w-h783.json")
 SFCRIME_APP_TOKEN = os.getenv("SFCRIME_API_TOKEN", "")
 
 CHUNK_LIMIT         = int(os.getenv("SFCRIME_CHUNK_LIMIT", "50000"))
