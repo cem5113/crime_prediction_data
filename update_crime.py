@@ -80,12 +80,23 @@ def _safe_zfill_geoid(x, width=DEFAULT_GEOID_LEN):
         return np.nan
         
 def _to_date_series(x):
-    try:
-        s = pd.to_datetime(x, utc=True, errors="coerce").dt.tz_convert(SF_TZ).dt.date
-    except Exception:
-        s = pd.to_datetime(x, errors="coerce").dt.date
-    return pd.Series(s).dropna()
+    s = pd.to_datetime(
+        x,
+        errors="coerce"
+    )
 
+    # Kolon zaten timezone-aware ise SF saatine çevir.
+    try:
+        if s.dt.tz is not None:
+            s = s.dt.tz_convert(SF_TZ)
+    except (AttributeError, TypeError):
+        pass
+
+    return pd.Series(
+        s.dt.date,
+        index=getattr(x, "index", None)
+    ).dropna()
+    
 def log_shape(df, label):
     r, c = df.shape
     print(f"\U0001F4CA {label}: {r} satır × {c} sütun")
