@@ -59,16 +59,18 @@ CRIME_DATE_COL_CANDIDATES = [
 # =====================================================================================
 # TARİH PENCERESİ
 # =====================================================================================
-def five_year_window(today_: date) -> tuple[date, date]:
-    try:
-        start = today_.replace(year=today_.year - 5)
-    except ValueError:
-        start = today_ - timedelta(days=365 * 5 + 2)
-    return start, today_
+WINDOW_DAYS = 1826
 
 today = datetime.now(SF_TZ).date()
-win_start, win_end = five_year_window(today)
-print(f"📅 5Y Pencere: {win_start} → {win_end}")
+
+# İlk indirme için fallback.
+# Asıl pencere weather verisinin son mevcut tarihinden sonra hesaplanacak.
+bootstrap_start = today - timedelta(days=WINDOW_DAYS - 1)
+
+win_start = bootstrap_start
+win_end = today
+
+print(f"📅 Weather bootstrap pencere: {win_start} → {win_end}")
 
 # =====================================================================================
 # YARDIMCILAR
@@ -158,8 +160,7 @@ def normalize_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     d["date"] = to_date(d["date"])
     d.dropna(subset=["date"], inplace=True)
-    d = d.drop_duplicates(subset=["date"]).sort_values("date")
-    d = d[(d["date"] >= win_start) & (d["date"] <= win_end)].copy()
+    d = d.drop_duplicates(subset=["date"]).sort_values("date").copy()
 
     # temel feature'lar
     d["temp_range"] = (d["tmax"] - d["tmin"]).astype(float)
@@ -488,8 +489,12 @@ def get_weather_df() -> pd.DataFrame:
 # =====================================================================================
 existing = read_existing_weather(WEATHER_CSV)
 last_date = existing["date"].max() if not existing.empty else None
-fetch_start = (last_date + timedelta(days=1)) if pd.notna(last_date) else win_start
-fetch_end = win_end
+fetch_start = (
+    last_date + timedelta(days=1)
+    if pd.notna(last_date)
+    else bootstrap_start
+)
+fetch_end = today
 
 if fetch_start <= fetch_end:
     print(f"📥 Meteostat Daily: {fetch_start} → {fetch_end}")
@@ -501,8 +506,28 @@ else:
     allw = existing.copy()
 
 allw = normalize_weather_columns(allw)
-allw = allw.drop_duplicates(subset=["date"]).sort_values("date")
-allw = allw[(allw["date"] >= win_start) & (allw["date"] <= win_end)].copy()
+allw = allw.drop_duplicates(subset=["date"]).sort_values("date").copy()
+
+# ============================================================
+# SON MEVCUT WEATHER TARİHİNDEN GERİYE TAM 1826 GÜN
+# ============================================================
+if not allw.empty:
+    latest_weather_date = allw["date"].max()
+    win_end = latest_weather_date
+    win_start = latest_weather_date - timedelta(days=WINDOW_DAYS - 1)
+    allw = allw[
+        (allw["date"] >= win_start) &
+        (allw["date"] <= win_end)
+    ].copy()
+    print(f"🧾 Weather son mevcut tarih: {latest_weather_date}")
+    print(f"🧾 Weather 1826 günlük başlangıç: {win_start}")
+    print(
+        f"🧾 Weather pencere: "
+        f"{(win_end - win_start).days + 1} gün"
+    )
+else:
+    print("⚠️ Weather verisi boş; 1826 günlük pencere oluşturulamadı.")
+allw = fill_missing_prev_year_same_week(allw)
 
 # eksik gün doldur
 allw = fill_missing_prev_year_same_week(allw)
