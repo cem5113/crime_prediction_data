@@ -89,11 +89,14 @@ CHUNK_DAYS = int(os.getenv("SF311_CHUNK_DAYS", "31"))
 MAX_PAGES_PER_CHUNK = int(os.getenv("SF311_MAX_PAGES_PER_CHUNK", "40"))
 MAX_CONSEC_EMPTY_CHUNKS = int(os.getenv("SF311_MAX_EMPTY_CHUNKS", "8"))
 
-FIVE_YEARS = 5 * 365
-TODAY = datetime.utcnow().date()
-DEFAULT_START = TODAY - timedelta(days=FIVE_YEARS)
+WINDOW_DAYS = 1826
+if SF_TZ is not None:
+    TODAY = datetime.now(SF_TZ).date()
+else:
+    TODAY = datetime.utcnow().date()
+# Sadece ilk kez hiç veri yoksa kullanılacak fallback.
+DEFAULT_START = TODAY - timedelta(days=WINDOW_DAYS - 1)
 BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "0"))
-
 BOOTSTRAP_311_FROM_CSV = (
     os.getenv("BOOTSTRAP_311_FROM_CSV", "0")
     .lower()
@@ -810,9 +813,36 @@ def main():
         df_raw["id"] = df_raw["id"].astype(str)
         df_raw.drop_duplicates(subset=["id"], keep="last", inplace=True)
 
-        df_raw["date"] = pd.to_datetime(df_raw["date"], errors="coerce").dt.date
-        min_date = start_date if BACKFILL_DAYS > 0 else DEFAULT_START
-        df_raw = df_raw[df_raw["date"] >= min_date]
+        df_raw["date"] = pd.to_datetime(
+            df_raw["date"],
+            errors="coerce"
+        ).dt.date
+        
+        df_raw = df_raw.dropna(subset=["date"]).copy()
+        
+        if BACKFILL_DAYS > 0:
+            # Manuel backfill modunda mevcut davranış devam etsin
+            min_date = start_date
+            df_raw = df_raw[df_raw["date"] >= min_date].copy()
+        
+        else:
+            # Gerçek son 311 tarihini bul
+            latest_311_date = df_raw["date"].max()
+        
+            # Başlangıç ve bitiş dahil tam 1826 gün
+            start_date_1826 = latest_311_date - timedelta(days=1825)
+        
+            df_raw = df_raw[
+                (df_raw["date"] >= start_date_1826) &
+                (df_raw["date"] <= latest_311_date)
+            ].copy()
+        
+            print(f"🧾 311 son mevcut tarih: {latest_311_date}")
+            print(f"🧾 311 1826 günlük başlangıç: {start_date_1826}")
+            print(
+                f"🧾 311 pencere: "
+                f"{(latest_311_date - start_date_1826).days + 1} gün"
+            )
 
         df_raw["datetime"] = pd.to_datetime(df_raw["datetime"], errors="coerce", utc=True)
         df_raw.sort_values("datetime", inplace=True)
