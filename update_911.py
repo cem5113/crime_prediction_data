@@ -747,14 +747,14 @@ def incremental_summary(start_day: datetime.date, end_day: datetime.date) -> pd.
 # =========================================================
 # MAIN — BASE / RELEASE / INCREMENT
 # =========================================================
-five_years_ago = datetime.now(timezone.utc).date() - timedelta(days=5 * 365)
+five_years_ago = None
 
 log(f"📁 911 yerel özet yolu: {local_summary_path}")
 
 base_csv_path = ensure_local_911_base()
 
 if base_csv_path is not None:
-    final_911 = summary_from_local(base_csv_path, min_date=five_years_ago)
+    final_911 = summary_from_local(base_csv_path, min_date=None)
 
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
@@ -781,7 +781,7 @@ if base_csv_path is not None:
 
 else:
     release_url = _pick_working_release_url(RAW_911_URL_CANDIDATES)
-    final_911 = summary_from_release(release_url, min_date=five_years_ago)
+    final_911 = summary_from_release(release_url, min_date=None)
 
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
@@ -808,6 +808,15 @@ else:
 
 base_max_date = to_date(final_911["date"]).max() if not final_911.empty else None
 today_sf = (datetime.now(SF_TZ) if SF_TZ is not None else datetime.now()).date()
+
+# Son mevcut 911 verisinden geriye tam 1826 takvim günü
+if base_max_date is not None:
+    five_years_ago = base_max_date - timedelta(days=1825)
+else:
+    five_years_ago = None
+
+log(f"🧾 911 son mevcut tarih: {base_max_date}")
+log(f"🧾 911 1826 günlük başlangıç: {five_years_ago}")
 
 if base_max_date is None:
     fetch_start, fetch_end = today_sf, today_sf
@@ -836,7 +845,19 @@ if inc is not None and not inc.empty:
                  .sort_values(subset_cols if subset_cols else ["date"])
                  .drop_duplicates(subset=subset_cols if subset_cols else ["date"], keep="last")
     )
-    final_911 = final_911[final_911["date"] >= five_years_ago].copy()
+
+    latest_911_date = to_date(final_911["date"]).max()
+    
+    # Başlangıç ve bitiş dahil tam 1826 günlük pencere
+    start_date_1826 = latest_911_date - timedelta(days=1825)
+    
+    final_911 = final_911[
+        (final_911["date"] >= start_date_1826) &
+        (final_911["date"] <= latest_911_date)
+    ].copy()
+    
+    log(f"🧾 911 final pencere: {start_date_1826} → {latest_911_date}")
+    log(f"🧾 911 takvim günü: {(latest_911_date - start_date_1826).days + 1}")
 
     safe_save_csv(final_911, str(local_summary_path))
     safe_save_csv(final_911, str(y_summary_path))
